@@ -849,12 +849,15 @@ def load_document_summaries_for_ui(project_id: str) -> tuple[list[list[str]], st
 
 def generate_document_summaries_for_ui(
     project_id: str, model_endpoint: str, api_key: str, model: str,
-    chunks: list[TextChunk], max_concurrent_requests: int = 3,
+    chunks: list[TextChunk], max_concurrent_requests: int,
+    run_control: RunControl,
+    progress=gr.Progress(),
 ) -> tuple[str, list[list[str]], dict[str, Any]]:
     if not project_id:
         return "❌ 請先建立或載入專案。", [], {}
     if not model:
         return "❌ 請先選擇摘要模型。", [], {}
+    run_control.reset()
     try:
         concurrency = int(max_concurrent_requests)
         if concurrency < 1:
@@ -864,13 +867,35 @@ def generate_document_summaries_for_ui(
             chunks_by_document.setdefault(chunk.document, []).append(chunk)
         if not chunks_by_document:
             raise ValueError("請先解析 PDF 並產生 chunks")
+        documents = list(chunks_by_document.values())
+        total = len(documents)
+        progress(0.0, desc=f"準備建立 {total} 份 PDF 摘要")
+
+        def build_summary(selected: list[TextChunk]) -> dict[str, Any]:
+            run_control.check()
+            run_control.wait_if_paused()
+            return generate_document_summary(
+                model_endpoint, api_key, model, selected, control=run_control,
+            )
+
+        results: list[dict[str, Any] | None] = [None] * total
+        completed = 0
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            summaries = list(executor.map(
-                lambda selected: generate_document_summary(
-                    model_endpoint, api_key, model, selected
-                ),
-                chunks_by_document.values(),
-            ))
+            futures = {
+                executor.submit(build_summary, selected): index
+                for index, selected in enumerate(documents)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    results[index] = future.result()
+                except RunCancelled:
+                    raise
+                except Exception as exc:
+                    raise RuntimeError(f"PDF 摘要建立失敗：{exc}") from exc
+                completed += 1
+                progress(completed / total, desc=f"已完成 {completed} / {total} 份 PDF 摘要")
+        summaries = results
         project = load_project(project_id)
         evaluation = dict(project.get("evaluation") or {})
         preferences = dict(evaluation.get("preferences") or {})
@@ -880,7 +905,9 @@ def generate_document_summaries_for_ui(
         })
         evaluation.update({"preferences": preferences, "document_summaries": summaries})
         save_project(project_id, {"evaluation": evaluation})
-    except (OSError, TypeError, ValueError) as exc:
+    except RunCancelled:
+        return "⏹ 已停止（使用者中止 PDF 摘要建立）。", [], {}
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
         return f"❌ {exc}", [], {}
     return (f"✅ 已建立並保存 {len(summaries)} 份 PDF 摘要。",
             _document_summary_rows(summaries), evaluation)
@@ -1728,6 +1755,7 @@ def build_app() -> gr.Blocks:
         graph_state = gr.State({})
         evaluation_state = gr.State({})
         run_control_state = gr.State(RunControl())
+        summary_run_control_state = gr.State(RunControl())
         neo4j_connected_state = gr.State(False)
 
         with gr.Tab("0. 專案設定") as project_tab:
@@ -1849,6 +1877,13 @@ def build_app() -> gr.Blocks:
                     value=3, minimum=1, precision=0, label="摘要最大並行請求數"
                 )
             generate_summaries_button = gr.Button("建立／重新建立全部 PDF 摘要", variant="primary")
+            with gr.Row():
+                summary_pause_button = gr.Button("⏸ 暫停")
+                summary_stop_button = gr.Button("⏹ 停止", variant="stop")
+            summary_run_control_status = gr.Markdown(
+                "「暫停」「停止」在建立摘要執行中可使用：暫停只會停止送出新請求"
+                "（已送出的請求仍會跑完）；停止會盡快中止整個流程。"
+            )
             summary_status = gr.Markdown("尚未建立 PDF 摘要。")
             document_summaries_table = gr.Dataframe(
                 headers=["文件", "摘要", "文件識別資訊", "主題", "關鍵詞"],
@@ -2136,8 +2171,22 @@ def build_app() -> gr.Blocks:
         generate_summaries_button.click(
             generate_document_summaries_for_ui,
             inputs=[project_selector, summary_model_endpoint, summary_model_key,
-                    summary_model, chunk_state, summary_max_concurrent_requests],
+                    summary_model, chunk_state, summary_max_concurrent_requests,
+                    summary_run_control_state],
             outputs=[summary_status, document_summaries_table, evaluation_state],
+            show_progress="minimal",
+        )
+        summary_pause_button.click(
+            toggle_pause_for_ui,
+            inputs=[summary_run_control_state],
+            outputs=[summary_run_control_status, summary_pause_button],
+            queue=False,
+        )
+        summary_stop_button.click(
+            request_stop_for_ui,
+            inputs=[summary_run_control_state],
+            outputs=[summary_run_control_status],
+            queue=False,
         )
 
         evaluation_tab.select(

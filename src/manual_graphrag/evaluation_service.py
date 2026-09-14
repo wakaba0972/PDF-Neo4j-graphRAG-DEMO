@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from .chunking import TextChunk
-from .graph_service import _chat_json
+from .graph_service import RunControl, _chat_json
 
 
 EVALUATION_CONTEXT_LIMIT = 30_000
@@ -50,6 +50,7 @@ def generate_document_summary(
     api_key: str,
     model: str,
     chunks: list[TextChunk],
+    control: RunControl | None = None,
 ) -> dict[str, Any]:
     if not chunks:
         raise ValueError("無法為空文件建立摘要")
@@ -94,6 +95,7 @@ def generate_document_summary(
         f"文件名稱：{document}\n文件內容：\n{context}",
         temperature=0,
         validator=validate,
+        control=control,
     )
 
 
