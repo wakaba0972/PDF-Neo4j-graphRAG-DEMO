@@ -308,7 +308,10 @@ def workflow_tabs_for_ui(
         and has_available_service(llm_state)
         and has_available_service(embedding_state)
     )
-    return tuple(gr.update(interactive=enabled) for _ in range(6))
+    return (
+        gr.update(interactive=bool(project_id)),
+        *(gr.update(interactive=enabled) for _ in range(5)),
+    )
 
 
 def lock_project_tabs_for_ui(project_id: str) -> tuple[dict[str, Any], ...]:

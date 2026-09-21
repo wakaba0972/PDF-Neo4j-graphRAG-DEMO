@@ -239,7 +239,7 @@ def test_pages_stay_locked_until_project_is_created_or_loaded() -> None:
     assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("", False, llm, embedding))
     llm["profiles"]["OpenAI"]["connected"] = True
     embedding["profiles"]["OpenAI"]["connected"] = True
-    assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("project", False, llm, embedding))
+    assert [update["interactive"] for update in ui.workflow_tabs_for_ui("project", False, llm, embedding)] == [True, False, False, False, False, False]
     assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", True, llm, embedding))
     gate_dependencies = [
         dependency for dependency in app.config["dependencies"]
@@ -250,13 +250,13 @@ def test_pages_stay_locked_until_project_is_created_or_loaded() -> None:
 
 
 
-def test_workflow_gate_requires_project_neo4j_llm_and_embedding() -> None:
+def test_workflow_gate_allows_pdf_with_project_and_requires_services_for_later_pages() -> None:
     llm = settings.load_service_settings("llm")
     embedding = settings.load_service_settings("embedding")
     assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("", False, llm, embedding))
-    assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("project", False, llm, embedding))
+    assert [update["interactive"] for update in ui.workflow_tabs_for_ui("project", False, llm, embedding)] == [True, False, False, False, False, False]
     llm["profiles"]["OpenAI"]["connected"] = True
-    assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("project", True, llm, embedding))
+    assert [update["interactive"] for update in ui.workflow_tabs_for_ui("project", True, llm, embedding)] == [True, False, False, False, False, False]
     embedding["profiles"]["OpenAI"]["connected"] = True
     assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", True, llm, embedding))
 
