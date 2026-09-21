@@ -584,7 +584,7 @@ def test_generate_document_summaries_for_ui_saves_and_displays_each_pdf(monkeypa
     captured = {}
     monkeypatch.setattr(
         ui, "generate_document_summary",
-        lambda _endpoint, _key, _model, chunks: {
+        lambda _endpoint, _key, _model, chunks, control=None: {
             "document": chunks[0].document, "summary": f"{chunks[0].document} 摘要",
             "identifiers": ["型號 A"], "topics": ["設定"], "keywords": ["IP"],
         },
@@ -595,6 +595,7 @@ def test_generate_document_summaries_for_ui_saves_and_displays_each_pdf(monkeypa
     status, rows, state = ui.generate_document_summaries_for_ui(
         "project", "endpoint", "key", "summary-model",
         [TextChunk(1, "a", (1,), "a.pdf"), TextChunk(2, "b", (1,), "b.pdf")], 2,
+        ui.RunControl(),
     )
 
     assert status == "✅ 已建立並保存 2 份 PDF 摘要。"

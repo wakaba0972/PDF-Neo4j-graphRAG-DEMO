@@ -7,11 +7,12 @@ openai_models:
   - text-embedding-3-large
 services:
   llm:
-    active: Ollama
+    active: OpenAI
     profiles:
       OpenAI:
         rows: []
         models:
+        - gpt-4.1-mini
         - gpt-4.1-mini
         - gpt-4.1-mini
         - gpt-4.1-mini
@@ -23,12 +24,17 @@ services:
           - gemma4:e4b
         - - true
           - granite4.2:3b
+        - - true
+          - llama3.2:1b
+        - - true
+          - llama3.2:3b
         models:
-        - gemma4:e4b
-        - gemma4:e4b
-        - gemma4:e4b
-        - gpt-4.1-mini
-        - gpt-4.1-mini
+        - null
+        - null
+        - null
+        - null
+        - null
+        - null
   embedding:
     active: OpenAI
     profiles:
