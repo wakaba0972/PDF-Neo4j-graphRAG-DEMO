@@ -60,6 +60,7 @@ def create_project(name: str, root: str | Path = PROJECTS_DIR) -> dict[str, Any]
         "chunks": [],
         "graph_state": {},
         "questions": [],
+        "schema_planning_resume": None,
     }
     write_json(target / "project.json", project)
     return project

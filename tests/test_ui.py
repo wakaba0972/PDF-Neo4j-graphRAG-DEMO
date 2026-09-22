@@ -1265,9 +1265,10 @@ def test_plan_schema_for_ui_reports_stopped_status(monkeypatch) -> None:
         lambda *args, **kwargs: (_ for _ in ()).throw(ui.RunCancelled("stopped")),
     )
 
-    status, schema_text = ui.plan_schema_for_ui(
+    status, schema_text, _project_state = ui.plan_schema_for_ui(
         "http://models/v1", "key", "llm", 0.3, "平衡", 3,
         [[True, "manual.pdf"]], [TextChunk(1, "text", (1,), "manual.pdf")], ui.RunControl(),
+        {},
     )
 
     assert status.startswith("⏹")
@@ -1281,7 +1282,7 @@ def test_schema_documents_default_to_all_and_require_a_selection() -> None:
     ])
     assert update["value"] == [[True, "a.pdf"], [True, "b.pdf"]]
 
-    status, schema_text = ui.plan_schema_for_ui(
+    status, schema_text, _project_state = ui.plan_schema_for_ui(
         "http://models/v1",
         "key",
         "llm",
@@ -1291,6 +1292,7 @@ def test_schema_documents_default_to_all_and_require_a_selection() -> None:
         [],
         [TextChunk(1, "text", (1,), "a.pdf")],
         ui.RunControl(),
+        {},
     )
     assert status == "❌ 請至少勾選一份用於規劃 Schema 的 PDF"
     assert schema_text == ""
@@ -1332,7 +1334,7 @@ def test_plan_schema_for_ui_returns_editable_json(monkeypatch) -> None:
         fake_plan,
     )
 
-    status, schema_text = ui.plan_schema_for_ui(
+    status, schema_text, _project_state = ui.plan_schema_for_ui(
         "http://models/v1",
         "key",
         "llm",
@@ -1345,6 +1347,7 @@ def test_plan_schema_for_ui_returns_editable_json(monkeypatch) -> None:
             TextChunk(2, "B", (1, 2), "b.pdf"),
         ],
         ui.RunControl(),
+        {},
     )
 
     assert status.startswith("✅")
@@ -1354,6 +1357,64 @@ def test_plan_schema_for_ui_returns_editable_json(monkeypatch) -> None:
     assert "粒度：平衡。" in status
     assert "類型上限" not in status
     assert json.loads(schema_text)["entity_types"][0]["name"] == "DEVICE"
+
+
+def test_plan_schema_for_ui_persists_resume_state_and_reuses_it(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("schema-resume-test")
+
+    chunks = [TextChunk(1, "A", (1,), "a.pdf")]
+    documents = [[True, "a.pdf"]]
+    partial_schema = {"entity_types": [], "relationship_types": []}
+
+    def failing_plan(*args, **kwargs):
+        exc = ValueError("模型逾時")
+        exc.schema_planning_resume = {
+            "signature": ui.schema_planning_signature(chunks, "平衡", "llm", 0.3),
+            "stage": "merge",
+            "candidates": [partial_schema],
+            "succeeded": {"0": partial_schema},
+            "total": 5,
+        }
+        raise exc
+
+    monkeypatch.setattr(ui, "plan_graph_schema", failing_plan)
+
+    status, schema_text, project_state = ui.plan_schema_for_ui(
+        "http://models/v1", "key", "llm", 0.3, "平衡", 3,
+        documents, chunks, ui.RunControl(), project,
+    )
+
+    assert status.startswith("❌")
+    assert "已保留 1 / 5 項成功結果" in status
+    assert schema_text == ""
+    assert project_state["schema_planning_resume"]["stage"] == "merge"
+    assert ui.load_project(project["project_id"])["schema_planning_resume"] is not None
+
+    from manual_graphrag.graph_service import SchemaPlan
+
+    captured_kwargs = {}
+
+    def succeeding_plan(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return SchemaPlan(
+            {"entity_types": [{"name": "DEVICE"}], "relationship_types": [{"name": "USES"}]},
+            1, 1, 1, 1,
+        )
+
+    monkeypatch.setattr(ui, "plan_graph_schema", succeeding_plan)
+
+    status2, schema_text2, project_state2 = ui.plan_schema_for_ui(
+        "http://models/v1", "key", "llm", 0.3, "平衡", 3,
+        documents, chunks, ui.RunControl(), project_state,
+    )
+
+    assert status2.startswith("✅")
+    assert "已接續上次進度" in status2
+    assert schema_text2
+    assert captured_kwargs["resume_state"]["stage"] == "merge"
+    assert project_state2["schema_planning_resume"] is None
+    assert ui.load_project(project["project_id"])["schema_planning_resume"] is None
 
 
 def test_extract_graph_for_ui_formats_tables_and_state(monkeypatch) -> None:
@@ -1684,7 +1745,7 @@ def test_project_list_refreshes_on_page_load_and_tab_select_without_focus_rerend
 
 def test_unselected_models_report_actionable_errors_without_network() -> None:
     plan = ui.plan_schema_for_ui(
-        "", "", None, 0, "平衡", 1, [], [], ui.RunControl(),
+        "", "", None, 0, "平衡", 1, [], [], ui.RunControl(), {},
     )
     extraction = ui.extract_graph_for_ui("", "", None, 0, 1, [], "{}", [], ui.RunControl())
     generation = ui.generate_evaluation_for_ui("project", "", "", None, None, 1, "基本檢索", 1, [])

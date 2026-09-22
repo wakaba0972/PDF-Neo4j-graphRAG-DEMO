@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import threading
@@ -90,6 +91,48 @@ class SchemaPlan:
     total_chunks: int
     batch_count: int
     merge_rounds: int
+
+
+def schema_planning_signature(
+    chunks: list[TextChunk],
+    schema_granularity: str,
+    llm_model: str,
+    temperature: float,
+) -> str:
+    """Fingerprint of the inputs that determine schema-planning batches/groups.
+
+    Used to tell whether a saved partial-progress checkpoint still applies, or
+    the chunk selection/model/settings changed since it was recorded.
+    """
+    fingerprint = {
+        "granularity": schema_granularity,
+        "model": llm_model,
+        "temperature": temperature,
+        "chunks": [
+            [chunk.number, chunk.document, list(chunk.pages), len(chunk.text)]
+            for chunk in chunks
+        ],
+    }
+    payload = json.dumps(fingerprint, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _attach_schema_planning_resume(
+    exc: BaseException,
+    *,
+    signature: str,
+    stage: str,
+    candidates: list[dict[str, Any]] | None,
+    succeeded: dict[int, dict[str, Any]],
+    total: int | None = None,
+) -> None:
+    exc.schema_planning_resume = {  # type: ignore[attr-defined]
+        "signature": signature,
+        "stage": stage,
+        "candidates": candidates,
+        "succeeded": {str(index): schema for index, schema in succeeded.items()},
+        "total": total,
+    }
 
 
 @dataclass(frozen=True)
@@ -501,6 +544,7 @@ def plan_graph_schema(
     schema_granularity: str = "平衡",
     max_concurrent_requests: int = 3,
     control: RunControl | None = None,
+    resume_state: dict[str, Any] | None = None,
 ) -> SchemaPlan:
     if not chunks:
         raise ValueError("請先在 PDF 頁面解析並產生 chunks")
@@ -515,6 +559,15 @@ def plan_graph_schema(
         raise ValueError("最大並行請求數必須大於 0")
     max_concurrent_requests = int(max_concurrent_requests)
 
+    signature = schema_planning_signature(
+        chunks, schema_granularity, llm_model, temperature
+    )
+    resume = (
+        resume_state
+        if resume_state and resume_state.get("signature") == signature
+        else None
+    )
+
     planning_rules = (
         f"Schema 粒度：{schema_granularity}。{granularity_guidance[schema_granularity]}"
         "只建立可重複使用、可泛化的類型；具體名稱、型號、編號、人物、組織或章節"
@@ -523,6 +576,20 @@ def plan_graph_schema(
     )
     batches = _chunk_batches(chunks, SCHEMA_CONTEXT_LIMIT)
     candidates: list[dict[str, Any] | None] = [None] * len(batches)
+    resume_merge_candidates: list[dict[str, Any]] | None = None
+    resume_merge_succeeded: dict[int, dict[str, Any]] = {}
+
+    if resume and resume.get("stage") == "batches":
+        for key, schema in (resume.get("succeeded") or {}).items():
+            index = int(key)
+            if 0 <= index < len(candidates):
+                candidates[index] = schema
+    elif resume and resume.get("stage") == "merge":
+        resume_merge_candidates = list(resume.get("candidates") or [])
+        resume_merge_succeeded = {
+            int(key): schema
+            for key, schema in (resume.get("succeeded") or {}).items()
+        }
 
     def plan_batch(index: int, batch: list[TextChunk]) -> dict[str, Any]:
         if control:
@@ -557,57 +624,113 @@ def plan_graph_schema(
         )
         return _compact_schema(candidate)
 
-    analyzed = 0
-    executor = ThreadPoolExecutor(max_workers=max_concurrent_requests)
-    futures = {}
-    next_batch_index = 0
+    if resume_merge_candidates is None:
+        analyzed = sum(
+            len(batch)
+            for batch, candidate in zip(batches, candidates)
+            if candidate is not None
+        )
+        executor = ThreadPoolExecutor(max_workers=max_concurrent_requests)
+        futures = {}
+        pending_indices = [
+            index for index, candidate in enumerate(candidates) if candidate is None
+        ]
+        next_pending = 0
 
-    def submit_available_batches() -> None:
-        nonlocal next_batch_index
-        while (
-            next_batch_index < len(batches)
-            and len(futures) < max_concurrent_requests
-        ):
-            batch = batches[next_batch_index]
-            future = executor.submit(plan_batch, next_batch_index, batch)
-            futures[future] = (next_batch_index, batch)
-            next_batch_index += 1
+        def submit_available_batches() -> None:
+            nonlocal next_pending
+            while (
+                next_pending < len(pending_indices)
+                and len(futures) < max_concurrent_requests
+            ):
+                index = pending_indices[next_pending]
+                batch = batches[index]
+                future = executor.submit(plan_batch, index, batch)
+                futures[future] = (index, batch)
+                next_pending += 1
 
-    submit_available_batches()
-    try:
-        while futures:
-            future = next(as_completed(tuple(futures)))
-            index, batch = futures.pop(future)
-            try:
-                candidates[index] = future.result()
-            except ValueError as exc:
-                raise ValueError(
-                    f"Schema 規劃第 {index + 1} / {len(batches)} 批失敗：{exc}"
-                ) from exc
-            analyzed += len(batch)
-            if progress_callback:
-                progress_callback(
-                    0.75 * analyzed / len(chunks),
-                    f"已完成 {sum(item is not None for item in candidates)} / "
-                    f"{len(batches)} 批（已分析 {analyzed} / {len(chunks)} chunks）",
+        submit_available_batches()
+        try:
+            while futures:
+                future = next(as_completed(tuple(futures)))
+                index, batch = futures.pop(future)
+                try:
+                    candidates[index] = future.result()
+                except ValueError as exc:
+                    wrapped = ValueError(
+                        f"Schema 規劃第 {index + 1} / {len(batches)} 批失敗：{exc}"
+                    )
+                    _attach_schema_planning_resume(
+                        wrapped,
+                        signature=signature,
+                        stage="batches",
+                        candidates=None,
+                        succeeded={
+                            i: c for i, c in enumerate(candidates) if c is not None
+                        },
+                        total=len(batches),
+                    )
+                    raise wrapped from exc
+                analyzed += len(batch)
+                if progress_callback:
+                    progress_callback(
+                        0.75 * analyzed / len(chunks),
+                        f"已完成 {sum(item is not None for item in candidates)} / "
+                        f"{len(batches)} 批（已分析 {analyzed} / {len(chunks)} chunks）",
+                    )
+                submit_available_batches()
+        except BaseException as exc:
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+            if isinstance(exc, RunCancelled) and not hasattr(
+                exc, "schema_planning_resume"
+            ):
+                _attach_schema_planning_resume(
+                    exc,
+                    signature=signature,
+                    stage="batches",
+                    candidates=None,
+                    succeeded={
+                        i: c for i, c in enumerate(candidates) if c is not None
+                    },
+                    total=len(batches),
                 )
-            submit_available_batches()
-    except BaseException:
-        for future in futures:
-            future.cancel()
-        executor.shutdown(wait=False, cancel_futures=True)
-        raise
+            raise
+        else:
+            executor.shutdown(wait=True)
+        candidates = [candidate for candidate in candidates if candidate is not None]
     else:
-        executor.shutdown(wait=True)
-    candidates = [candidate for candidate in candidates if candidate is not None]
+        candidates = resume_merge_candidates
+        if progress_callback:
+            progress_callback(
+                0.75, f"已延續先前進度，略過已完成的 {len(batches)} 批規劃"
+            )
 
     merge_rounds = 0
+    pending_merge_prefill = resume_merge_succeeded
     while len(candidates) > 1:
         if control:
-            control.check()
+            try:
+                control.check()
+            except RunCancelled as exc:
+                _attach_schema_planning_resume(
+                    exc,
+                    signature=signature,
+                    stage="merge",
+                    candidates=candidates,
+                    succeeded={},
+                )
+                raise
         merge_rounds += 1
+        round_input = candidates
         groups = _schema_groups(candidates, SCHEMA_MERGE_LIMIT)
         merged: list[dict[str, Any] | None] = [None] * len(groups)
+        prefill = pending_merge_prefill if merge_rounds == 1 else {}
+        pending_merge_prefill = {}
+        for index, schema in prefill.items():
+            if 0 <= index < len(merged):
+                merged[index] = schema
 
         def merge_group(index: int, group: list[dict[str, Any]]) -> dict[str, Any]:
             if control:
@@ -644,21 +767,34 @@ def plan_graph_schema(
             )
             return _compact_schema(result)
 
-        completed_groups = 0
-        with ThreadPoolExecutor(max_workers=max_concurrent_requests) as executor:
-            futures = {
-                executor.submit(merge_group, index, group): index
-                for index, group in enumerate(groups)
-            }
+        completed_groups = sum(1 for item in merged if item is not None)
+        executor = ThreadPoolExecutor(max_workers=max_concurrent_requests)
+        futures = {
+            executor.submit(merge_group, index, group): index
+            for index, group in enumerate(groups)
+            if merged[index] is None
+        }
+        try:
             for future in as_completed(futures):
                 index = futures[future]
                 try:
                     merged[index] = future.result()
                 except ValueError as exc:
-                    raise ValueError(
+                    wrapped = ValueError(
                         f"Schema 第 {merge_rounds} 輪整合第 "
                         f"{index + 1} / {len(groups)} 組失敗：{exc}"
-                    ) from exc
+                    )
+                    _attach_schema_planning_resume(
+                        wrapped,
+                        signature=signature,
+                        stage="merge",
+                        candidates=round_input,
+                        succeeded={
+                            i: c for i, c in enumerate(merged) if c is not None
+                        },
+                        total=len(groups),
+                    )
+                    raise wrapped from exc
                 completed_groups += 1
                 if progress_callback:
                     progress_callback(
@@ -674,6 +810,24 @@ def plan_graph_schema(
                         f"第 {merge_rounds} 輪 Schema 整合："
                         f"已完成 {completed_groups} / {len(groups)} 組",
                     )
+        except BaseException as exc:
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+            if isinstance(exc, RunCancelled) and not hasattr(
+                exc, "schema_planning_resume"
+            ):
+                _attach_schema_planning_resume(
+                    exc,
+                    signature=signature,
+                    stage="merge",
+                    candidates=round_input,
+                    succeeded={i: c for i, c in enumerate(merged) if c is not None},
+                    total=len(groups),
+                )
+            raise
+        else:
+            executor.shutdown(wait=True)
         candidates = [item for item in merged if item is not None]
     if progress_callback:
         progress_callback(1.0, f"已分析全部 {len(chunks)} / {len(chunks)} chunks")

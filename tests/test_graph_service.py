@@ -120,6 +120,126 @@ def test_schema_groups_use_smaller_merge_limit(monkeypatch) -> None:
     assert all(size <= 2 for size in merge_group_sizes)
 
 
+def test_schema_merge_failure_cancels_queued_groups(monkeypatch) -> None:
+    monkeypatch.setattr(graph_service, "SCHEMA_CONTEXT_LIMIT", 100)
+    monkeypatch.setattr(graph_service, "SCHEMA_MERGE_LIMIT", 150)
+    chunks = [TextChunk(number, "x" * 20, (number,)) for number in range(1, 11)]
+    merge_calls: list[int] = []
+
+    def fake_chat(*args, **kwargs):
+        prompt = args[4]
+        if "候選 Schema" in prompt:
+            merge_calls.append(1)
+            raise ValueError("模型逾時")
+        return SCHEMA
+
+    monkeypatch.setattr(graph_service, "_chat_json", fake_chat)
+
+    with pytest.raises(
+        ValueError,
+        match=r"Schema 第 1 輪整合第 1 / \d+ 組失敗：模型逾時",
+    ):
+        graph_service.plan_graph_schema(
+            "http://models/v1",
+            "",
+            "llm",
+            chunks,
+            max_concurrent_requests=1,
+        )
+
+    assert merge_calls == [1]
+
+
+def test_schema_merge_failure_resume_state_skips_completed_groups(monkeypatch) -> None:
+    monkeypatch.setattr(graph_service, "SCHEMA_CONTEXT_LIMIT", 100)
+    monkeypatch.setattr(graph_service, "SCHEMA_MERGE_LIMIT", 150)
+    chunks = [TextChunk(number, "x" * 20, (number,)) for number in range(1, 8)]
+
+    merge_call_count = 0
+
+    def fake_chat_first(*args, **kwargs):
+        nonlocal merge_call_count
+        prompt = args[4]
+        if "候選 Schema" not in prompt:
+            return SCHEMA
+        merge_call_count += 1
+        if merge_call_count == 1:
+            return SCHEMA
+        raise ValueError("模型逾時")
+
+    monkeypatch.setattr(graph_service, "_chat_json", fake_chat_first)
+
+    with pytest.raises(
+        ValueError,
+        match=r"Schema 第 1 輪整合第 2 / 2 組失敗：模型逾時",
+    ) as excinfo:
+        graph_service.plan_graph_schema(
+            "http://models/v1", "", "llm", chunks, max_concurrent_requests=1,
+        )
+
+    resume_state = getattr(excinfo.value, "schema_planning_resume", None)
+    assert resume_state is not None
+    assert resume_state["stage"] == "merge"
+    assert resume_state["candidates"] is not None
+    assert len(resume_state["candidates"]) == 4
+    assert resume_state["succeeded"] == {"0": graph_service._compact_schema(SCHEMA)}
+
+    resume_merge_calls = 0
+    batch_phase_seen = False
+
+    def fake_chat_second(*args, **kwargs):
+        nonlocal resume_merge_calls, batch_phase_seen
+        prompt = args[4]
+        if "候選 Schema" not in prompt:
+            batch_phase_seen = True
+            return SCHEMA
+        resume_merge_calls += 1
+        return SCHEMA
+
+    monkeypatch.setattr(graph_service, "_chat_json", fake_chat_second)
+
+    plan = graph_service.plan_graph_schema(
+        "http://models/v1", "", "llm", chunks,
+        max_concurrent_requests=1,
+        resume_state=resume_state,
+    )
+
+    assert plan.schema == SCHEMA
+    assert not batch_phase_seen
+    assert resume_merge_calls == 2
+
+
+def test_schema_planning_resume_state_ignored_when_signature_changes(monkeypatch) -> None:
+    monkeypatch.setattr(graph_service, "SCHEMA_CONTEXT_LIMIT", 100)
+    monkeypatch.setattr(graph_service, "SCHEMA_MERGE_LIMIT", 150)
+    chunks = [TextChunk(number, "x" * 20, (number,)) for number in range(1, 8)]
+
+    calls: list[str] = []
+
+    def fake_chat(*args, **kwargs):
+        prompt = args[4]
+        calls.append("merge" if "候選 Schema" in prompt else "batch")
+        return SCHEMA
+
+    monkeypatch.setattr(graph_service, "_chat_json", fake_chat)
+
+    stale_resume = {
+        "signature": "does-not-match",
+        "stage": "merge",
+        "candidates": [SCHEMA] * 4,
+        "succeeded": {"0": SCHEMA, "1": SCHEMA},
+    }
+
+    plan = graph_service.plan_graph_schema(
+        "http://models/v1", "", "llm", chunks,
+        max_concurrent_requests=1,
+        resume_state=stale_resume,
+    )
+
+    assert plan.schema == SCHEMA
+    assert "batch" in calls
+
+
 def test_compact_schema_keeps_only_required_merge_fields(monkeypatch) -> None:
     monkeypatch.setattr(graph_service, "SCHEMA_DESCRIPTION_LIMIT", 8)
     schema = {
@@ -344,6 +464,54 @@ def test_plan_graph_schema_failure_does_not_run_queued_batches(monkeypatch) -> N
 
     assert calls == [1]
 
+
+def test_plan_graph_schema_batch_failure_resume_skips_completed_batches(monkeypatch) -> None:
+    monkeypatch.setattr(graph_service, "SCHEMA_CONTEXT_LIMIT", 10)
+    chunks = [TextChunk(number, "x" * 20, (number,)) for number in range(1, 6)]
+
+    batch_call_count = 0
+
+    def fake_chat_first(*args, **kwargs):
+        nonlocal batch_call_count
+        batch_call_count += 1
+        if batch_call_count == 1:
+            return SCHEMA
+        raise ValueError("模型逾時")
+
+    monkeypatch.setattr(graph_service, "_chat_json", fake_chat_first)
+
+    with pytest.raises(
+        ValueError,
+        match=r"Schema 規劃第 2 / 5 批失敗：模型逾時",
+    ) as excinfo:
+        graph_service.plan_graph_schema(
+            "http://models/v1", "", "llm", chunks, max_concurrent_requests=1,
+        )
+
+    resume_state = getattr(excinfo.value, "schema_planning_resume", None)
+    assert resume_state is not None
+    assert resume_state["stage"] == "batches"
+    assert resume_state["candidates"] is None
+    assert resume_state["succeeded"] == {"0": graph_service._compact_schema(SCHEMA)}
+
+    batch_calls_second: list[int] = []
+
+    def fake_chat_second(*args, **kwargs):
+        prompt = args[4]
+        if "候選 Schema" not in prompt:
+            batch_calls_second.append(1)
+        return SCHEMA
+
+    monkeypatch.setattr(graph_service, "_chat_json", fake_chat_second)
+
+    plan = graph_service.plan_graph_schema(
+        "http://models/v1", "", "llm", chunks,
+        max_concurrent_requests=1,
+        resume_state=resume_state,
+    )
+
+    assert plan.schema == SCHEMA
+    assert len(batch_calls_second) == 4
 
 
 def test_extract_graph_batches_deduplicates_and_keeps_sources(monkeypatch) -> None:

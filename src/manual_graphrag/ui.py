@@ -31,6 +31,7 @@ from .graph_service import (
     extract_graph,
     list_models,
     plan_graph_schema,
+    schema_planning_signature,
     validate_schema,
 )
 from .neo4j_service import (
@@ -532,8 +533,14 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         )
     else:
         graph_status, import_status = "尚未執行抽取。", "尚未執行 Embedding 與匯入。"
+    project_status = f"✅ 已載入專案「{project['name']}」。"
+    if project.get("schema_planning_resume"):
+        project_status += (
+            "偵測到尚未完成的 Schema 規劃紀錄，"
+            "下次按「開始規劃 Schema」會自動接續執行剩餘部分。"
+        )
     return (
-        project, f"✅ 已載入專案「{project['name']}」。",
+        project, project_status,
         get("neo4j_uri", env["NEO4J_URI"]), get("neo4j_database", env["NEO4J_DATABASE"]),
         get("neo4j_username", env["NEO4J_USERNAME"]), get("neo4j_password", env["NEO4J_PASSWORD"]),
         llm_profile["base_url"], llm_profile["api_key"],
@@ -1358,6 +1365,19 @@ def _select_schema_planning_chunks(
     return selected_chunks, selected, page_count
 
 
+def _save_schema_planning_resume(
+    project_id: str,
+    resume_payload: dict[str, Any] | None,
+    project_state: dict[str, Any],
+) -> dict[str, Any]:
+    if not project_id:
+        return project_state
+    try:
+        return save_project(project_id, {"schema_planning_resume": resume_payload})
+    except (OSError, ValueError):
+        return project_state
+
+
 def plan_schema_for_ui(
     model_endpoint: str,
     api_key: str,
@@ -1368,15 +1388,28 @@ def plan_schema_for_ui(
     document_rows: Any,
     chunks: list[TextChunk],
     run_control: RunControl,
+    project_state: dict[str, Any],
     progress=gr.Progress(),
-) -> tuple[str, str]:
+) -> tuple[str, str, dict[str, Any]]:
+    project_state = project_state or {}
     if not llm_model:
-        return "❌ 請先勾選並選擇 Schema 規劃 LLM。", ""
+        return "❌ 請先勾選並選擇 Schema 規劃 LLM。", "", project_state
     run_control.reset()
+    project_id = project_state.get("project_id", "")
+    stored_resume = project_state.get("schema_planning_resume")
+    resuming = False
     try:
         planning_chunks, planned_documents, page_count = _select_schema_planning_chunks(
             chunks, document_rows
         )
+        resume_state = None
+        if stored_resume:
+            signature = schema_planning_signature(
+                planning_chunks, schema_granularity, llm_model, float(temperature)
+            )
+            if stored_resume.get("signature") == signature:
+                resume_state = stored_resume
+                resuming = True
         plan = plan_graph_schema(
             model_endpoint,
             api_key,
@@ -1387,24 +1420,43 @@ def plan_schema_for_ui(
             schema_granularity,
             int(max_concurrent_requests),
             control=run_control,
+            resume_state=resume_state,
         )
-    except RunCancelled:
-        return "⏹ 已停止（使用者中止 Schema 規劃）。", ""
-    except ValueError as exc:
-        return f"❌ {exc}", ""
+    except (RunCancelled, ValueError) as exc:
+        resume_payload = getattr(exc, "schema_planning_resume", None)
+        project_state = _save_schema_planning_resume(
+            project_id, resume_payload, project_state
+        )
+        prefix = (
+            "⏹ 已停止（使用者中止 Schema 規劃）。"
+            if isinstance(exc, RunCancelled)
+            else f"❌ {exc}"
+        )
+        if resume_payload:
+            done = len(resume_payload.get("succeeded") or {})
+            total = resume_payload.get("total")
+            total_note = f" / {total}" if total else ""
+            prefix += (
+                f"已保留 {done}{total_note} 項成功結果，"
+                "修正問題後再按一次「開始規劃 Schema」即可只重跑剩餘部分。"
+            )
+        return prefix, "", project_state
+
+    project_state = _save_schema_planning_resume(project_id, None, project_state)
     document_text = "、".join(planned_documents)
     scope_note = (
         f"{len(planned_documents)} 份 PDF（{document_text}）的全部 {page_count} 頁"
     )
+    resume_note = "（已接續上次進度）" if resuming else ""
     note = (
-        f"✅ 已使用 {llm_model} 規劃 schema；參考 {scope_note}、"
+        f"✅ 已使用 {llm_model} 規劃 schema{resume_note}；參考 {scope_note}、"
         f"{plan.analyzed_chunks} 個 chunk，"
         f"共 {plan.batch_count} 批、{plan.merge_rounds} 輪整合。"
         f"粒度：{schema_granularity}。"
         f"最大並行請求數：{int(max_concurrent_requests)}。"
         "請確認或編輯後再進行抽取。"
     )
-    return note, json.dumps(plan.schema, ensure_ascii=False, indent=2)
+    return note, json.dumps(plan.schema, ensure_ascii=False, indent=2), project_state
 
 
 def extract_graph_for_ui(
@@ -2523,8 +2575,9 @@ def build_app() -> gr.Blocks:
                 schema_documents,
                 chunk_state,
                 run_control_state,
+                project_state,
             ],
-            outputs=[plan_status, schema_editor],
+            outputs=[plan_status, schema_editor, project_state],
         )
         extraction_event = generate_graph_button.click(
             extract_graph_for_ui,
