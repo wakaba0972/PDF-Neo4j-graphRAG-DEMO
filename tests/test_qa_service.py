@@ -33,6 +33,39 @@ def test_answer_graph_question_omits_max_tokens(monkeypatch) -> None:
     assert "manual.pdf" in captured["payload"]["messages"][0]["content"]
 
 
+def test_answer_graph_question_bounds_evidence_context(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(url, payload, api_key, **kwargs):
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": "答案"}}]}
+
+    monkeypatch.setattr(qa_service, "_post_json", fake_post)
+    evidence = [
+        {"evidence_id": "first", "kind": "原文", "text": "甲" * 100},
+        {"evidence_id": "second", "kind": "原文", "text": "乙" * 100},
+    ]
+
+    result = qa_service.answer_graph_question(
+        "http://models/v1", "secret", "model-a", "問題", "基本檢索",
+        evidence, max_context_tokens=30,
+    )
+
+    assert [item["evidence_id"] for item in result["evidence"]] == ["first"]
+    assert result["context_truncated"] is True
+    assert result["context_tokens"] <= 30
+    assert "second" not in captured["payload"]["messages"][1]["content"]
+
+
+def test_fit_evidence_to_context_rejects_non_positive_budget() -> None:
+    try:
+        qa_service.fit_evidence_to_context([], 0)
+    except ValueError as exc:
+        assert "大於 0" in str(exc)
+    else:
+        raise AssertionError("expected a validation error")
+
+
 def test_rerank_evidence_prioritizes_question_term_matches() -> None:
     evidence = [
         {
