@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import re
+from math import ceil
 from typing import Any
 
 from .graph_service import _api_url, _chat_response_content, _post_json
 
 RERANK_CANDIDATE_MULTIPLIER = 3
 RERANK_MAX_CANDIDATES = 50
+DEFAULT_MAX_CONTEXT_TOKENS = 6000
 
 
 def _search_terms(text: str) -> set[str]:
@@ -19,6 +21,50 @@ def _search_terms(text: str) -> set[str]:
         for index in range(max(len(chinese) - 1, 0))
     }
     return words | chinese_bigrams
+
+
+def _estimate_tokens(text: str) -> int:
+    """Estimate tokens conservatively without adding a tokenizer dependency."""
+    cjk_count = len(re.findall(r"[\u3400-\u9fff]", text))
+    other_text = re.sub(r"[\u3400-\u9fff]", " ", text)
+    return max(1, cjk_count + ceil(len(other_text) / 4))
+
+
+def fit_evidence_to_context(
+    evidence: list[dict[str, Any]],
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
+) -> list[dict[str, Any]]:
+    """Keep complete evidence items until the answer context budget is filled.
+
+    If the first item is larger than the budget, retain its metadata and clip its
+    text so the model still receives one traceable source instead of no evidence.
+    """
+    budget = int(max_context_tokens)
+    if budget < 1:
+        raise ValueError("context token 預算必須大於 0")
+
+    selected: list[dict[str, Any]] = []
+    used = 0
+    for item in evidence:
+        item_tokens = _estimate_tokens(str(item.get("text", "")))
+        if selected and used + item_tokens > budget:
+            break
+        if not selected and item_tokens > budget:
+            clipped = dict(item)
+            text = str(clipped.get("text", ""))
+            low, high = 1, len(text)
+            while low < high:
+                middle = (low + high + 1) // 2
+                if _estimate_tokens(text[:middle]) <= budget:
+                    low = middle
+                else:
+                    high = middle - 1
+            clipped["text"] = text[:low]
+            selected.append(clipped)
+            break
+        selected.append(dict(item))
+        used += item_tokens
+    return selected
 
 
 def rerank_evidence(
@@ -89,6 +135,7 @@ def answer_graph_question(
     retrieval_mode: str,
     evidence: list[dict[str, Any]],
     document_names: list[str] | None = None,
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
 ) -> dict[str, Any]:
     if not question.strip():
         raise ValueError("請輸入問題")
@@ -98,6 +145,7 @@ def answer_graph_question(
         raise ValueError("不支援的檢索模式")
     if not evidence:
         raise ValueError("Neo4j Vector Search 找不到相關證據")
+    bounded_evidence = fit_evidence_to_context(evidence, max_context_tokens)
     document_scope = ""
     if document_names:
         document_scope = (
@@ -117,7 +165,7 @@ def answer_graph_question(
                 {
                     "role": "user",
                     "content": "問題：{}\n\n證據：\n{}".format(
-                        question.strip(), json.dumps(evidence, ensure_ascii=False)
+                        question.strip(), json.dumps(bounded_evidence, ensure_ascii=False)
                     ),
                 },
             ],
@@ -125,4 +173,13 @@ def answer_graph_question(
         api_key,
     )
     answer, _ = _chat_response_content(response)
-    return {"answer": answer.strip(), "evidence": evidence}
+    return {
+        "answer": answer.strip(),
+        "evidence": bounded_evidence,
+        "context_tokens": sum(
+            _estimate_tokens(str(item.get("text", "")))
+            for item in bounded_evidence
+        ),
+        "context_truncated": len(bounded_evidence) < len(evidence)
+        or bounded_evidence != evidence,
+    }
