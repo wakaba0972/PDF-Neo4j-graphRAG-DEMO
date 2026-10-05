@@ -21,6 +21,7 @@ from .config import (
 from .env_store import load_env, save_env
 from .experiment_project_store import (
     create_experiment_project,
+    delete_experiment_project,
     list_experiment_projects,
     load_experiment_project,
     save_experiment_project,
@@ -1032,6 +1033,31 @@ def create_experiment_project_for_ui(name: str) -> tuple[Any, dict[str, Any], st
         return gr.update(), {}, f"❌ {exc}"
     choices = experiment_project_choices_for_ui()
     return gr.update(choices=choices, value=project["experiment_project_id"]), project, f"✅ 已建立並載入實驗專案「{project['name']}」。"
+
+
+def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
+    """Delete the selected experiment workspace and clear its visible page state."""
+    if not project_id:
+        return (gr.update(), gr.update(), gr.update(), gr.update(),
+                "操作已取消，或尚未選擇實驗專案；沒有刪除任何資料。",
+                gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+                gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+                gr.update(), gr.update(), gr.update())
+    try:
+        deleted_name = delete_experiment_project(project_id)
+    except (OSError, ValueError) as exc:
+        return (gr.update(choices=experiment_project_choices_for_ui(), value=project_id),
+                gr.update(), gr.update(), gr.update(), f"❌ {exc}",
+                gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+                gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+                gr.update(), gr.update(), gr.update())
+    return (gr.update(choices=experiment_project_choices_for_ui(), value=None), {}, [],
+            gr.update(choices=_built_project_choices(), value=[]),
+            f"✅ 已刪除實驗專案「{deleted_name}」；其成員車型專案及 Neo4j 資料庫不受影響。",
+            [], {}, "請先在 1-0 載入實驗專案。",
+            gr.update(choices=[], value=None), [], "請選擇成員專案。", [],
+            gr.update(choices=[], value=None), [], [],
+            "實驗專案已刪除。", "實驗專案已刪除，請先載入或建立實驗專案。", False)
 
 
 def load_experiment_project_for_ui(
@@ -4946,6 +4972,7 @@ def build_app() -> gr.Blocks:
                     label="現有實驗專案",
                 )
                 load_experiment_project_button = gr.Button("載入實驗專案")
+                delete_experiment_project_button = gr.Button("刪除實驗專案", variant="stop")
             with gr.Row():
                 new_experiment_project_name = gr.Textbox(label="新實驗專案名稱")
                 create_experiment_project_button = gr.Button("建立實驗專案", variant="primary")
@@ -5331,6 +5358,25 @@ def build_app() -> gr.Blocks:
             experiment_project_state, experiment_project_members_table,
             experiment_project_members, experiment_project_status,
         ]
+        delete_experiment_project_button.click(
+            delete_experiment_project_for_ui,
+            inputs=[experiment_project_selector],
+            outputs=[
+                experiment_project_selector, experiment_project_state,
+                experiment_project_members_table, experiment_project_members,
+                experiment_project_status, experiment_connection_table,
+                experiment_project_connection_state, experiment_connection_status,
+                experiment_questions_member, experiment_project_questions_table,
+                experiment_project_questions_status, experiment_project_groups_table,
+                experiment_project_remove_group, experiment_project_summary_table,
+                experiment_project_details_table, experiment_project_test_status,
+                experiment_project_answers_status, evaluate_experiment_project_button,
+            ],
+            js="(projectId) => projectId && confirm(`確定刪除實驗專案「${projectId}」？這只會刪除此實驗專案的設定與結果，不會刪除其中的車型專案或 Neo4j 資料庫。`)",
+        ).then(
+            experiment_project_banner_for_ui,
+            inputs=experiment_project_state, outputs=current_project_banner,
+        )
         load_experiment_project_button.click(
             load_experiment_project_for_ui,
             inputs=[experiment_project_selector], outputs=experiment_project_outputs,

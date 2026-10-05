@@ -21,6 +21,60 @@ def test_current_project_banner_reflects_project_name() -> None:
     assert ui._current_project_banner({"name": "手冊專案"}) == "### 📁 目前專案：手冊專案"
 
 
+def test_delete_experiment_project_ui_clears_selected_workspace(monkeypatch) -> None:
+    deleted = []
+    monkeypatch.setattr(ui, "delete_experiment_project", lambda project_id: deleted.append(project_id) or "實驗 A")
+    monkeypatch.setattr(ui, "experiment_project_choices_for_ui", lambda: [("實驗 B", "b")])
+    monkeypatch.setattr(ui, "_built_project_choices", lambda: [("車型 A", "vehicle-a")])
+
+    result = ui.delete_experiment_project_for_ui("a")
+
+    assert deleted == ["a"]
+    assert len(result) == 18
+    assert result[0]["choices"] == [("實驗 B", "b")]
+    assert result[0]["value"] is None
+    assert result[1] == {}
+    assert result[2] == []
+    assert result[3]["value"] == []
+    assert "實驗專案「實驗 A」" in result[4]
+    assert "不受影響" in result[4]
+    assert result[5] == [] and result[6] == {}
+    assert result[9] == [] and result[11] == []
+    assert result[13] == [] and result[14] == []
+    assert result[17] is False
+
+
+def test_cancel_experiment_project_deletion_does_not_clear_or_delete(monkeypatch) -> None:
+    deleted = []
+    monkeypatch.setattr(ui, "delete_experiment_project", lambda project_id: deleted.append(project_id))
+
+    result = ui.delete_experiment_project_for_ui(None)
+
+    assert deleted == []
+    assert len(result) == 18
+    assert all(
+        isinstance(value, dict) and value.get("__type__") == "update"
+        for index, value in enumerate(result) if index != 4
+    )
+    assert "沒有刪除任何資料" in result[4]
+
+
+def test_experiment_project_delete_button_requires_confirmation() -> None:
+    app = build_app()
+    button = next(
+        component for component in app.config["components"]
+        if component.get("props", {}).get("value") == "刪除實驗專案"
+    )
+    dependency = next(
+        item for item in app.config["dependencies"]
+        if any(target[0] == button["id"] for target in item.get("targets", []))
+    )
+
+    assert button["props"]["variant"] == "stop"
+    assert "confirm(" in dependency["js"]
+    assert "不會刪除其中的車型專案或 Neo4j 資料庫" in dependency["js"]
+
+
 def test_build_app_wires_project_state_change_to_banner() -> None:
     app = build_app()
     assert any(
