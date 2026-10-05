@@ -2715,7 +2715,7 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
         captured["args"] = args
         return ImportSummary(2, 1)
 
-    monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]] * 2)
+    monkeypatch.setattr(ui, "embedding_vectors", lambda *args, **kwargs: [[0.1]] * 2)
     monkeypatch.setattr(ui, "import_extraction", fake_import)
 
     status, state = ui.import_graph_for_ui(
@@ -2732,7 +2732,7 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
 
 
 def test_import_graph_for_ui_keeps_state_when_import_fails(monkeypatch) -> None:
-    monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]] * 2)
+    monkeypatch.setattr(ui, "embedding_vectors", lambda *args, **kwargs: [[0.1]] * 2)
     monkeypatch.setattr(
         ui,
         "import_extraction",
@@ -2767,7 +2767,7 @@ def test_answer_question_for_ui_can_disable_reranker(tmp_path, monkeypatch) -> N
             "embedding_model": "embed",
         },
     )
-    monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]])
+    monkeypatch.setattr(ui, "embedding_vectors", lambda *args, **kwargs: [[0.1]])
     captured = {}
 
     def fake_search(*args, **kwargs):

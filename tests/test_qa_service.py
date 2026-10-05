@@ -100,3 +100,17 @@ def test_rerank_evidence_preserves_hybrid_order_for_equal_scores() -> None:
     ranked = qa_service.rerank_evidence("E01", evidence, 2)
 
     assert [item["evidence_id"] for item in ranked] == ["first", "second"]
+
+
+def test_embedding_vectors_reports_progress_per_batch(monkeypatch) -> None:
+    def fake_post(url, payload, api_key):
+        return {"data": [{"index": i, "embedding": [0.1]} for i in range(len(payload["input"]))]}
+
+    monkeypatch.setattr(qa_service, "_post_json", fake_post)
+    calls = []
+    vectors = qa_service.embedding_vectors(
+        "http://x", "key", "embed", ["t"] * 130,
+        progress_callback=lambda done, total: calls.append((done, total)),
+    )
+    assert len(vectors) == 130
+    assert calls == [(64, 130), (128, 130), (130, 130)]

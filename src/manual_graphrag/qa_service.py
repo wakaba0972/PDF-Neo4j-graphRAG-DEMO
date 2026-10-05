@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 from .graph_service import (
     GPT_6_LUNA_MODEL, GPT_6_LUNA_REASONING_EFFORTS,
@@ -55,7 +55,10 @@ def rerank_evidence(
     return [item for _, _, item in ranked[:limit]]
 
 
-def embedding_vectors(base_url: str, api_key: str, model: str, texts: list[str]) -> list[list[float]]:
+def embedding_vectors(
+    base_url: str, api_key: str, model: str, texts: list[str],
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> list[list[float]]:
     if not model.strip():
         raise ValueError("此建圖結果沒有 Embedding 模型")
     vectors: list[list[float]] = []
@@ -75,6 +78,8 @@ def embedding_vectors(base_url: str, api_key: str, model: str, texts: list[str])
                 vectors.append([float(value) for value in item["embedding"]])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Embedding API 回傳的向量格式不正確") from exc
+        if progress_callback:
+            progress_callback(len(vectors), len(texts))
     return vectors
 
 

@@ -214,6 +214,21 @@ def test_saved_project_cannot_bypass_openai_allowlist_or_connection(monkeypatch)
     assert loaded[9]["choices"] == choices("OpenAI", settings.openai_models("embedding"))
 
 
+def test_loading_project_with_stale_page_state_keeps_embedding_key_in_env():
+    from manual_graphrag.env_store import load_env, save_env
+
+    project = ui.create_project("saved")
+    stale_llm = settings.load_service_settings("llm")
+    stale_embedding = settings.load_service_settings("embedding")
+    save_env({"MODEL_OPENAI_API_KEY": "llm-key", "EMBEDDING_OPENAI_API_KEY": "embedding-key"})
+
+    loaded = ui.load_project_with_services_for_ui(project["project_id"], stale_llm, stale_embedding)
+
+    assert load_env()["EMBEDDING_OPENAI_API_KEY"] == "embedding-key"
+    assert load_env()["MODEL_OPENAI_API_KEY"] == "llm-key"
+    assert loaded[-5] == "embedding-key"
+
+
 def test_evaluation_cannot_restore_unapproved_models(monkeypatch):
     monkeypatch.setattr(ui, "check_model_connection", lambda *args: None)
     project = ui.create_project("saved")
