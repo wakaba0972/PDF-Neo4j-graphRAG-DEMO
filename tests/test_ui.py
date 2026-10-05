@@ -48,7 +48,7 @@ def test_cancel_experiment_project_deletion_does_not_clear_or_delete(monkeypatch
     deleted = []
     monkeypatch.setattr(ui, "delete_experiment_project", lambda project_id: deleted.append(project_id))
 
-    result = ui.delete_experiment_project_for_ui(None)
+    result = ui.delete_experiment_project_for_ui(True)
 
     assert deleted == []
     assert len(result) == 18
@@ -72,6 +72,7 @@ def test_experiment_project_delete_button_requires_confirmation() -> None:
 
     assert button["props"]["variant"] == "stop"
     assert "confirm(" in dependency["js"]
+    assert "? projectId : null" in dependency["js"]
     assert "不會刪除其中的車型專案或 Neo4j 資料庫" in dependency["js"]
 
 

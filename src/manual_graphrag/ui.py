@@ -1056,7 +1056,7 @@ def create_experiment_project_for_ui(name: str) -> tuple[Any, dict[str, Any], st
 
 def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
     """Delete the selected experiment workspace and clear its visible page state."""
-    if not project_id:
+    if not isinstance(project_id, str) or not project_id:
         return (gr.update(), gr.update(), gr.update(), gr.update(),
                 "操作已取消，或尚未選擇實驗專案；沒有刪除任何資料。",
                 gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
@@ -5391,7 +5391,7 @@ def build_app() -> gr.Blocks:
                 experiment_project_details_table, experiment_project_test_status,
                 experiment_project_answers_status, evaluate_experiment_project_button,
             ],
-            js="(projectId) => projectId && confirm(`確定刪除實驗專案「${projectId}」？這只會刪除此實驗專案的設定與結果，不會刪除其中的車型專案或 Neo4j 資料庫。`)",
+            js="(projectId) => { if (!projectId) return null; return confirm(`確定刪除實驗專案「${projectId}」？這只會刪除此實驗專案的設定與結果，不會刪除其中的車型專案或 Neo4j 資料庫。`) ? projectId : null; }",
         ).then(
             experiment_project_banner_for_ui,
             inputs=experiment_project_state, outputs=current_project_banner,
