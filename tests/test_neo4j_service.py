@@ -152,7 +152,7 @@ def test_import_extraction_writes_document_entities_and_relationships(monkeypatc
     assert "fulltext.analyzer" in index_calls[4][0]
     assert "db.awaitIndexes(300)" in index_calls[5][0]
     assert index_calls[5][1] == {}
-    assert len(transaction.calls) == 5
+    assert len(transaction.calls) == 8
     assert "DETACH DELETE node" in transaction.calls[0][0]
     assert "GraphDocument" in transaction.calls[1][0]
     assert transaction.calls[1][1]["embedding_dimensions"] == 1
@@ -166,6 +166,10 @@ def test_import_extraction_writes_document_entities_and_relationships(monkeypatc
     assert "evidence.source_documents" in transaction.calls[4][0]
     assert "source_references_json" in transaction.calls[2][0]
     assert transaction.calls[2][1]["entities"][0]["source_references_json"] == "[]"
+    assert "REPRESENTS" in transaction.calls[5][0]
+    assert "EVIDENCE_SOURCE" in transaction.calls[6][0]
+    assert "EVIDENCE_TARGET" in transaction.calls[6][0]
+    assert "MENTIONS_ENTITY" in transaction.calls[7][0]
 
 
 def test_restore_source_references_from_neo4j_json() -> None:
@@ -486,8 +490,23 @@ class ExpansionSearchSession:
 
     def run(self, query, **parameters):
         self.calls.append((query, parameters))
-        if "count(node)" in query:
-            return FakeResult(10)
+        if "MATCH path = (seed)-[" in query:
+            return FakeResult(rows=[
+                {"evidence": {
+                    "evidence_id": "relation-misfire-spark-plug", "kind": "關係",
+                    "name": "", "source": "第 1 缸失火", "target": "火星塞",
+                    "text": "第 1 缸失火可能由火星塞造成", "source_pages": [3],
+                    "source_chunk_numbers": [3], "source_documents": ["car.pdf"],
+                    "source_references_json": "[]",
+                }, "distance": 2},
+                {"evidence": {
+                    "evidence_id": "entity-spark-plug", "kind": "實體",
+                    "name": "火星塞", "source": "", "target": "",
+                    "text": "實體：火星塞", "source_pages": [2],
+                    "source_chunk_numbers": [2], "source_documents": ["car.pdf"],
+                    "source_references_json": "[]",
+                }, "distance": 3},
+            ])
         if 'kind: "原文"' in query:
             rows = [
                 {
@@ -507,36 +526,6 @@ class ExpansionSearchSession:
                 for number in parameters["chunk_numbers"]
             ]
             return FakeResult(rows=rows)
-        if "kind: '實體'" in query:
-            return FakeResult(rows=[{
-                "evidence": {
-                    "evidence_id": "entity-spark-plug",
-                    "kind": "實體",
-                    "name": "火星塞",
-                    "source": "",
-                    "target": "",
-                    "text": "實體：火星塞",
-                    "source_pages": [2],
-                    "source_chunk_numbers": [2],
-                    "source_documents": ["car.pdf"],
-                    "source_references_json": "[]",
-                }
-            }])
-        if "kind: '關係'" in query:
-            return FakeResult(rows=[{
-                "evidence": {
-                    "evidence_id": "relation-misfire-spark-plug",
-                    "kind": "關係",
-                    "name": "",
-                    "source": "第 1 缸失火",
-                    "target": "火星塞",
-                    "text": "第 1 缸失火可能由火星塞造成",
-                    "source_pages": [3],
-                    "source_chunk_numbers": [3],
-                    "source_documents": ["car.pdf"],
-                    "source_references_json": "[]",
-                }
-            }])
         raise AssertionError(f"unexpected query: {query}")
 
 
@@ -590,18 +579,22 @@ def test_graph_expansion_fetches_new_source_chunks_once(monkeypatch) -> None:
 
     assert [item["evidence_id"] for item in results] == [
         "entity-p0301",
-        "chunk-1",
-        "entity-spark-plug",
         "relation-misfire-spark-plug",
-        "chunk-2",
+        "entity-spark-plug",
+        "chunk-1",
         "chunk-3",
+        "chunk-2",
     ]
     source_queries = [
         parameters["chunk_numbers"]
         for query, parameters in session.calls
         if 'kind: "原文"' in query
     ]
-    assert source_queries == [[1], [2, 3]]
+    assert source_queries == [[1, 3, 2]]
+    expansion_query = next(query for query, _parameters in session.calls if "MATCH path = (seed)-[" in query)
+    assert "EXTRACTED_RELATION" in expansion_query
+    assert "*1..4" in expansion_query
+    assert "name IN $names" not in expansion_query
 
 
 def test_graph_expansion_can_be_disabled(monkeypatch) -> None:

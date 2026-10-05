@@ -186,7 +186,14 @@ def search_graph_evidence(
     top_k: int,
     candidate_top_k: int | None = None,
     expand_evidence: bool = True,
+    graph_hops: int = 4,
 ) -> list[dict[str, Any]]:
+    try:
+        graph_hops = int(graph_hops)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("圖譜擴展 hop 數必須介於 1 到 6") from exc
+    if not 1 <= graph_hops <= 6:
+        raise ValueError("圖譜擴展 hop 數必須介於 1 到 6")
     target_vector_index = vector_index_name(len(embedding))
     retrieval_top_k = max(int(candidate_top_k or top_k), int(top_k))
     retrieval_query = """
@@ -238,21 +245,9 @@ def search_graph_evidence(
 
             if expand_evidence and retrieval_mode in {"混合檢索", "關聯擴展檢索", "GraphRAG"} and selected:
                 with driver.session(database=database.strip()) as session:
-                    chunk_numbers = sorted({
-                        number
-                        for item in selected
-                        for number in item.get("source_chunk_numbers", [])
-                    })
-                    names = [
-                        item.get("name", "")
-                        for item in selected
-                        if item.get("kind") == "實體" and item.get("name")
-                    ]
-                    graph_chunk_numbers = list(dict.fromkeys(
-                        number
-                        for item in selected
-                        if item.get("kind") != "原文"
-                        for number in item.get("source_chunk_numbers", [])
+                    seed_ids = list(dict.fromkeys(
+                        item.get("evidence_id", "") for item in selected
+                        if item.get("evidence_id")
                     ))
                     def fetch_source_chunks(
                         target_chunk_numbers: list[int],
@@ -293,98 +288,52 @@ def search_graph_evidence(
                         ))
                         return chunks[:retrieval_top_k]
 
-                    source_chunks = fetch_source_chunks(graph_chunk_numbers)
-                    selected_ids = {
-                        item.get("evidence_id", "") for item in selected
-                    }
+                    if seed_ids:
+                        expanded_records = session.run(
+                            f"""
+                            MATCH (seed:GraphEvidence {{run_id: $run_id}})
+                            WHERE seed.evidence_id IN $seed_ids
+                            MATCH path = (seed)-[
+                                :REPRESENTS|EVIDENCE_SOURCE|EVIDENCE_TARGET|
+                                 MENTIONS_ENTITY|EXTRACTED_RELATION*1..{graph_hops}
+                            ]-(candidate:GraphEvidence {{run_id: $run_id}})
+                            WHERE candidate.evidence_id NOT IN $seed_ids
+                            WITH candidate, min(length(path)) AS distance
+                            RETURN candidate {{
+                                .evidence_id, .kind, .name, .source, .target, .text,
+                                .source_pages, .source_chunk_numbers, .source_documents,
+                                .source_references_json
+                            }} AS evidence, distance
+                            ORDER BY distance, candidate.evidence_id
+                            LIMIT $top_k
+                            """,
+                            run_id=run_id,
+                            seed_ids=seed_ids,
+                            top_k=retrieval_top_k,
+                        ).data()
+                    else:
+                        expanded_records = []
+                    selected_ids = {item.get("evidence_id", "") for item in selected}
+                    related_evidence = [
+                        _expanded_evidence(record["evidence"])
+                        for record in expanded_records
+                        if isinstance(record.get("evidence"), dict)
+                    ]
                     selected.extend(
-                        item for item in source_chunks
+                        item for item in related_evidence
                         if item.get("evidence_id", "") not in selected_ids
                     )
                     selected_ids = {item.get("evidence_id", "") for item in selected}
-                    related_entities = session.run(
-                        """
-                        MATCH (entity:GraphEvidence {run_id: $run_id, kind: '實體'})
-                        WHERE (
-                            entity.name IN $names OR any(
-                                number IN coalesce(entity.source_chunk_numbers, [])
-                                WHERE number IN $chunk_numbers
-                            )
-                        )
-                        RETURN entity {
-                            .evidence_id, .kind, .name, .source, .target, .text,
-                            .source_pages, .source_chunk_numbers, .source_documents,
-                            .source_references_json
-                        } AS evidence
-                        LIMIT $top_k
-                        """,
-                        run_id=run_id,
-                        names=names,
-                        chunk_numbers=chunk_numbers,
-                        top_k=retrieval_top_k,
-                    ).data()
-                    entity_evidence = [
-                        _expanded_evidence(record["evidence"])
-                        for record in related_entities
-                    ]
-                    selected.extend(
-                        item for item in entity_evidence
-                        if item.get("evidence_id", "") not in selected_ids
-                    )
-                    expanded_names = list(dict.fromkeys(
-                        names + [item.get("name", "") for item in entity_evidence]
-                    ))
-                    selected_ids = {item.get("evidence_id", "") for item in selected}
-                    related = session.run(
-                        """
-                        MATCH (relation:GraphEvidence {run_id: $run_id, kind: '關係'})
-                        WHERE (
-                            relation.source IN $names OR relation.target IN $names OR any(
-                                number IN coalesce(relation.source_chunk_numbers, [])
-                                WHERE number IN $chunk_numbers
-                            )
-                        )
-                        RETURN relation {
-                            .evidence_id, .kind, .name, .source, .target, .text,
-                            .source_pages, .source_chunk_numbers, .source_documents,
-                            .source_references_json
-                        } AS evidence
-                        LIMIT $top_k
-                        """,
-                        run_id=run_id,
-                        names=expanded_names,
-                        chunk_numbers=chunk_numbers,
-                        top_k=retrieval_top_k,
-                    ).data()
-                    relation_evidence = [
-                        _expanded_evidence(record["evidence"])
-                        for record in related
-                    ]
-                    selected.extend(
-                        item for item in relation_evidence
-                        if item.get("evidence_id", "") not in selected_ids
-                    )
 
-                    existing_source_chunk_numbers = {
+                    graph_chunk_numbers = list(dict.fromkeys(
                         number
                         for item in selected
-                        if item.get("kind") == "原文"
+                        if item.get("kind") != "原文"
                         for number in item.get("source_chunk_numbers", [])
-                    }
-                    expanded_chunk_numbers = list(dict.fromkeys(
-                        number
-                        for item in [*entity_evidence, *relation_evidence]
-                        for number in item.get("source_chunk_numbers", [])
-                        if number not in existing_source_chunk_numbers
                     ))
-                    second_pass_chunks = fetch_source_chunks(
-                        expanded_chunk_numbers
-                    )
-                    selected_ids = {
-                        item.get("evidence_id", "") for item in selected
-                    }
+                    source_chunks = fetch_source_chunks(graph_chunk_numbers)
                     selected.extend(
-                        item for item in second_pass_chunks
+                        item for item in source_chunks
                         if item.get("evidence_id", "") not in selected_ids
                     )
     except (DriverError, Neo4jError, Neo4jGraphRagError, OSError, ValueError) as exc:
@@ -598,6 +547,34 @@ def _write_graph(
         """,
         run_id=run_id,
         evidence=evidence,
+    ).consume()
+    transaction.run(
+        """
+        MATCH (evidence:GraphEvidence {run_id: $run_id, kind: '實體'})
+        MATCH (entity:ExtractedEntity {run_id: $run_id, name: evidence.name})
+        MERGE (evidence)-[:REPRESENTS]->(entity)
+        """,
+        run_id=run_id,
+    ).consume()
+    transaction.run(
+        """
+        MATCH (evidence:GraphEvidence {run_id: $run_id, kind: '關係'})
+        MATCH (source:ExtractedEntity {run_id: $run_id, name: evidence.source})
+        MATCH (target:ExtractedEntity {run_id: $run_id, name: evidence.target})
+        MERGE (evidence)-[:EVIDENCE_SOURCE]->(source)
+        MERGE (evidence)-[:EVIDENCE_TARGET]->(target)
+        """,
+        run_id=run_id,
+    ).consume()
+    transaction.run(
+        """
+        MATCH (chunk:GraphEvidence {run_id: $run_id, kind: '原文'})
+        UNWIND coalesce(chunk.source_chunk_numbers, []) AS chunk_number
+        MATCH (entity:ExtractedEntity {run_id: $run_id})
+        WHERE chunk_number IN coalesce(entity.source_chunk_numbers, [])
+        MERGE (chunk)-[:MENTIONS_ENTITY]->(entity)
+        """,
+        run_id=run_id,
     ).consume()
     return {
         "entity_count": int(entity_result["count"]) if entity_result else 0,
