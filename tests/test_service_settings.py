@@ -84,6 +84,24 @@ def test_openai_requires_connection_then_only_offers_json_allowlist(monkeypatch,
     assert all(u["choices"] == choices("OpenAI", expected) for u in fetched[7:])
 
 
+def test_default_model_credentials_refresh_after_service_connection(monkeypatch):
+    monkeypatch.setattr(ui, "check_model_connection", lambda *_: None)
+    monkeypatch.setattr(ui, "check_embedding_connection", lambda *_: None)
+    llm = act(service("llm"), "test", key="llm-key")[0]
+    embedding = act(service("embedding"), "test", key="embedding-key")[0]
+
+    credentials = ui.refresh_model_credentials_for_ui(
+        llm, embedding, "gpt-6-luna", "gpt-6-luna", "gpt-6-luna",
+        "gpt-6-luna", "gpt-6-luna", "gpt-6-luna", "text-embedding-3-small",
+    )
+
+    assert credentials == tuple(
+        value
+        for _ in range(6)
+        for value in ("https://api.openai.com/v1", "llm-key")
+    ) + ("https://api.openai.com/v1", "embedding-key")
+
+
 @pytest.mark.parametrize("kind", ["llm", "embedding"])
 def test_switch_preserves_both_profiles_credentials_checks_and_models(monkeypatch, kind):
     monkeypatch.setattr(ui, "check_model_connection", lambda *args: None)

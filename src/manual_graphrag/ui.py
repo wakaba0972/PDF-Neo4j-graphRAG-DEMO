@@ -262,6 +262,25 @@ def resolve_model_credentials_for_ui(
     return base_url, api_key
 
 
+def refresh_model_credentials_for_ui(
+    llm_state: dict[str, Any], embedding_state: dict[str, Any],
+    graph_model: str | None, extraction_model: str | None,
+    evaluation_generation_model: str | None, evaluation_answer_model: str | None,
+    evaluation_judge_model: str | None, answer_model: str | None,
+    embedding_model: str | None,
+) -> tuple[str, ...]:
+    """Refresh every cached model endpoint after service or project settings change."""
+    credentials = [
+        resolve_model_credentials_for_ui(llm_state, model)
+        for model in (
+            graph_model, extraction_model, evaluation_generation_model,
+            evaluation_answer_model, evaluation_judge_model, answer_model,
+        )
+    ]
+    credentials.append(resolve_model_credentials_for_ui(embedding_state, embedding_model))
+    return tuple(value for pair in credentials for value in pair)
+
+
 def render_service_for_ui(state: dict[str, Any]) -> tuple[Any, ...]:
     profile = state["profiles"][state["active"]]
     ollama = state["active"] == "Ollama"
@@ -5197,7 +5216,7 @@ def build_app() -> gr.Blocks:
         )
         generate_evaluation_answers_button.click(
             generate_evaluation_answers_for_ui,
-            inputs=[project_selector, answer_model_endpoint, answer_model_key,
+            inputs=[project_selector, evaluation_model_endpoint, evaluation_model_key,
                     selected_embedding_endpoint, selected_embedding_key,
                     neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
                     evaluation_test_model, evaluation_retrieval_mode,
@@ -5634,7 +5653,7 @@ def build_app() -> gr.Blocks:
             import_project_for_ui, inputs=import_project_file,
             outputs=[project_selector, project_state, project_status],
         )
-        import_project_event.success(
+        import_load_event = import_project_event.success(
             load_project_with_services_for_ui,
             inputs=[project_selector, llm_service_state, embedding_service_state],
             outputs=[*project_load_outputs,
@@ -5751,6 +5770,28 @@ def build_app() -> gr.Blocks:
             graph_llm_model, extraction_llm_model, evaluation_generation_model,
             evaluation_test_model, answer_model, experiment_answer_model,
         ]
+        credential_refresh_inputs = [
+            llm_service_state, embedding_service_state,
+            graph_llm_model, extraction_llm_model, evaluation_generation_model,
+            evaluation_test_model, evaluation_judge_model, answer_model,
+            graph_embedding_model,
+        ]
+        credential_refresh_outputs = [
+            schema_model_endpoint, schema_model_key,
+            extraction_model_endpoint, extraction_model_key,
+            generation_model_endpoint, generation_model_key,
+            evaluation_model_endpoint, evaluation_model_key,
+            evaluation_judge_endpoint, evaluation_judge_key,
+            answer_model_endpoint, answer_model_key,
+            selected_embedding_endpoint, selected_embedding_key,
+        ]
+        for project_load_event in [import_load_event, load_project_event, initialize_project_event]:
+            project_load_event.then(
+                refresh_model_credentials_for_ui,
+                inputs=credential_refresh_inputs,
+                outputs=credential_refresh_outputs,
+                show_progress="hidden",
+            )
         llm_service_outputs = [
             llm_service_state, model_endpoint, api_key, llm_models_table,
             model_test_button, model_list_button, model_connection_status, *llm_model_fields,
@@ -5791,6 +5832,11 @@ def build_app() -> gr.Blocks:
                              experiment_project_global_judge_model,
                              *[row[1] for row in experiment_group_rows]],
                     show_progress="hidden",
+                ).then(
+                    refresh_model_credentials_for_ui,
+                    inputs=credential_refresh_inputs,
+                    outputs=credential_refresh_outputs,
+                    show_progress="hidden",
                 )
         all_connection_test_event = one_click_connection_test_button.click(
             test_all_connections_for_ui,
@@ -5822,6 +5868,11 @@ def build_app() -> gr.Blocks:
                      experiment_project_cross_judge_model,
                      experiment_project_global_judge_model,
                      *[row[1] for row in experiment_group_rows]],
+            show_progress="hidden",
+        ).then(
+            refresh_model_credentials_for_ui,
+            inputs=credential_refresh_inputs,
+            outputs=credential_refresh_outputs,
             show_progress="hidden",
         )
         for field, endpoint_state, key_state in [
@@ -5885,6 +5936,12 @@ def build_app() -> gr.Blocks:
         )
         reload_reset_event = reload_event.then(
             lambda: False, outputs=neo4j_connected_state, show_progress="hidden",
+        )
+        reload_reset_event.then(
+            refresh_model_credentials_for_ui,
+            inputs=credential_refresh_inputs,
+            outputs=credential_refresh_outputs,
+            show_progress="hidden",
         )
         reload_reset_event.then(
             workflow_tabs_for_ui, inputs=access_inputs, outputs=protected_tabs,
