@@ -102,6 +102,23 @@ def test_default_model_credentials_refresh_after_service_connection(monkeypatch)
     ) + ("https://api.openai.com/v1", "embedding-key")
 
 
+def test_experiment_llm_credentials_are_isolated_from_0_series_settings(monkeypatch):
+    monkeypatch.setattr(ui, "check_model_connection", lambda *_: None)
+    experiment = service("experiment_llm")
+    tested = act(
+        experiment, "test", base="https://experiment.example/v1", key="experiment-secret",
+    )[0]
+
+    assert tested["kind"] == "experiment_llm"
+    assert tested["profiles"]["OpenAI"]["api_key"] == "experiment-secret"
+    assert tested["profiles"]["OpenAI"]["base_url"] == "https://experiment.example/v1"
+    assert settings.load_service_settings("llm")["profiles"]["OpenAI"]["api_key"] == ""
+    assert settings.load_service_settings("llm")["profiles"]["OpenAI"]["base_url"] == "https://api.openai.com/v1"
+    assert settings.load_service_settings("experiment_llm")["profiles"]["OpenAI"]["api_key"] == "experiment-secret"
+    experiment_profile = settings.load_service_settings("experiment_llm")["profiles"]["OpenAI"]
+    assert experiment_profile["base_url"] == "https://experiment.example/v1"
+
+
 @pytest.mark.parametrize("kind", ["llm", "embedding"])
 def test_switch_preserves_both_profiles_credentials_checks_and_models(monkeypatch, kind):
     monkeypatch.setattr(ui, "check_model_connection", lambda *args: None)

@@ -321,7 +321,8 @@ def service_action_for_ui(
     try:
         if action == "test" and state["active"] in {"OpenAI", "Voyage"}:
             provider_name = state["active"]
-            allowed = configured_models(state["kind"], provider_name)
+            settings_kind = "llm" if state["kind"] == "experiment_llm" else state["kind"]
+            allowed = configured_models(settings_kind, provider_name)
             profile["connected"] = False
             if provider_name == "Voyage":
                 check_embedding_connection(profile["base_url"], profile["api_key"], allowed[0])
@@ -330,7 +331,7 @@ def service_action_for_ui(
             profile["connected"] = True
             default_model = (
                 DEFAULT_LLM_MODEL
-                if state["kind"] == "llm" and DEFAULT_LLM_MODEL in allowed
+                if state["kind"] in {"llm", "experiment_llm"} and DEFAULT_LLM_MODEL in allowed
                 else allowed[0]
             )
             profile["models"] = [
@@ -355,6 +356,16 @@ def service_action_for_ui(
         except OSError:
             profile["status"] += "；服務設定保存失敗。"
         return render_service_for_ui(state)
+
+
+def experiment_service_action_for_ui(
+    action: str, provider: str, state: dict[str, Any], base_url: str, api_key: str,
+    rows: list[list[Any]],
+) -> tuple[Any, ...]:
+    """Update the isolated 1-series LLM service without touching 0-series settings."""
+    models = list(state["profiles"][state["active"]]["models"])
+    rendered = service_action_for_ui(action, provider, state, base_url, api_key, rows, *models)
+    return (*rendered[:7], gr.update(visible=state["active"] != "Ollama"))
 
 
 def load_project_with_services_for_ui(
@@ -1092,7 +1103,7 @@ def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
         gr.update(choices=_built_project_choices(), value=[]), status,
         [], {}, "請先在 1-0 載入實驗專案。",
         gr.update(choices=[], value=None), [], "請選擇成員專案。",
-        *_inline_group_updates([], _configured_service_choice_items(load_service_settings("llm"))),
+        *_inline_group_updates([], _configured_service_choice_items(load_service_settings("experiment_llm"))),
         "實驗組設定會自動儲存。", DEFAULT_MAX_CONCURRENT_REQUESTS,
         [], [], [], [], "實驗專案已刪除。",
         "實驗專案已刪除，請先載入或建立實驗專案。",
@@ -1217,11 +1228,13 @@ def refresh_experiment_project_questions_for_ui(
 
 
 def load_experiment_project_setup_for_ui(
-    project: dict[str, Any] | None,
+    project: dict[str, Any] | None, experiment_llm_state: dict[str, Any] | None = None,
 ) -> tuple[Any, ...]:
     groups = (project or {}).get("groups", [])
     group_slots = _inline_group_updates(
-        groups, _configured_service_choice_items(load_service_settings("llm")),
+        groups, _configured_service_choice_items(
+            experiment_llm_state or load_service_settings("experiment_llm")
+        ),
     )
     return (
         *group_slots,
@@ -1233,10 +1246,10 @@ def load_experiment_project_setup_for_ui(
 
 
 def load_experiment_project_runtime_state_for_ui(
-    project: dict[str, Any] | None,
+    project: dict[str, Any] | None, experiment_llm_state: dict[str, Any] | None = None,
 ) -> tuple[Any, Any, int, list[dict[str, Any]], list[dict[str, Any]], Any, str]:
     project = project or {}
-    llm_settings = load_service_settings("llm")
+    llm_settings = experiment_llm_state or load_service_settings("experiment_llm")
     choices = _model_choices_with_fallback(
         _configured_service_choice_items(llm_settings), DEFAULT_LLM_MODEL,
     )
@@ -1894,7 +1907,8 @@ def _configured_service_choice_items(state: dict[str, Any]) -> list[tuple[str, s
             ))
         else:
             try:
-                models = configured_models(state.get("kind", "llm"), provider)
+                kind = state.get("kind", "llm")
+                models = configured_models("llm" if kind == "experiment_llm" else kind, provider)
             except ValueError:
                 models = []
         suffix = "" if profile.get("connected") else "（尚未測試連線）"
@@ -4457,6 +4471,7 @@ def _current_project_banner(project: dict[str, Any]) -> str:
 def build_app() -> gr.Blocks:
     env = load_env()
     llm_settings = load_service_settings("llm", env)
+    experiment_llm_settings = load_service_settings("experiment_llm", env)
     embedding_settings = load_service_settings("embedding", env)
     llm_choices = _model_choices_with_fallback(
         service_choice_items(llm_settings), DEFAULT_LLM_MODEL,
@@ -4470,7 +4485,7 @@ def build_app() -> gr.Blocks:
     embedding_profile = embedding_settings["profiles"][embedding_settings["active"]]
     preferred_llm = DEFAULT_LLM_MODEL
     experiment_llm_choices = _model_choices_with_fallback(
-        _configured_service_choice_items(llm_settings), DEFAULT_LLM_MODEL,
+        _configured_service_choice_items(experiment_llm_settings), DEFAULT_LLM_MODEL,
     )
     experiment_default_llm = DEFAULT_LLM_MODEL
     project_choices = _project_choices()
@@ -4488,6 +4503,7 @@ def build_app() -> gr.Blocks:
         )
         current_project_banner = gr.Markdown(_current_project_banner({}))
         llm_service_state = gr.State(llm_settings)
+        experiment_llm_service_state = gr.State(experiment_llm_settings)
         embedding_service_state = gr.State(embedding_settings)
         project_state = gr.State({})
         documents_state = gr.State([])
@@ -5111,13 +5127,38 @@ def build_app() -> gr.Blocks:
             )
 
         with gr.Tab("1-1 成員專案連線測試", interactive=True) as experiment_connection_tab:
-            gr.Markdown("使用 0-1 的 Neo4j URI／帳密，逐一測試實驗專案內各成員專案自己的 Database。")
+            gr.Markdown("使用 0-1 的 Neo4j URI／帳密，逐一測試實驗專案內各成員專案自己的 Database；下方回答模型服務設定則與 0-1 分開保存。")
             test_experiment_connections_button = gr.Button("測試所有成員專案連線", variant="primary")
             experiment_connection_status = gr.Markdown("請先在 1-0 載入實驗專案。")
             experiment_connection_table = gr.Dataframe(
                 headers=["專案", "專案 ID", "Neo4j Database", "連線結果"],
                 datatype=["str", "str", "str", "str"], interactive=False, wrap=True,
             )
+            gr.Markdown("#### 實驗專案回答模型服務（獨立於 0-1）")
+            experiment_llm_profile = experiment_llm_settings["profiles"][experiment_llm_settings["active"]]
+            with gr.Row():
+                experiment_llm_provider = gr.Dropdown(
+                    choices=["OpenAI", "Ollama"], value=experiment_llm_settings["active"],
+                    label="服務提供者",
+                )
+                experiment_llm_endpoint = gr.Textbox(
+                    value=experiment_llm_profile["base_url"], label="API Base URL",
+                )
+                experiment_llm_api_key = gr.Textbox(
+                    value=experiment_llm_profile["api_key"], label="API Key", type="password",
+                )
+            with gr.Row():
+                experiment_llm_test_button = gr.Button("測試模型連線", variant="primary")
+                experiment_llm_fetch_button = gr.Button("取得 Ollama 模型清單")
+            experiment_llm_models_table = gr.Dataframe(
+                headers=["使用", "模型名稱"], datatype=["bool", "str"],
+                value=experiment_llm_profile["rows"], interactive=True,
+                visible=experiment_llm_settings["active"] == "Ollama", row_count=(1, "dynamic"),
+            )
+            experiment_llm_openai_info = gr.Markdown(
+                "OpenAI 模型採用系統允許清單。", visible=experiment_llm_settings["active"] != "Ollama",
+            )
+            experiment_llm_connection_status = gr.Markdown(experiment_llm_profile["status"])
 
         with gr.Tab("1-2 問題集準備", interactive=True) as experiment_questions_tab:
             gr.Markdown("為實驗專案中的每個成員專案分別匯入問題集；題目會在該專案自己的圖譜上檢索與評測。")
@@ -5568,7 +5609,7 @@ def build_app() -> gr.Blocks:
         )
         experiment_project_test_tab.select(
             load_experiment_project_setup_for_ui,
-            inputs=[experiment_project_state],
+            inputs=[experiment_project_state, experiment_llm_service_state],
             outputs=[
                 *experiment_project_group_all_components,
                 experiment_project_max_concurrency, experiment_project_summary_table,
@@ -5577,14 +5618,14 @@ def build_app() -> gr.Blocks:
             ],
         ).then(
             load_experiment_project_runtime_state_for_ui,
-            inputs=[experiment_project_state],
+            inputs=[experiment_project_state, experiment_llm_service_state],
             outputs=[experiment_project_global_judge_model, experiment_project_judge_effort,
                      experiment_project_judge_concurrency, experiment_project_pending_answers_state,
                      experiment_project_results_state, evaluate_experiment_project_button,
                      experiment_project_answers_status],
         ).then(
             refresh_experiment_model_choices_for_ui,
-            inputs=[llm_service_state,
+            inputs=[experiment_llm_service_state,
                     *[row[1] for row in experiment_project_group_rows],
                     experiment_project_global_judge_model],
             outputs=[*[row[1] for row in experiment_project_group_rows],
@@ -5593,7 +5634,7 @@ def build_app() -> gr.Blocks:
         )
         add_experiment_project_group_button.click(
             add_experiment_project_inline_group_for_ui,
-            inputs=[experiment_project_state, llm_service_state,
+            inputs=[experiment_project_state, experiment_llm_service_state,
                     *experiment_project_group_fields],
             outputs=[
                 *experiment_project_group_all_components,
@@ -5610,7 +5651,7 @@ def build_app() -> gr.Blocks:
         for row_index, row in enumerate(experiment_project_group_rows):
             row[-1].click(
                 partial(remove_experiment_project_inline_group_for_ui, row_index),
-                inputs=[experiment_project_state, llm_service_state,
+                inputs=[experiment_project_state, experiment_llm_service_state,
                         *experiment_project_group_fields],
                 outputs=[*experiment_project_group_all_components,
                          experiment_project_state, experiment_project_groups_status],
@@ -5645,7 +5686,7 @@ def build_app() -> gr.Blocks:
             generate_experiment_project_answers_for_ui,
             inputs=[
                 experiment_project_state, experiment_project_max_concurrency,
-                llm_service_state, selected_embedding_endpoint, selected_embedding_key,
+                experiment_llm_service_state, selected_embedding_endpoint, selected_embedding_key,
                 neo4j_uri, neo4j_username, neo4j_password,
                 experiment_project_run_control_state,
             ],
@@ -5665,7 +5706,7 @@ def build_app() -> gr.Blocks:
             evaluate_experiment_project_answers_for_ui,
             inputs=[experiment_project_state, experiment_project_pending_answers_state,
                     experiment_project_global_judge_model, experiment_project_judge_effort,
-                    experiment_project_judge_concurrency, llm_service_state,
+                    experiment_project_judge_concurrency, experiment_llm_service_state,
                     experiment_project_run_control_state],
             outputs=[experiment_project_test_status, experiment_project_results_state,
                      experiment_project_summary_table, experiment_project_details_table,
@@ -5922,13 +5963,9 @@ def build_app() -> gr.Blocks:
                     refresh_experiment_model_choices_for_ui,
                     inputs=[llm_service_state, evaluation_judge_model,
                             experiment_judge_model,
-                            experiment_project_global_judge_model,
-                            *[row[1] for row in experiment_project_group_rows],
                             *[row[1] for row in experiment_group_rows]],
                     outputs=[evaluation_judge_model,
                              experiment_judge_model,
-                             experiment_project_global_judge_model,
-                             *[row[1] for row in experiment_project_group_rows],
                              *[row[1] for row in experiment_group_rows]],
                     show_progress="hidden",
                 ).then(
@@ -5937,6 +5974,49 @@ def build_app() -> gr.Blocks:
                     outputs=credential_refresh_outputs,
                     show_progress="hidden",
                 )
+        experiment_llm_service_outputs = [
+            experiment_llm_service_state, experiment_llm_endpoint, experiment_llm_api_key,
+            experiment_llm_models_table, experiment_llm_test_button,
+            experiment_llm_fetch_button, experiment_llm_connection_status,
+            experiment_llm_openai_info,
+        ]
+        experiment_service_inputs = [
+            experiment_llm_provider, experiment_llm_service_state,
+            experiment_llm_endpoint, experiment_llm_api_key, experiment_llm_models_table,
+        ]
+        experiment_service_events = [
+            experiment_llm_provider.input(
+                partial(experiment_service_action_for_ui, "switch"),
+                inputs=experiment_service_inputs, outputs=experiment_llm_service_outputs,
+                concurrency_id="experiment-service-settings",
+            ),
+            experiment_llm_test_button.click(
+                partial(experiment_service_action_for_ui, "test"),
+                inputs=experiment_service_inputs, outputs=experiment_llm_service_outputs,
+                concurrency_id="experiment-service-settings",
+            ),
+            experiment_llm_fetch_button.click(
+                partial(experiment_service_action_for_ui, "fetch"),
+                inputs=experiment_service_inputs, outputs=experiment_llm_service_outputs,
+                concurrency_id="experiment-service-settings",
+            ),
+        ]
+        for component in [experiment_llm_endpoint, experiment_llm_api_key, experiment_llm_models_table]:
+            experiment_service_events.append(component.input(
+                partial(experiment_service_action_for_ui, "edit"),
+                inputs=experiment_service_inputs, outputs=experiment_llm_service_outputs,
+                show_progress="hidden", concurrency_id="experiment-service-settings",
+            ))
+        for event in experiment_service_events:
+            event.then(
+                refresh_experiment_model_choices_for_ui,
+                inputs=[experiment_llm_service_state,
+                        *[row[1] for row in experiment_project_group_rows],
+                        experiment_project_global_judge_model],
+                outputs=[*[row[1] for row in experiment_project_group_rows],
+                         experiment_project_global_judge_model],
+                show_progress="hidden",
+            )
         all_connection_test_event = one_click_connection_test_button.click(
             test_all_connections_for_ui,
             inputs=[
@@ -5959,13 +6039,9 @@ def build_app() -> gr.Blocks:
             refresh_experiment_model_choices_for_ui,
             inputs=[llm_service_state, evaluation_judge_model,
                     experiment_judge_model,
-                    experiment_project_global_judge_model,
-                    *[row[1] for row in experiment_project_group_rows],
                     *[row[1] for row in experiment_group_rows]],
             outputs=[evaluation_judge_model,
                      experiment_judge_model,
-                     experiment_project_global_judge_model,
-                     *[row[1] for row in experiment_project_group_rows],
                      *[row[1] for row in experiment_group_rows]],
             show_progress="hidden",
         ).then(

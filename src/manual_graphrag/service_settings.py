@@ -13,8 +13,12 @@ from .env_store import load_env, save_env
 
 
 MODEL_SETTINGS_PATH = Path("config/model_settings.yaml")
-MODEL_COUNTS = {"llm": 6, "embedding": 1}
-PROVIDERS_BY_KIND = {"llm": ("OpenAI", "Ollama"), "embedding": ("OpenAI", "Ollama", "Voyage")}
+MODEL_COUNTS = {"llm": 6, "experiment_llm": 6, "embedding": 1}
+PROVIDERS_BY_KIND = {
+    "llm": ("OpenAI", "Ollama"),
+    "experiment_llm": ("OpenAI", "Ollama"),
+    "embedding": ("OpenAI", "Ollama", "Voyage"),
+}
 _SETTINGS_LOCK = RLock()
 DEFAULT_OPENAI_MODELS = {
     "llm": ["gpt-4.1-mini", "gpt-4o-mini", "gpt-6-luna"],
@@ -29,6 +33,7 @@ DEFAULT_VOYAGE_MODELS = [
 ]
 DEFAULT_SELECTIONS = {
     "llm": ["gpt-6-luna"] * 6,
+    "experiment_llm": ["gpt-6-luna"] * 6,
     "embedding": ["text-embedding-3-small"],
 }
 
@@ -124,7 +129,10 @@ def preferred_service_model(state: dict[str, Any]) -> str | None:
 
 
 def _credentials(env: dict[str, str], kind: str, provider: str) -> tuple[str, str]:
-    prefix = "MODEL" if kind == "llm" else "EMBEDDING"
+    prefix = (
+        "EXPERIMENT_MODEL" if kind == "experiment_llm"
+        else ("MODEL" if kind == "llm" else "EMBEDDING")
+    )
     provider_key = provider.upper()
     return env[f"{prefix}_{provider_key}_API_BASE"], env[f"{prefix}_{provider_key}_API_KEY"]
 
@@ -135,7 +143,9 @@ def load_service_settings(kind: str, env: dict[str, str] | None = None) -> dict[
     env = load_env() if env is None else env
     document = _load_document()
     try:
-        saved = document["services"][kind]
+        saved = (document.get("services") or {}).get(kind)
+        if saved is None:
+            saved = _default_document()["services"][kind]
         active = saved["active"]
         if active not in PROVIDERS_BY_KIND[kind]:
             raise ValueError()
@@ -165,7 +175,8 @@ def provider_models(state: dict[str, Any], provider: str) -> list[str]:
     if not profile["connected"]:
         return []
     if provider in {"OpenAI", "Voyage"}:
-        return configured_models(state["kind"], provider)
+        kind = "llm" if state["kind"] == "experiment_llm" else state["kind"]
+        return configured_models(kind, provider)
     return list(dict.fromkeys(row[1] for row in profile["rows"] if row[0]))
 
 
@@ -202,7 +213,10 @@ def save_service_settings(state: dict[str, Any]) -> None:
             },
         }
         _save_document(document)
-        prefix = "MODEL" if kind == "llm" else "EMBEDDING"
+        prefix = (
+            "EXPERIMENT_MODEL" if kind == "experiment_llm"
+            else ("MODEL" if kind == "llm" else "EMBEDDING")
+        )
         connection_values = {}
         for provider, profile in state["profiles"].items():
             provider_key = provider.upper()
