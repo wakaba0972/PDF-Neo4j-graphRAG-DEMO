@@ -30,7 +30,7 @@ def test_delete_experiment_project_ui_clears_selected_workspace(monkeypatch) -> 
     result = ui.delete_experiment_project_for_ui("a")
 
     assert deleted == ["a"]
-    assert len(result) == 18
+    assert len(result) == 11 + ui.EXPERIMENT_GROUP_LIMIT * 8 + 9
     assert result[0]["choices"] == [("實驗 B", "b")]
     assert result[0]["value"] is None
     assert result[1] == {}
@@ -39,9 +39,10 @@ def test_delete_experiment_project_ui_clears_selected_workspace(monkeypatch) -> 
     assert "實驗專案「實驗 A」" in result[4]
     assert "不受影響" in result[4]
     assert result[5] == [] and result[6] == {}
-    assert result[9] == [] and result[11] == []
-    assert result[13] == [] and result[14] == []
-    assert result[17] is False
+    assert result[9] == []
+    assert result[107] == "實驗組設定會自動儲存。"
+    assert result[-1]["value"] == "開始評測"
+    assert result[-1]["interactive"] is False
 
 
 def test_cancel_experiment_project_deletion_does_not_clear_or_delete(monkeypatch) -> None:
@@ -51,12 +52,13 @@ def test_cancel_experiment_project_deletion_does_not_clear_or_delete(monkeypatch
     result = ui.delete_experiment_project_for_ui(True)
 
     assert deleted == []
-    assert len(result) == 18
+    assert len(result) == 11 + ui.EXPERIMENT_GROUP_LIMIT * 8 + 9
     assert all(
         isinstance(value, dict) and value.get("__type__") == "update"
-        for index, value in enumerate(result) if index != 4
+        for index, value in enumerate(result) if index not in {4, 107}
     )
     assert "沒有刪除任何資料" in result[4]
+    assert "沒有刪除任何資料" in result[107]
 
 
 def test_experiment_project_delete_button_requires_confirmation() -> None:
@@ -115,6 +117,8 @@ def test_model_fields_only_offer_initially_checked_models() -> None:
         for display, value in field["props"]["choices"]:
             assert display in {
                 f"OpenAI｜{value}", f"Ollama｜{value}",
+                f"OpenAI｜{value}（尚未測試連線）",
+                f"Ollama｜{value}（尚未測試連線）",
                 f"OpenAI｜{value}（目前不可用）" if value == "gpt-6-luna" else "",
             }
 
@@ -1968,7 +1972,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         ]
         and component.get("type") == "dropdown"
         for component in components
-    ) == ui.EXPERIMENT_GROUP_LIMIT + 1
+    ) == ui.EXPERIMENT_GROUP_LIMIT * 2
     assert sum(
         component.get("props", {}).get("label") == "全域評測模型"
         and component.get("type") == "dropdown"
@@ -1995,7 +1999,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         item for item in components if item.get("props", {}).get("value") == "#### 實驗組摘要"
     )
     assert question_table["id"] < answer_heading["id"] < judge_heading["id"] < summary_heading["id"]
-    evaluate_button = next(item for item in components if item.get("props", {}).get("value") == "進行評測")
+    evaluate_button = next(item for item in components if item.get("props", {}).get("value") == "開始評測")
     assert evaluate_button["props"]["interactive"] is False
     assert "evaluation-judge-button" in evaluate_button["props"]["elem_classes"]
     result_table = next(
@@ -3214,16 +3218,21 @@ def test_experiment_project_banner_uses_experiment_name():
 def test_experiment_project_model_dropdowns_have_distinct_configured_choices():
     app = ui.build_app()
     components = app.config["components"]
-    target_labels = {
-        "跨專案回答模型", "跨專案評測模型", "全域評測模型",
-    }
-    selectors = [
+    judge_selectors = [
         item for item in components
-        if item.get("props", {}).get("label") in target_labels
+        if item.get("props", {}).get("label") == "全域評測模型"
     ]
-    assert {item["props"]["label"] for item in selectors} == target_labels
-    assert len({item["id"] for item in selectors}) == len(selectors)
-    assert all(item["props"].get("choices") for item in selectors)
+    inline_answer_selectors = [
+        item for item in components
+        if item.get("type") == "dropdown"
+        and item.get("props", {}).get("choices")
+        and item.get("props", {}).get("label") == "回答模型"
+        and item.get("props", {}).get("visible") is False
+    ]
+    assert len(judge_selectors) == 2
+    assert len(inline_answer_selectors) == ui.EXPERIMENT_GROUP_LIMIT * 2
+    assert len({item["id"] for item in [*judge_selectors, *inline_answer_selectors]}) == len(judge_selectors) + len(inline_answer_selectors)
+    assert all(item["props"].get("choices") for item in [*judge_selectors, *inline_answer_selectors])
 
 
 def test_add_experiment_project_group_uses_sequential_default_name(tmp_path, monkeypatch):
@@ -3234,6 +3243,69 @@ def test_add_experiment_project_group_uses_sequential_default_name(tmp_path, mon
     )
     assert experiment["groups"][0]["name"] == "實驗組 1"
     assert next_name == {"value": "實驗組 2", "__type__": "update"}
+
+
+def test_experiment_project_inline_groups_add_edit_and_remove(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_experiment_project("跨專案逐列設定")
+    llm_state = settings.load_service_settings("llm")
+    empty_values = ui._inline_group_values([])
+
+    added = ui.add_experiment_project_inline_group_for_ui(
+        project, llm_state, *empty_values,
+    )
+    project = added[-2]
+    assert len(added) == ui.EXPERIMENT_GROUP_LIMIT * 8 + 2
+    assert project["groups"][0]["name"] == "實驗組 1"
+    assert project["groups"][0]["answer_model"] == ui.DEFAULT_LLM_MODEL
+    assert "已自動儲存" in added[-1]
+
+    edited_values = ui._inline_group_values(project["groups"])
+    edited_values[4] = 12
+    project, status = ui.save_experiment_project_inline_groups_for_ui(
+        project, *edited_values,
+    )
+    assert project["groups"][0]["top_k"] == 12
+    assert "自動儲存" in status
+
+    removed = ui.remove_experiment_project_inline_group_for_ui(
+        0, project, llm_state, *edited_values,
+    )
+    assert removed[-2]["groups"] == []
+    assert "已移除實驗組「實驗組 1」" in removed[-1]
+
+
+def test_experiment_project_page_uses_inline_group_layout_and_start_evaluation_button():
+    app = build_app()
+    components = app.config["components"]
+    headings = [
+        item for item in components
+        if item.get("props", {}).get("value")
+        == "#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）"
+    ]
+    assert len(headings) == 2
+    buttons = [
+        item for item in components
+        if item.get("props", {}).get("value") == "開始評測"
+    ]
+    assert len(buttons) == 1
+    assert buttons[0]["props"]["interactive"] is False
+    remove_buttons = [
+        item for item in components
+        if item.get("props", {}).get("value") == "移除"
+        and item.get("props", {}).get("visible") is False
+    ]
+    assert len(remove_buttons) == ui.EXPERIMENT_GROUP_LIMIT * 2
+    assert not any(
+        item.get("props", {}).get("label") == "移除實驗組"
+        or item.get("props", {}).get("headers") == [
+            "實驗組", "回答模型", "檢索策略", "Top K", "Reranker", "證據擴展",
+        ]
+        for item in components
+    )
+    runtime = ui.load_experiment_project_runtime_state_for_ui({"pending_answers": []})
+    assert runtime[5]["interactive"] is False
+    assert "value" not in runtime[5]
 
 
 def test_multi_project_experiment_runs_each_projects_own_database(tmp_path, monkeypatch):
