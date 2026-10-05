@@ -117,6 +117,18 @@ def reasoning_effort_visibility(model: str | None) -> dict[str, Any]:
     )
 
 
+def experiment_group_reasoning_effort_visibility(
+    model: str | None, group_name: str | None,
+) -> dict[str, Any]:
+    return gr.update(
+        visible=(
+            bool(str(group_name or "").strip())
+            and str(model or "").strip().casefold() == GPT_6_LUNA_MODEL
+        ),
+        value=DEFAULT_REASONING_EFFORT,
+    )
+
+
 def _reasoning_effort_kwargs(model: str | None, effort: str | None) -> dict[str, str]:
     if str(model or "").strip().casefold() != GPT_6_LUNA_MODEL:
         return {}
@@ -5605,7 +5617,8 @@ def build_app() -> gr.Blocks:
                 show_progress="hidden",
             )
             row[1].change(
-                reasoning_effort_visibility, inputs=row[1], outputs=row[2],
+                experiment_group_reasoning_effort_visibility,
+                inputs=[row[1], row[0]], outputs=row[2],
                 show_progress="hidden",
             )
         experiment_project_global_judge_model.input(
@@ -5989,12 +6002,14 @@ def build_app() -> gr.Blocks:
             )
         for row in experiment_project_group_rows:
             row[1].change(
-                reasoning_effort_visibility, inputs=row[1], outputs=row[2],
+                experiment_group_reasoning_effort_visibility,
+                inputs=[row[1], row[0]], outputs=row[2],
                 show_progress="hidden",
             )
         for row in experiment_group_rows:
             row[1].change(
-                reasoning_effort_visibility, inputs=row[1], outputs=row[2],
+                experiment_group_reasoning_effort_visibility,
+                inputs=[row[1], row[0]], outputs=row[2],
                 show_progress="hidden",
             )
         graph_embedding_model.change(

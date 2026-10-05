@@ -1674,6 +1674,12 @@ def test_luna_reasoning_controls_are_visible_only_for_luna_and_default_low() -> 
     assert ui.reasoning_effort_visibility("gpt-4o-mini")["visible"] is False
 
 
+def test_empty_experiment_group_hides_luna_reasoning_effort_control() -> None:
+    assert ui.experiment_group_reasoning_effort_visibility("gpt-6-luna", "")["visible"] is False
+    assert ui.experiment_group_reasoning_effort_visibility("gpt-6-luna", "實驗組 1")["visible"] is True
+    assert ui.experiment_group_reasoning_effort_visibility("gpt-4o-mini", "實驗組 1")["visible"] is False
+
+
 def test_model_selection_dynamically_toggles_reasoning_effort_control() -> None:
     app = build_app()
     components = app.config["components"]
