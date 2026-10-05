@@ -187,6 +187,7 @@ def search_graph_evidence(
     candidate_top_k: int | None = None,
     expand_evidence: bool = True,
     graph_hops: int = 4,
+    expansion_mode: str = "證據擴展 V2",
 ) -> list[dict[str, Any]]:
     try:
         graph_hops = int(graph_hops)
@@ -288,7 +289,65 @@ def search_graph_evidence(
                         ))
                         return chunks[:retrieval_top_k]
 
-                    if seed_ids:
+                    if expansion_mode == "證據擴展":
+                        # Legacy behavior: one lookup by entity name / shared
+                        # chunk numbers, followed by source-chunk recovery.
+                        chunk_numbers = sorted({
+                            number for item in selected
+                            for number in item.get("source_chunk_numbers", [])
+                        })
+                        names = list(dict.fromkeys(
+                            item.get("name", "") for item in selected
+                            if item.get("kind") == "實體" and item.get("name")
+                        ))
+                        graph_chunk_numbers = list(dict.fromkeys(
+                            number for item in selected if item.get("kind") != "原文"
+                            for number in item.get("source_chunk_numbers", [])
+                        ))
+                        source_chunks = fetch_source_chunks(graph_chunk_numbers)
+                        related_records = session.run(
+                            """
+                            MATCH (candidate:GraphEvidence {run_id: $run_id})
+                            WHERE candidate.kind IN ['實體', '關係'] AND (
+                                candidate.name IN $names OR candidate.source IN $names
+                                OR candidate.target IN $names OR any(
+                                    number IN coalesce(candidate.source_chunk_numbers, [])
+                                    WHERE number IN $chunk_numbers
+                                )
+                            )
+                            RETURN candidate {
+                                .evidence_id, .kind, .name, .source, .target, .text,
+                                .source_pages, .source_chunk_numbers, .source_documents,
+                                .source_references_json
+                            } AS evidence
+                            LIMIT $top_k
+                            """,
+                            run_id=run_id,
+                            names=names,
+                            chunk_numbers=chunk_numbers,
+                            top_k=retrieval_top_k,
+                        ).data()
+                        selected_ids = {item.get("evidence_id", "") for item in selected}
+                        legacy_related = [
+                            _expanded_evidence(record["evidence"])
+                            for record in related_records
+                            if isinstance(record.get("evidence"), dict)
+                        ]
+                        selected.extend(
+                            item for item in [*legacy_related, *source_chunks]
+                            if item.get("evidence_id", "") not in selected_ids
+                        )
+                        selected_ids = {item.get("evidence_id", "") for item in selected}
+                        related_chunk_numbers = list(dict.fromkeys(
+                            number for item in legacy_related
+                            for number in item.get("source_chunk_numbers", [])
+                        ))
+                        selected.extend(
+                            item for item in fetch_source_chunks(related_chunk_numbers)
+                            if item.get("evidence_id", "") not in selected_ids
+                        )
+                        expanded_records = []
+                    elif seed_ids:
                         expanded_records = session.run(
                             f"""
                             MATCH (seed:GraphEvidence {{run_id: $run_id}})

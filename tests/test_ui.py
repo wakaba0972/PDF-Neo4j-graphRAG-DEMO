@@ -235,7 +235,7 @@ def test_all_concurrency_inputs_show_ollama_recommendation() -> None:
         if "最大並行請求數" in str(component.get("props", {}).get("label", ""))
     ]
 
-    assert len(concurrency_inputs) == 7
+    assert len(concurrency_inputs) == 8
     assert all(
         component["props"].get("info") == ui.OLLAMA_CONCURRENCY_HINT
         for component in concurrency_inputs
@@ -247,10 +247,10 @@ def test_reranker_and_graph_evidence_expansion_default_off() -> None:
     defaults = {
         component.get("props", {}).get("label"): component.get("props", {}).get("value")
         for component in app.config["components"]
-        if component.get("props", {}).get("label") in {"使用 Reranker", "擴展圖譜證據"}
+        if component.get("props", {}).get("label") in {"使用 LLM Reranker", "證據擴展 V2"}
     }
 
-    assert defaults == {"使用 Reranker": False, "擴展圖譜證據": False}
+    assert defaults == {"使用 LLM Reranker": False, "證據擴展 V2": False}
 
 
 
@@ -452,7 +452,7 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     ]
 
     assert "從 PDF 建立題目與答案" in values
-    assert values.count("檢索並生成回答") == 2
+    assert values.count("檢索並生成回答") == 3
     assert "進行評測" in values
     assert "匯入題目" in values
     assert "儲存題目" not in values
@@ -1530,11 +1530,25 @@ def test_add_experiment_group_for_ui_stores_selected_settings() -> None:
     )
 
     assert status == "✅ 已加入「混合擴展」。"
-    assert rows == [["混合擴展", "model-a", "混合檢索", 12, "是", "是"]]
+    assert rows == [["混合擴展", "model-a", "混合檢索", 12, "Reranker", "證據擴展"]]
     assert groups[0] == {
         "name": "混合擴展", "answer_model": "model-a", "retrieval_mode": "混合檢索",
         "top_k": 12, "use_reranker": True, "expand_evidence": True,
     }
+
+
+def test_inline_groups_round_trip_reranker_and_expansion_versions() -> None:
+    groups = [{
+        "name": "比較組", "answer_model": "model-a",
+        "retrieval_mode": "混合檢索", "top_k": 8,
+        "reranker_mode": "LLM Reranker",
+        "evidence_expansion_mode": "證據擴展 V2",
+        "use_reranker": True, "expand_evidence": True,
+    }]
+
+    restored = ui._groups_from_inline_values(tuple(ui._inline_group_values(groups)))
+
+    assert restored == [groups[0]]
 
 
 def test_inline_experiment_groups_autosave_and_reload(tmp_path, monkeypatch) -> None:
@@ -1560,13 +1574,16 @@ def test_inline_experiment_groups_autosave_and_reload(tmp_path, monkeypatch) -> 
     stored = ui.load_project(project["project_id"])["experiment"]
 
     assert status.startswith("✅")
-    assert saved_groups == groups
-    assert stored["groups"] == groups
-    assert ui.load_project(project["project_id"])["experiment_group_settings"] == groups
+    expected_groups = [{
+        **groups[0], "reranker_mode": "停用", "evidence_expansion_mode": "證據擴展",
+    }]
+    assert saved_groups == expected_groups
+    assert stored["groups"] == expected_groups
+    assert ui.load_project(project["project_id"])["experiment_group_settings"] == expected_groups
     assert stored["questions"] == questions
     assert restored[0] == questions
     assert restored[2] == [{
-        key: value for key, value in groups[0].items()
+        key: value for key, value in expected_groups[0].items()
         if key not in {"judge_model", "judge_reasoning_effort"}
     }]
     assert restored[4] == 3
@@ -1580,8 +1597,8 @@ def test_inline_experiment_groups_autosave_and_reload(tmp_path, monkeypatch) -> 
     assert restored[10]["value"] == "low"
     assert restored[11]["value"] == "基本向量檢索"
     assert restored[12]["value"] == 5
-    assert restored[13]["value"] is False
-    assert restored[14]["value"] is True
+    assert restored[13]["value"] == "停用"
+    assert restored[14]["value"] == "證據擴展"
     assert restored[15]["visible"] is True
     assert restored[8 + ui.EXPERIMENT_GROUP_LIMIT * 8]["value"] == "gpt-6-luna"
 
@@ -1745,7 +1762,7 @@ def test_experiment_answer_progress_updates_the_inline_status_panel() -> None:
 def test_generate_experiment_answers_does_not_judge_or_display(monkeypatch) -> None:
     captured = {}
     monkeypatch.setattr(ui, "resolve_model_credentials_for_ui", lambda *_: ("answer-endpoint", "key"))
-    monkeypatch.setattr(ui, "answer_question_for_ui", lambda *_args: ("✅ 完成", "隱藏答案", []))
+    monkeypatch.setattr(ui, "answer_question_for_ui", lambda *_args, **_kwargs: ("✅ 完成", "隱藏答案", []))
     monkeypatch.setattr(ui, "judge_evaluation_answer", lambda *_args: pytest.fail("回答生成階段不應評測"))
     monkeypatch.setattr(ui, "load_project", lambda _project_id: {"experiment": {}})
     monkeypatch.setattr(ui, "save_project", lambda _project_id, payload: captured.update(payload) or {})
@@ -1787,7 +1804,7 @@ def test_evaluate_experiment_answers_and_manual_edit_recompute_summary(monkeypat
     )
 
     assert status.startswith("✅ 評測完成")
-    assert summaries[0][4:6] == ["1 / 1", "100.0%"]
+    assert summaries[0][6:8] == ["1 / 1", "100.0%"]
     assert details[0][6] is True
     edited = [list(details[0])]
     edited[0][6] = False
@@ -1798,7 +1815,7 @@ def test_evaluate_experiment_answers_and_manual_edit_recompute_summary(monkeypat
     assert "人工評判變更 1 筆" in manual_status
     assert manual_status.startswith("✅ 評測完成｜")
     assert "答對 0 / 1 個實驗題次" in manual_status
-    assert manual_summary[0][4:6] == ["0 / 1", "0.0%"]
+    assert manual_summary[0][6:8] == ["0 / 1", "0.0%"]
     assert manual_details[0][6] is False
     assert updated[0]["reason"] == "人工評判"
     assert saved["experiment"]["results"] == updated
@@ -1896,7 +1913,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         component.get("props", {}).get("label") == "全域評測模型"
         and component.get("type") == "dropdown"
         for component in components
-    ) == 1
+    ) == 2
     assert any(component.get("props", {}).get("value") == "新增實驗組" for component in components)
     answer_heading = next(
         item for item in components
@@ -2032,9 +2049,10 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
     }
     assert payload["groups"][0] == {
         "name": "向量組",
-        "parameters": {
-            "answer_model": "model-a", "retrieval_mode": "基本向量檢索",
-            "top_k": 6, "use_reranker": False, "expand_evidence": True,
+            "parameters": {
+                "answer_model": "model-a", "retrieval_mode": "基本向量檢索",
+                "top_k": 6, "use_reranker": False, "expand_evidence": True,
+                "reranker_mode": "停用", "evidence_expansion_mode": "證據擴展",
         },
         "summary": {
             "answer_model": "model-a", "judge_model": "judge-a",
@@ -2113,7 +2131,7 @@ def test_run_experiment_groups_outputs_each_group_summary_and_details(monkeypatc
         captured["workers"] = max_workers
         return real_executor(max_workers=max_workers)
 
-    def fake_answer(*args):
+    def fake_answer(*args, **kwargs):
         captured["calls"].append(args)
         page = 2 if args[9] == "題目一" else 3
         return "✅ 完成", "實際答案", [[
@@ -2148,15 +2166,17 @@ def test_run_experiment_groups_outputs_each_group_summary_and_details(monkeypatc
 
     assert status.startswith("✅ 已完成 2 個實驗組")
     assert summaries == [
-        ["向量", "model-a", "judge-x", 2, "2 / 2", "100.0%", "100.0%", "100.0%", "1.000"],
-        ["混合擴展", "model-b", "judge-x", 2, "2 / 2", "100.0%", "100.0%", "100.0%", "1.000"],
+        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", "100.0%", "100.0%", "100.0%", "1.000"],
+        ["混合擴展", "model-b", "Reranker", "證據擴展", "judge-x", 2, "2 / 2", "100.0%", "100.0%", "100.0%", "1.000"],
     ]
     assert len(details) == len(results) == 4
     assert captured["workers"] == 2
     assert {call[8] for call in captured["calls"]} == {"model-a", "model-b"}
     assert {call[11] for call in captured["calls"]} == {3, 12}
     assert {item["judge_model"] for item in results} == {"judge-x"}
-    assert saved["experiment"]["summary_rows"][0][1:3] == ["model-a", "judge-x"]
+    assert saved["experiment"]["summary_rows"][0][1:5] == [
+        "model-a", "停用", "停用", "judge-x",
+    ]
     assert saved["experiment"]["judge_model"] == "judge-x"
     assert all("judge_model" not in group for group in saved["experiment"]["groups"])
     assert saved["experiment"]["results"] == results
@@ -2180,7 +2200,10 @@ def test_experiment_reload_migrates_legacy_summary_rows_to_show_models(monkeypat
 
     loaded = ui.load_experiment_for_ui("project", {})
 
-    assert loaded[6] == [["舊組", "answer-model", "answer-model", 2, "1 / 2", "50.0%", "100.0%", "100.0%", "1.000"]]
+    assert loaded[6] == [[
+        "舊組", "answer-model", "停用", "停用", "answer-model", 2,
+        "1 / 2", "50.0%", "100.0%", "100.0%", "1.000",
+    ]]
     assert loaded[7][0][:4] == ["舊組", 1, "manual.pdf", "Q"]
     assert loaded[7][0][6] is True
 
@@ -2192,7 +2215,7 @@ def test_run_experiment_groups_stops_after_current_tasks_and_saves_partial_resul
     calls = []
     monkeypatch.setattr(ui, "resolve_model_credentials_for_ui", lambda *_: ("endpoint", "key"))
 
-    def blocking_answer(*args):
+    def blocking_answer(*args, **kwargs):
         calls.append(args[9])
         started.set()
         assert release.wait(timeout=5)
@@ -2232,7 +2255,7 @@ def test_run_experiment_groups_stops_after_current_tasks_and_saves_partial_resul
     assert len(returned[3]) == 1
     assert len(calls) == 1
     assert saved["experiment"]["results"] == returned[3]
-    assert saved["experiment"]["summary_rows"][0][3] == 1
+    assert saved["experiment"]["summary_rows"][0][5] == 1
 
 
 def test_switch_document_cycles_through_documents() -> None:
@@ -3164,7 +3187,7 @@ def test_multi_project_experiment_runs_each_projects_own_database(tmp_path, monk
     assert [call[0] for call in calls] == [member["project_id"] for member in members]
     assert [call[2] for call in calls] == [member["neo4j_database"] for member in members]
     assert all(call[3] is False for call in calls)
-    assert summaries[0][3:6] == [2, "1 / 2", "50.0%"]
+    assert summaries[0][5:8] == [2, "1 / 2", "50.0%"]
     assert {row[1] for row in details} == {member["name"] for member in members}
     assert len(saved["results"]) == 2
 
@@ -3197,7 +3220,7 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     )
     assert evaluated_status == "✅ 評測完成｜答對 1 / 1 個跨專案實驗題次。"
     assert results[0]["passed"] is True
-    assert summaries[0][4] == "1 / 1"
+    assert summaries[0][6] == "1 / 1"
     assert details[0][1:3] == ["跨專案成員", 1]
 
     details[0][7] = False
@@ -3205,7 +3228,7 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
         saved, details, results,
     )
     assert "答對 0 / 1" in edited_status
-    assert summaries[0][4] == "0 / 1"
+    assert summaries[0][6] == "0 / 1"
     assert saved["results"][0]["reason"] == "人工評判"
 
 

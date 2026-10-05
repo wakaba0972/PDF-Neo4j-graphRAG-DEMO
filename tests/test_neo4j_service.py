@@ -490,6 +490,16 @@ class ExpansionSearchSession:
 
     def run(self, query, **parameters):
         self.calls.append((query, parameters))
+        if "MATCH (candidate:GraphEvidence" in query:
+            return FakeResult(rows=[{
+                "evidence": {
+                    "evidence_id": "legacy-related", "kind": "關係",
+                    "name": "相同 chunk 關係", "source": "P0301", "target": "耗材",
+                    "text": "舊版以名稱或 chunk 編號找回的關係", "source_pages": [2],
+                    "source_chunk_numbers": [2], "source_documents": ["car.pdf"],
+                    "source_references_json": "[]",
+                },
+            }])
         if "MATCH path = (seed)-[" in query:
             return FakeResult(rows=[
                 {"evidence": {
@@ -619,6 +629,31 @@ def test_graph_expansion_can_be_disabled(monkeypatch) -> None:
         'kind: "原文"' in query or "kind: '實體'" in query or "kind: '關係'" in query
         for query, _parameters in session.calls
     )
+
+
+def test_legacy_graph_expansion_uses_name_and_chunk_matching(monkeypatch) -> None:
+    session = ExpansionSearchSession()
+    monkeypatch.setattr(
+        neo4j_service.GraphDatabase,
+        "driver",
+        lambda *args, **kwargs: SearchDriver(session),
+    )
+    monkeypatch.setattr(neo4j_service, "HybridCypherRetriever", ExpansionRetriever)
+
+    results = neo4j_service.search_graph_evidence(
+        "bolt://db", "neo4j", "user", "password", "run-1",
+        "P0301 怎麼處理", [0.1], "GraphRAG", 5,
+        expansion_mode="證據擴展",
+    )
+
+    assert any(item["evidence_id"] == "legacy-related" for item in results)
+    legacy_query = next(
+        query for query, _parameters in session.calls
+        if "MATCH (candidate:GraphEvidence" in query
+    )
+    assert "candidate.name IN $names" in legacy_query
+    assert "source_chunk_numbers" in legacy_query
+    assert not any("MATCH path = (seed)-[" in query for query, _parameters in session.calls)
 
 
 def test_ensure_project_database_creates_then_checks_database(monkeypatch) -> None:

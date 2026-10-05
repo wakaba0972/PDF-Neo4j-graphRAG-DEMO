@@ -128,6 +128,18 @@ def test_rerank_evidence_falls_back_to_retrieval_order_for_invalid_json(monkeypa
     assert [item["evidence_id"] for item in ranked] == ["first", "second"]
 
 
+def test_legacy_reranker_remains_available_for_comparison() -> None:
+    evidence = [
+        {"evidence_id": "weak", "text": "保養方式", "matched_by": ["graph"]},
+        {"evidence_id": "strong", "text": "E01 錯誤時重新啟動", "matched_by": ["graph"]},
+    ]
+
+    ranked = qa_service.legacy_rerank_evidence("E01 怎麼辦？", evidence, 1)
+
+    assert [item["evidence_id"] for item in ranked] == ["strong"]
+    assert ranked[0]["matched_by"] == ["graph", "legacy-reranker"]
+
+
 def test_luna_reranker_uses_reasoning_effort_without_sampling(monkeypatch) -> None:
     captured = {}
     evidence = [{"evidence_id": str(index), "text": str(index)} for index in range(3)]

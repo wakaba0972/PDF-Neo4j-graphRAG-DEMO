@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from .graph_service import (
@@ -10,6 +11,50 @@ from .graph_service import (
 
 RERANK_CANDIDATE_MULTIPLIER = 3
 RERANK_MAX_CANDIDATES = 50
+RERANKER_MODES = ("停用", "Reranker", "LLM Reranker")
+EVIDENCE_EXPANSION_MODES = ("停用", "證據擴展", "證據擴展 V2")
+
+
+def _search_terms(text: str) -> set[str]:
+    normalized = " ".join(text.casefold().split())
+    words = set(re.findall(r"[a-z0-9_\-]+", normalized))
+    chinese = "".join(re.findall(r"[\u3400-\u9fff]", normalized))
+    chinese_bigrams = {
+        chinese[index:index + 2]
+        for index in range(max(len(chinese) - 1, 0))
+    }
+    return words | chinese_bigrams
+
+
+def legacy_rerank_evidence(
+    question: str,
+    evidence: list[dict[str, Any]],
+    top_k: int,
+) -> list[dict[str, Any]]:
+    """Keep the original lexical reranker available for controlled comparisons."""
+    limit = max(int(top_k), 1)
+    question_terms = _search_terms(question)
+    ranked = []
+    for original_rank, item in enumerate(evidence):
+        text = str(item.get("text", ""))
+        evidence_terms = _search_terms(text)
+        overlap = len(question_terms & evidence_terms) / max(len(question_terms), 1)
+        original_score = float(item.get("fusion_score", item.get("score", 0.0)) or 0.0)
+        exact_bonus = sum(
+            1 for term in question_terms
+            if len(term) >= 3 and term in text.casefold()
+        )
+        kind_bonus = 0.05 if item.get("kind") == "原文" else 0.0
+        score = overlap * 2 + exact_bonus * 0.25 + original_score + kind_bonus
+        ranked.append((score, original_rank, {
+            **item,
+            "rerank_score": score,
+            "matched_by": list(dict.fromkeys([
+                *(item.get("matched_by") or []), "legacy-reranker"
+            ])),
+        }))
+    ranked.sort(key=lambda value: (-value[0], value[1]))
+    return [item for _, _, item in ranked[:limit]]
 
 
 def rerank_evidence(
