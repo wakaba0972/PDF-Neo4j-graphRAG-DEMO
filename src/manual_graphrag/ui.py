@@ -4077,7 +4077,10 @@ def answer_question_for_ui(
             expand_evidence=expand_evidence,
         )
         if use_reranker:
-            evidence = rerank_evidence(question, evidence, int(top_k))
+            evidence = rerank_evidence(
+                model_endpoint, api_key, answer_model, question, evidence,
+                int(top_k), reasoning_effort,
+            )
         elif expand_evidence:
             evidence = interleave_expanded_evidence(evidence, int(top_k))
         else:

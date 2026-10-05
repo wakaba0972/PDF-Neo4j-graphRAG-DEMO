@@ -2841,6 +2841,42 @@ def test_answer_question_for_ui_keeps_expanded_evidence_without_reranker(tmp_pat
     ]
 
 
+def test_answer_question_for_ui_runs_reranker_with_answer_model(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ui, "load_latest_graph", lambda *args: {
+        "run_id": "run-1", "document": "manual.pdf", "embedding_model": "embed",
+    })
+    monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]])
+    monkeypatch.setattr(ui, "search_graph_evidence", lambda *args, **kwargs: [
+        {"evidence_id": "one", "kind": "原文", "text": "候選一", "matched_by": ["official-hybrid"]},
+        {"evidence_id": "two", "kind": "原文", "text": "候選二", "matched_by": ["official-hybrid"]},
+    ])
+    captured = {}
+
+    def fake_rerank(*args):
+        captured["args"] = args
+        return [args[4][1]]
+
+    monkeypatch.setattr(ui, "rerank_evidence", fake_rerank)
+    monkeypatch.setattr(
+        ui, "answer_graph_question",
+        lambda *args, **kwargs: {"answer": "答案", "evidence": args[5]},
+    )
+
+    status, answer, _rows = ui.answer_question_for_ui(
+        "http://models/v1", "secret", "http://embed/v1", "embed-key",
+        "bolt://db", "neo4j", "user", "password",
+        "gpt-4.1-mini", "問題", "混合檢索", 1, True, False,
+    )
+
+    assert status.startswith("✅ 混合檢索")
+    assert answer == "答案"
+    assert captured["args"][:4] == (
+        "http://models/v1", "secret", "gpt-4.1-mini", "問題",
+    )
+    assert captured["args"][5] == 1
+
+
 def test_evaluation_preferences_keep_generation_and_test_models_separate(monkeypatch) -> None:
     captured = {}
     monkeypatch.setattr(ui, "load_project", lambda project_id: {"evaluation": {}})

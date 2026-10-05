@@ -1,58 +1,101 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from .graph_service import (
     GPT_6_LUNA_MODEL, GPT_6_LUNA_REASONING_EFFORTS,
-    _api_url, _chat_response_content, _post_json,
+    _api_url, _chat_response_content, _extract_json_text, _post_json,
 )
 
 RERANK_CANDIDATE_MULTIPLIER = 3
 RERANK_MAX_CANDIDATES = 50
 
 
-def _search_terms(text: str) -> set[str]:
-    normalized = " ".join(text.casefold().split())
-    words = set(re.findall(r"[a-z0-9_\-]+", normalized))
-    chinese = "".join(re.findall(r"[\u3400-\u9fff]", normalized))
-    chinese_bigrams = {
-        chinese[index:index + 2]
-        for index in range(max(len(chinese) - 1, 0))
-    }
-    return words | chinese_bigrams
-
-
 def rerank_evidence(
+    base_url: str,
+    api_key: str,
+    model: str,
     question: str,
     evidence: list[dict[str, Any]],
     top_k: int,
+    reasoning_effort: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Locally rerank hybrid candidates without sending document text elsewhere."""
+    """Use the configured answer model to rank candidates by answer relevance."""
     limit = max(int(top_k), 1)
-    question_terms = _search_terms(question)
-    ranked = []
-    for original_rank, item in enumerate(evidence):
-        evidence_terms = _search_terms(str(item.get("text", "")))
-        overlap = len(question_terms & evidence_terms) / max(len(question_terms), 1)
-        original_score = float(item.get("fusion_score", item.get("score", 0.0)) or 0.0)
-        exact_bonus = sum(
-            1 for term in question_terms
-            if len(term) >= 3 and term in str(item.get("text", "")).casefold()
-        )
-        kind_bonus = 0.05 if item.get("kind") == "原文" else 0.0
-        rerank_score = overlap * 2 + exact_bonus * 0.25 + original_score + kind_bonus
-        reranked = {
+    candidates = evidence[:RERANK_MAX_CANDIDATES]
+    if len(candidates) <= limit:
+        return candidates
+    if not model.strip():
+        raise ValueError("請選擇可用的回答模型以執行 LLM Reranker")
+
+    candidate_payload = [
+        {
+            "id": str(index),
+            "kind": item.get("kind", ""),
+            "text": str(item.get("text", ""))[:3000],
+            "source_pages": item.get("source_pages", []),
+            "expanded_from_graph": "graph" in (item.get("matched_by") or []),
+        }
+        for index, item in enumerate(candidates)
+    ]
+    payload = {
+        "model": model.strip(),
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "你是檢索證據重排器。依據證據對回答使用者問題的直接幫助程度排序；"
+                    "優先選擇包含可驗證答案細節的證據，不要因為證據是圖譜擴展而降低排名。"
+                    "只輸出 JSON 物件，格式為 {\"ranking\":[候選 id，從最相關到最不相關]}。"
+                    "不得改寫、補充或臆測證據內容。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": "問題：{}\n候選證據：{}".format(
+                    question.strip(), json.dumps(candidate_payload, ensure_ascii=False)
+                ),
+            },
+        ],
+    }
+    is_gpt_6_luna = model.strip().casefold() == GPT_6_LUNA_MODEL
+    effective_effort = reasoning_effort or "low"
+    if is_gpt_6_luna:
+        if effective_effort not in GPT_6_LUNA_REASONING_EFFORTS:
+            raise ValueError("GPT-6 Luna 推理強度設定無效")
+        payload["reasoning_effort"] = effective_effort
+        if effective_effort == "none":
+            payload["temperature"] = 0
+    else:
+        payload["temperature"] = 0
+
+    response = _post_json(
+        _api_url(base_url, "chat/completions"), payload, api_key
+    )
+    content, _ = _chat_response_content(response)
+    try:
+        parsed = _extract_json_text(content)
+        ranking = parsed.get("ranking")
+        expected_ids = {str(index) for index in range(len(candidates))}
+        if (
+            not isinstance(ranking, list)
+            or len(ranking) != len(candidates)
+            or {str(value) for value in ranking} != expected_ids
+        ):
+            return candidates[:limit]
+        ordered = [candidates[int(value)] for value in ranking]
+    except (ValueError, TypeError, AttributeError):
+        return candidates[:limit]
+    return [
+        {
             **item,
-            "rerank_score": rerank_score,
             "matched_by": list(dict.fromkeys([
-                *(item.get("matched_by") or []), "local-reranker"
+                *(item.get("matched_by") or []), "llm-reranker"
             ])),
         }
-        ranked.append((rerank_score, original_rank, reranked))
-    ranked.sort(key=lambda value: (-value[0], value[1]))
-    return [item for _, _, item in ranked[:limit]]
+        for item in ordered[:limit]
+    ]
 
 
 def interleave_expanded_evidence(
