@@ -89,9 +89,10 @@ from .service_settings import (
 )
 from .storage import write_json
 
-DEFAULT_LLM_MODEL = "gpt-4.1-mini"
+DEFAULT_LLM_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_EVALUATION_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_REASONING_EFFORT = "low"
+DEFAULT_MAX_CONCURRENT_REQUESTS = 10
 OLLAMA_CONCURRENCY_HINT = "使用 Ollama 時建議設為 1。"
 
 
@@ -295,7 +296,14 @@ def service_action_for_ui(
             else:
                 check_model_connection(profile["base_url"], profile["api_key"])
             profile["connected"] = True
-            profile["models"] = [model if model in allowed else allowed[0] for model in profile["models"]]
+            default_model = (
+                DEFAULT_LLM_MODEL
+                if state["kind"] == "llm" and DEFAULT_LLM_MODEL in allowed
+                else allowed[0]
+            )
+            profile["models"] = [
+                model if model in allowed else default_model for model in profile["models"]
+            ]
             profile["status"] = "✅ 連線成功；可用模型：" + "、".join(allowed)
         elif action == "fetch" and state["active"] == "Ollama":
             profile["connected"] = False
@@ -331,7 +339,17 @@ def load_project_with_services_for_ui(
     llm = render_service_for_ui(llm_state)
     embedding = render_service_for_ui(embedding_state)
     values[6:8] = llm[1:3]
-    values[8], values[16], values[10], values[9] = llm[7], llm[8], llm[11], embedding[7]
+    available_llm_choices = service_choice_items(llm_state)
+    for index, selection in ((8, llm[7]), (16, llm[8]), (10, llm[11])):
+        selected = selection.get("value")
+        if selected is None and values[index] == DEFAULT_LLM_MODEL:
+            selected = DEFAULT_LLM_MODEL
+        choices = (
+            _model_choices_with_fallback(available_llm_choices, DEFAULT_LLM_MODEL)
+            if selected == DEFAULT_LLM_MODEL else available_llm_choices
+        )
+        values[index] = gr.update(value=selected, choices=choices)
+    values[9] = embedding[7]
     save_service_settings(llm_state)
     save_service_settings(embedding_state)
     return (*values, llm_state["active"], llm[0], *llm[3:7], llm[9], llm[10],
@@ -349,11 +367,12 @@ def load_evaluation_with_services_for_ui(
             selected = values[index]
             model_choices = (
                 _model_choices_with_fallback(choice_items, selected)
-                if index == 12 else list(choice_items)
+                if index == 12 or selected == DEFAULT_LLM_MODEL else list(choice_items)
             )
             values[index] = gr.update(
                 choices=model_choices,
-                value=selected if index == 12 or selected in allowed else None,
+                value=(selected if index == 12 or selected in allowed
+                       or selected == DEFAULT_LLM_MODEL else None),
             )
     answer_status, evaluate_update = _evaluation_answer_availability(values[0])
     return (*values, answer_status, evaluate_update)
@@ -725,9 +744,9 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         get("answer_model", DEFAULT_LLM_MODEL),
         get("chunk_size", 1500), get("chunk_overlap", 200), get("graph_temperature", 0),
         get("schema_granularity", "平衡"),
-        get("max_concurrent_requests", 3),
+        get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         get("extraction_llm_model", DEFAULT_LLM_MODEL),
-        get("extraction_max_concurrent_requests", 3),
+        get("extraction_max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         _display_retrieval_mode(get("retrieval_mode")), get("top_k", 8), get("schema_text", ""),
         documents, chunks, graph, active_preview, active_chunks,
         _document_rows(documents), _document_choices(documents),
@@ -1140,15 +1159,20 @@ def load_experiment_project_setup_for_ui(
         group.get("top_k"), _group_reranker_mode(group),
         _group_expansion_mode(group),
     ] for group in groups]
-    judge_model = (project or {}).get("judge_model") or preferred_service_model(load_service_settings("llm"))
+    judge_model = (project or {}).get("judge_model") or DEFAULT_LLM_MODEL
     judge_effort = (project or {}).get("judge_reasoning_effort", DEFAULT_REASONING_EFFORT)
     remove_choices = [(group.get("name", ""), group.get("name", "")) for group in groups]
     return (
         gr.update(choices=remove_choices, value=remove_choices[0][1] if remove_choices else None),
-        gr.update(value=judge_model, choices=service_choice_items(load_service_settings("llm"))),
+        gr.update(
+            value=judge_model,
+            choices=_model_choices_with_fallback(
+                service_choice_items(load_service_settings("llm")), judge_model,
+            ),
+        ),
         gr.update(value=judge_effort, visible=str(judge_model or "").casefold() == GPT_6_LUNA_MODEL,
                   choices=list(GPT_6_LUNA_REASONING_EFFORTS)),
-        (project or {}).get("max_concurrent_requests", 5), group_rows,
+        (project or {}).get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS), group_rows,
         (project or {}).get("summary_rows", []), (project or {}).get("detail_rows", []),
         (project or {}).get("status", "請設定實驗組並執行。"),
         gr.update(value=_next_experiment_project_group_name(groups)),
@@ -1160,10 +1184,11 @@ def load_experiment_project_runtime_state_for_ui(
 ) -> tuple[Any, Any, Any, int, list[dict[str, Any]], list[dict[str, Any]], Any, str]:
     project = project or {}
     llm_settings = load_service_settings("llm")
-    choices = _configured_service_choice_items(llm_settings)
+    choices = _model_choices_with_fallback(
+        _configured_service_choice_items(llm_settings), DEFAULT_LLM_MODEL,
+    )
     judge_model = (
-        project.get("judge_model") or preferred_service_model(llm_settings)
-        or (choices[0][1] if choices else None)
+        project.get("judge_model") or DEFAULT_LLM_MODEL
     )
     judge_effort = project.get("judge_reasoning_effort", DEFAULT_REASONING_EFFORT)
     return (
@@ -1171,7 +1196,7 @@ def load_experiment_project_runtime_state_for_ui(
         gr.update(value=judge_model, choices=choices),
         gr.update(value=judge_effort, visible=str(judge_model).casefold() == GPT_6_LUNA_MODEL,
                   choices=list(GPT_6_LUNA_REASONING_EFFORTS)),
-        project.get("judge_max_concurrent_requests", 5),
+        project.get("judge_max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         project.get("pending_answers", []), project.get("results", []),
         gr.update(interactive=bool(project.get("pending_answers"))),
         (f"✅ 已保存 {len(project.get('pending_answers', []))} 個待評測回答。請按「進行評測」。"
@@ -1228,7 +1253,7 @@ def save_experiment_project_groups_from_rows_for_ui(
 
 def save_experiment_project_judge_settings_for_ui(
     project: dict[str, Any] | None, judge_model: str | None, reasoning_effort: str | None,
-    max_concurrent_requests: int | float = 5,
+    max_concurrent_requests: int | float = DEFAULT_MAX_CONCURRENT_REQUESTS,
     llm_state: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str, Any]:
     if not project:
@@ -1467,7 +1492,10 @@ def add_inline_experiment_group_for_ui(
         groups = _groups_from_inline_values(values)
         if len(groups) >= EXPERIMENT_GROUP_LIMIT:
             raise ValueError(f"最多可設定 {EXPERIMENT_GROUP_LIMIT} 個實驗組")
-        model = preferred_service_model(llm_state)
+        model = (
+            DEFAULT_LLM_MODEL if DEFAULT_LLM_MODEL in service_choices(llm_state)
+            else preferred_service_model(llm_state)
+        )
         if not model:
             raise ValueError("請先設定可用的 LLM 模型")
         next_index = 1
@@ -1645,7 +1673,7 @@ def load_experiment_for_ui(
         detail_rows = _single_experiment_detail_rows(results)
     return (
         questions, _evaluation_question_rows(questions), groups, results,
-        data.get("max_concurrent_requests", 5), status,
+        data.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS), status,
         summary_rows, detail_rows,
         *_inline_group_updates(groups, service_choice_items(llm_state)),
         gr.update(
@@ -1657,7 +1685,7 @@ def load_experiment_for_ui(
             visible=str(global_judge_model or "").casefold() == GPT_6_LUNA_MODEL,
             choices=list(GPT_6_LUNA_REASONING_EFFORTS),
         ),
-        data.get("judge_max_concurrent_requests", 5),
+        data.get("judge_max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         pending_answers,
         *_experiment_answer_availability(pending_answers),
     )
@@ -1665,7 +1693,7 @@ def load_experiment_for_ui(
 
 def save_experiment_judge_settings_for_ui(
     project_id: str, judge_model: str | None, reasoning_effort: str | None,
-    max_concurrent_requests: int | float = 5,
+    max_concurrent_requests: int | float = DEFAULT_MAX_CONCURRENT_REQUESTS,
 ) -> str:
     if not project_id:
         return "⚠️ 請先選擇專案。"
@@ -1699,7 +1727,10 @@ def refresh_experiment_model_choices_for_ui(
         model_choices = list(choices)
         if model and model not in choice_values and model not in allowed:
             model_choices.append((f"{model}（目前不可用）", model))
-        default_model = choices[0][1] if choices else None
+        default_model = (
+            DEFAULT_LLM_MODEL if DEFAULT_LLM_MODEL in choice_values
+            else (choices[0][1] if choices else None)
+        )
         updates.append(gr.update(choices=model_choices, value=model or default_model))
     return updates
 
@@ -2091,9 +2122,9 @@ def load_evaluation_for_ui(project_id: str) -> tuple[Any, ...]:
         preferences.get("allow_parallel_generation", False),
         _saved_reranker_mode(preferences),
         _saved_expansion_mode(preferences),
-        preferences.get("test_max_concurrent_requests", 3),
+        preferences.get("test_max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         judge_model,
-        preferences.get("judge_max_concurrent_requests", 3),
+        preferences.get("judge_max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         gr.update(value=preferences.get("generation_reasoning_effort", DEFAULT_REASONING_EFFORT),
                   visible=str(preferences.get("generation_model", legacy_model) or "").casefold() == GPT_6_LUNA_MODEL,
                   choices=list(GPT_6_LUNA_REASONING_EFFORTS)),
@@ -2112,14 +2143,14 @@ def save_evaluation_preferences_for_ui(
     project_id: str, generation_model: str, test_model: str, question_count: int,
     retrieval_mode: str, top_k: int,
     allow_parallel_generation: bool = False,
-    test_max_concurrent_requests: int = 3,
+    test_max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
     use_reranker: str | bool = "停用",
     expand_evidence: str | bool = "停用",
     judge_model: str | None = None,
     generation_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     test_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     judge_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
-    judge_max_concurrent_requests: int = 3,
+    judge_max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
 ) -> str:
     if not project_id:
         return "⚠️ 請先選擇專案。"
@@ -2164,7 +2195,7 @@ def generate_evaluation_for_ui(
     project_id: str, model_endpoint: str, api_key: str, generation_model: str,
     test_model: str, question_count: int, retrieval_mode: str, top_k: int,
     chunks: list[TextChunk], allow_parallel_generation: bool = False,
-    test_max_concurrent_requests: int = 3,
+    test_max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
     use_reranker: str | bool = "停用",
     expand_evidence: str | bool = "停用",
     reasoning_effort: str | None = None,
@@ -2290,7 +2321,7 @@ def generate_evaluation_answers_for_ui(
     embedding_api_base: str, embedding_api_key: str,
     neo4j_uri: str, neo4j_database: str, neo4j_username: str, neo4j_password: str,
     model: str, retrieval_mode: str, top_k: int, evaluation: dict[str, Any],
-    max_concurrent_requests: int = 3,
+    max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
     use_reranker: str | bool = "停用",
     expand_evidence: str | bool = "停用",
     answer_reasoning_effort: str | None = None,
@@ -2363,7 +2394,7 @@ def generate_evaluation_answers_for_ui(
 def evaluate_generated_answers_for_ui(
     project_id: str, judge_model_endpoint: str, judge_api_key: str,
     judge_model: str, evaluation: dict[str, Any],
-    max_concurrent_requests: int = 3,
+    max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
     judge_reasoning_effort: str | None = None,
     progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], dict[str, Any]]:
@@ -2424,7 +2455,7 @@ def run_evaluation_for_ui(
     embedding_api_base: str, embedding_api_key: str,
     neo4j_uri: str, neo4j_database: str, neo4j_username: str, neo4j_password: str,
     model: str, retrieval_mode: str, top_k: int, evaluation: dict[str, Any],
-    max_concurrent_requests: int = 3,
+    max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
     use_reranker: str | bool = "停用",
     expand_evidence: str | bool = "停用",
     judge_model_endpoint: str | None = None,
@@ -3168,7 +3199,7 @@ def export_experiment_results_for_ui(
         payload = {
             "schema_version": 3,
             "project": {"project_id": project_id, "name": project.get("name", "")},
-            "max_concurrent_requests": experiment.get("max_concurrent_requests", 5),
+            "max_concurrent_requests": experiment.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
             "evaluation": {
                 "judge_model": experiment.get("judge_model") or next(
                     (group.get("judge_model") for group in groups if group.get("judge_model")),
@@ -3191,7 +3222,7 @@ def export_experiment_results_for_ui(
             "schema_version": 1,
             "format": "manual-graphrag-experiment-summary",
             "project": {"project_id": project_id, "name": project.get("name", "")},
-            "max_concurrent_requests": experiment.get("max_concurrent_requests", 5),
+            "max_concurrent_requests": experiment.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
             "evaluation": payload["evaluation"],
             "summary": overall_summary,
             "groups": [
@@ -4279,7 +4310,9 @@ def build_app() -> gr.Blocks:
     env = load_env()
     llm_settings = load_service_settings("llm", env)
     embedding_settings = load_service_settings("embedding", env)
-    llm_choices = service_choice_items(llm_settings)
+    llm_choices = _model_choices_with_fallback(
+        service_choice_items(llm_settings), DEFAULT_LLM_MODEL,
+    )
     evaluation_judge_choices = _model_choices_with_fallback(
         llm_choices, DEFAULT_EVALUATION_MODEL,
     )
@@ -4287,9 +4320,11 @@ def build_app() -> gr.Blocks:
     embedding_allowed = service_choices(embedding_settings)
     llm_profile = llm_settings["profiles"][llm_settings["active"]]
     embedding_profile = embedding_settings["profiles"][embedding_settings["active"]]
-    preferred_llm = preferred_service_model(llm_settings)
-    experiment_llm_choices = _configured_service_choice_items(llm_settings)
-    experiment_default_llm = preferred_llm or (experiment_llm_choices[0][1] if experiment_llm_choices else None)
+    preferred_llm = DEFAULT_LLM_MODEL
+    experiment_llm_choices = _model_choices_with_fallback(
+        _configured_service_choice_items(llm_settings), DEFAULT_LLM_MODEL,
+    )
+    experiment_default_llm = DEFAULT_LLM_MODEL
     project_choices = _project_choices()
     initial_llm_credentials = [
         resolve_model_credentials_for_ui(llm_settings, preferred_llm)
@@ -4472,7 +4507,8 @@ def build_app() -> gr.Blocks:
                         label="Schema 粒度",
                     )
                     max_concurrent_requests = gr.Number(
-                        value=3, minimum=1, precision=0, label="最大並行請求數",
+                        value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
+                        label="最大並行請求數",
                         info=OLLAMA_CONCURRENCY_HINT,
                     )
                 schema_documents = gr.Dataframe(
@@ -4531,7 +4567,7 @@ def build_app() -> gr.Blocks:
                     visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
                 )
                 extraction_max_concurrent_requests = gr.Number(
-                    value=3,
+                    value=DEFAULT_MAX_CONCURRENT_REQUESTS,
                     minimum=1,
                     precision=0,
                     label="最大並行請求數",
@@ -4726,7 +4762,7 @@ def build_app() -> gr.Blocks:
                         allow_custom_value=False,
                     )
                     evaluation_test_max_concurrent_requests = gr.Number(
-                        value=3, minimum=1, precision=0, label="最大並行請求數",
+                        value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="最大並行請求數",
                         info=OLLAMA_CONCURRENCY_HINT,
                     )
                 generate_evaluation_answers_button = gr.Button("檢索並生成回答", variant="primary")
@@ -4748,7 +4784,7 @@ def build_app() -> gr.Blocks:
                         visible=True,
                     )
                     evaluation_judge_max_concurrent_requests = gr.Number(
-                        value=3, minimum=1, precision=0, label="最大並行請求數",
+                        value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="最大並行請求數",
                         info=OLLAMA_CONCURRENCY_HINT,
                     )
                 run_evaluation_button = gr.Button(
@@ -4836,7 +4872,7 @@ def build_app() -> gr.Blocks:
             experiment_group_status = gr.Markdown()
             with gr.Row():
                 experiment_max_concurrent_requests = gr.Number(
-                    value=5, minimum=1, precision=0,
+                    value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
                     label="最大並行請求數", info=OLLAMA_CONCURRENCY_HINT,
                 )
             generate_experiments_answers_button = gr.Button("檢索並生成回答", variant="primary")
@@ -4860,7 +4896,7 @@ def build_app() -> gr.Blocks:
                         visible=True, scale=1,
                     )
                     experiment_judge_max_concurrent_requests = gr.Number(
-                        value=5, minimum=1, precision=0,
+                        value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
                         label="最大並行請求數", info=OLLAMA_CONCURRENCY_HINT,
                     )
                 evaluate_experiments_button = gr.Button(
@@ -4986,7 +5022,7 @@ def build_app() -> gr.Blocks:
                     choices=experiment_llm_choices, value=experiment_default_llm, label="跨專案評測模型", scale=2,
                 )
                 experiment_project_max_concurrency = gr.Number(
-                    value=5, minimum=1, precision=0, label="回答最大並行請求數",
+                    value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="回答最大並行請求數",
                     info=OLLAMA_CONCURRENCY_HINT,
                 )
             run_experiment_project_button = gr.Button("檢索並生成回答", variant="primary")
@@ -5003,7 +5039,7 @@ def build_app() -> gr.Blocks:
                     label="評測推理強度", visible=preferred_llm == GPT_6_LUNA_MODEL,
                 )
                 experiment_project_judge_concurrency = gr.Number(
-                    value=5, minimum=1, precision=0, label="評測最大並行請求數",
+                    value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="評測最大並行請求數",
                     info=OLLAMA_CONCURRENCY_HINT,
                 )
             evaluate_experiment_project_button = gr.Button(

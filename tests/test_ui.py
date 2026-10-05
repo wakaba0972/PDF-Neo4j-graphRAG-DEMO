@@ -98,9 +98,7 @@ def test_pages_three_through_five_default_judge_fields_to_luna(monkeypatch) -> N
     ]
     assert len(fields) == 6
     assert all(
-        field["props"]["value"] == (
-            "gpt-6-luna" if field["props"].get("label") == "評測模型" else "gpt-4.1-mini"
-        )
+        field["props"]["value"] == "gpt-6-luna"
         for field in fields
     )
 
@@ -236,6 +234,7 @@ def test_all_concurrency_inputs_show_ollama_recommendation() -> None:
     ]
 
     assert len(concurrency_inputs) == 8
+    assert all(component["props"].get("value") == 10 for component in concurrency_inputs)
     assert all(
         component["props"].get("info") == ui.OLLAMA_CONCURRENCY_HINT
         for component in concurrency_inputs
@@ -1721,13 +1720,13 @@ def test_experiment_reload_recovers_saved_group_settings_backup(tmp_path, monkey
     assert migrated["experiment"]["judge_model"] == "judge-model"
 
 
-def test_experiment_default_concurrency_is_five(tmp_path, monkeypatch) -> None:
+def test_experiment_default_concurrency_is_ten(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     project = ui.create_project("experiment-default-concurrency")
 
     restored = ui.load_experiment_for_ui(project["project_id"], settings.load_service_settings("llm"))
 
-    assert restored[4] == 5
+    assert restored[4] == 10
     judge_index = 8 + ui.EXPERIMENT_GROUP_LIMIT * 8
     assert restored[judge_index]["value"] == "gpt-6-luna"
     assert ("OpenAI｜gpt-6-luna（目前不可用）", "gpt-6-luna") in restored[judge_index]["choices"]
@@ -1740,7 +1739,7 @@ def test_experiment_default_concurrency_is_five(tmp_path, monkeypatch) -> None:
         component["props"]["value"] for component in components[answer_heading:summary_heading]
         if component.get("props", {}).get("label") == "最大並行請求數"
     ]
-    assert concurrency_defaults == [5, 5]
+    assert concurrency_defaults == [10, 10]
 
 
 def test_experiment_answer_availability_tracks_pending_answers() -> None:
@@ -3011,7 +3010,7 @@ def test_load_evaluation_restores_separate_judge_model(monkeypatch) -> None:
 
     assert loaded[4] == "answer-model"
     assert loaded[12] == "judge-model"
-    assert loaded[13] == 3
+    assert loaded[13] == 10
     assert "已載入" in loaded[-1]
 
 
@@ -3026,7 +3025,7 @@ def test_load_evaluation_supports_legacy_shared_model(monkeypatch) -> None:
     assert loaded[8] is False
     assert loaded[9] == "停用"
     assert loaded[10] == "停用"
-    assert loaded[11] == 3
+    assert loaded[11] == 10
     assert loaded[3:5] == ("legacy-model", "legacy-model")
     assert loaded[12] == "gpt-6-luna"
     assert loaded[6] == "混合檢索"

@@ -516,7 +516,7 @@ def plan_graph_schema(
     temperature: float = 0,
     progress_callback: Callable[[float | None, str], None] | None = None,
     schema_granularity: str = "平衡",
-    max_concurrent_requests: int = 3,
+    max_concurrent_requests: int = 10,
     control: RunControl | None = None,
     reasoning_effort: str | None = None,
 ) -> SchemaPlan:
@@ -713,7 +713,7 @@ def extract_graph(
     chunks: list[TextChunk],
     schema: dict[str, Any],
     temperature: float = 0,
-    max_concurrent_requests: int = 3,
+    max_concurrent_requests: int = 10,
     progress_callback: Callable[[float | None, str], None] | None = None,
     control: RunControl | None = None,
     reasoning_effort: str | None = None,

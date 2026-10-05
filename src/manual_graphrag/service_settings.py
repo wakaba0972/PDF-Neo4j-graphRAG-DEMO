@@ -28,7 +28,7 @@ DEFAULT_VOYAGE_MODELS = [
     "voyage-finance-2", "voyage-law-2",
 ]
 DEFAULT_SELECTIONS = {
-    "llm": ["gpt-4.1-mini"] * 6,
+    "llm": ["gpt-6-luna"] * 6,
     "embedding": ["text-embedding-3-small"],
 }
 

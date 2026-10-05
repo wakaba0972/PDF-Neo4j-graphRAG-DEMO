@@ -214,6 +214,20 @@ def test_saved_project_cannot_bypass_openai_allowlist_or_connection(monkeypatch)
     assert loaded[9]["choices"] == choices("OpenAI", settings.openai_models("embedding"))
 
 
+def test_new_project_load_defaults_llms_to_luna_and_parallelism_to_ten(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("default-luna-project")
+    loaded = ui.load_project_with_services_for_ui(
+        project["project_id"], service(), service("embedding"),
+    )
+
+    assert loaded[8]["value"] == "gpt-6-luna"
+    assert loaded[10]["value"] == "gpt-6-luna"
+    assert loaded[16]["value"] == "gpt-6-luna"
+    assert loaded[15] == 10
+    assert loaded[17] == 10
+
+
 def test_evaluation_cannot_restore_unapproved_models(monkeypatch):
     monkeypatch.setattr(ui, "check_model_connection", lambda *args: None)
     project = ui.create_project("saved")
@@ -274,7 +288,7 @@ def test_gradio_events_switch_connect_filter_and_restore(monkeypatch):
         inputs = ["OpenAI", None, "https://api.openai.com/v1", "test-key", {"headers": ["使用", "模型名稱"], "data": []}, *([None] * settings.MODEL_COUNTS["llm"])]
         connected = (await app.process_api(test["id"], inputs, state=session))["data"]
         assert connected[7]["choices"] == [["OpenAI｜gpt-4.1-mini", "gpt-4.1-mini"], ["OpenAI｜gpt-4o-mini", "gpt-4o-mini"], ["OpenAI｜gpt-6-luna", "gpt-6-luna"]]
-        assert all(field["value"] == "gpt-4.1-mini" for field in connected[7:])
+        assert all(field["value"] == "gpt-6-luna" for field in connected[7:])
         inputs[4] = connected[3]["value"]
         inputs[5:] = [u["value"] for u in connected[7:]]
         inputs[0] = "Ollama"
@@ -291,7 +305,7 @@ def test_gradio_events_switch_connect_filter_and_restore(monkeypatch):
         inputs[0] = "OpenAI"
         restored = (await app.process_api(switch["id"], inputs, state=session))["data"]
         assert restored[2] == "test-key"
-        assert restored[7]["value"] == "gpt-4.1-mini"
+        assert restored[7]["value"] == "gpt-6-luna"
         project = ui.create_project("restored")
         ui.save_project(project["project_id"], {"settings": {
             "model_endpoint": "https://api.openai.com/v1", "api_key": "test-key",
