@@ -3026,6 +3026,31 @@ def test_experiment_project_banner_uses_experiment_name():
     assert ui.experiment_project_banner_for_ui({}) == "### 📁 目前專案：尚未選擇"
 
 
+def test_experiment_project_model_dropdowns_have_distinct_configured_choices():
+    app = ui.build_app()
+    components = app.config["components"]
+    target_labels = {
+        "跨專案回答模型", "跨專案評測模型", "全域評測模型",
+    }
+    selectors = [
+        item for item in components
+        if item.get("props", {}).get("label") in target_labels
+    ]
+    assert {item["props"]["label"] for item in selectors} == target_labels
+    assert len({item["id"] for item in selectors}) == len(selectors)
+    assert all(item["props"].get("choices") for item in selectors)
+
+
+def test_add_experiment_project_group_uses_sequential_default_name(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    experiment = ui.create_experiment_project("自動命名")
+    experiment, _rows, _remove, _status, next_name = ui.add_experiment_project_group_for_ui(
+        experiment, "", "gpt-4.1-mini", "low", "混合檢索", 8, False, False,
+    )
+    assert experiment["groups"][0]["name"] == "實驗組 1"
+    assert next_name == {"value": "實驗組 2", "__type__": "update"}
+
+
 def test_multi_project_experiment_runs_each_projects_own_database(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     members = [ui.create_project("Model A"), ui.create_project("Model B")]

@@ -1129,7 +1129,7 @@ def refresh_experiment_project_questions_for_ui(
 
 def load_experiment_project_setup_for_ui(
     project: dict[str, Any] | None,
-) -> tuple[Any, Any, Any, int, list[list[Any]], list[list[Any]], list[list[Any]], str]:
+) -> tuple[Any, Any, Any, int, list[list[Any]], list[list[Any]], list[list[Any]], str, Any]:
     groups = (project or {}).get("groups", [])
     group_rows = [[
         group.get("name"), group.get("answer_model"), group.get("retrieval_mode"),
@@ -1147,17 +1147,24 @@ def load_experiment_project_setup_for_ui(
         (project or {}).get("max_concurrent_requests", 5), group_rows,
         (project or {}).get("summary_rows", []), (project or {}).get("detail_rows", []),
         (project or {}).get("status", "請設定實驗組並執行。"),
+        gr.update(value=_next_experiment_project_group_name(groups)),
     )
 
 
 def load_experiment_project_runtime_state_for_ui(
     project: dict[str, Any] | None,
-) -> tuple[Any, Any, int, list[dict[str, Any]], list[dict[str, Any]], Any, str]:
+) -> tuple[Any, Any, Any, int, list[dict[str, Any]], list[dict[str, Any]], Any, str]:
     project = project or {}
-    judge_model = project.get("judge_model") or preferred_service_model(load_service_settings("llm"))
+    llm_settings = load_service_settings("llm")
+    choices = _configured_service_choice_items(llm_settings)
+    judge_model = (
+        project.get("judge_model") or preferred_service_model(llm_settings)
+        or (choices[0][1] if choices else None)
+    )
     judge_effort = project.get("judge_reasoning_effort", DEFAULT_REASONING_EFFORT)
     return (
-        gr.update(value=judge_model, choices=service_choice_items(load_service_settings("llm"))),
+        gr.update(value=judge_model, choices=choices),
+        gr.update(value=judge_model, choices=choices),
         gr.update(value=judge_effort, visible=str(judge_model).casefold() == GPT_6_LUNA_MODEL,
                   choices=list(GPT_6_LUNA_REASONING_EFFORTS)),
         project.get("judge_max_concurrent_requests", 5),
@@ -1206,18 +1213,21 @@ def save_experiment_project_groups_from_rows_for_ui(
 def save_experiment_project_judge_settings_for_ui(
     project: dict[str, Any] | None, judge_model: str | None, reasoning_effort: str | None,
     max_concurrent_requests: int | float = 5,
-) -> tuple[dict[str, Any], str]:
+    llm_state: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], str, Any]:
     if not project:
-        return {}, "⚠️ 請先載入實驗專案。"
+        return {}, "⚠️ 請先載入實驗專案。", gr.update()
     try:
         updated = save_experiment_project(project["experiment_project_id"], {
             "judge_model": judge_model or "",
             "judge_reasoning_effort": reasoning_effort or DEFAULT_REASONING_EFFORT,
             "judge_max_concurrent_requests": max(1, int(max_concurrent_requests)),
         })
-        return updated, "✅ 全域評測設定已自動儲存。"
+        return updated, "✅ 跨專案與全域評測模型已同步並自動儲存。", gr.update(
+            value=judge_model, choices=_configured_service_choice_items(llm_state or load_service_settings("llm")),
+        )
     except (OSError, TypeError, ValueError, OverflowError) as exc:
-        return project, f"❌ 評測設定保存失敗：{exc}"
+        return project, f"❌ 評測設定保存失敗：{exc}", gr.update()
 
 
 def import_experiment_project_questions_for_ui(
@@ -1613,15 +1623,36 @@ def save_experiment_judge_settings_for_ui(
 def refresh_experiment_model_choices_for_ui(
     llm_state: dict[str, Any], *models: str | None,
 ) -> list[Any]:
-    choices = service_choice_items(llm_state)
+    choices = _configured_service_choice_items(llm_state)
     allowed = service_choices(llm_state)
+    choice_values = {value for _label, value in choices}
     updates = []
     for model in models:
         model_choices = list(choices)
-        if model and model not in allowed:
+        if model and model not in choice_values and model not in allowed:
             model_choices.append((f"{model}（目前不可用）", model))
-        updates.append(gr.update(choices=model_choices, value=model or preferred_service_model(llm_state)))
+        default_model = choices[0][1] if choices else None
+        updates.append(gr.update(choices=model_choices, value=model or default_model))
     return updates
+
+
+def _configured_service_choice_items(state: dict[str, Any]) -> list[tuple[str, str]]:
+    """Expose configured choices before a provider has been connection-tested."""
+    choices: list[tuple[str, str]] = []
+    for provider, profile in (state.get("profiles") or {}).items():
+        if provider == "Ollama":
+            models = list(dict.fromkeys(
+                str(row[1]).strip() for row in profile.get("rows", [])
+                if len(row) > 1 and row[0] and str(row[1]).strip()
+            ))
+        else:
+            try:
+                models = configured_models(state.get("kind", "llm"), provider)
+            except ValueError:
+                models = []
+        suffix = "" if profile.get("connected") else "（尚未測試連線）"
+        choices.extend((f"{provider}｜{model}{suffix}", model) for model in models)
+    return choices
 
 
 def add_experiment_group_for_ui(
@@ -3066,22 +3097,22 @@ def add_experiment_project_group_for_ui(
     project: dict[str, Any] | None, name: str | None, answer_model: str | None,
     answer_effort: str | None, retrieval_mode: str, top_k: int | float,
     use_reranker: bool, expand_evidence: bool,
-) -> tuple[dict[str, Any], list[list[Any]], Any, str]:
+) -> tuple[dict[str, Any], list[list[Any]], Any, str, Any]:
     def response(state: dict[str, Any], status: str):
+        groups = state.get("groups", [])
         rows = [[
             group.get("name"), group.get("answer_model"), group.get("retrieval_mode"),
             group.get("top_k"), bool(group.get("use_reranker")),
             bool(group.get("expand_evidence")),
         ] for group in state.get("groups", [])]
-        choices = [(group.get("name", ""), group.get("name", "")) for group in state.get("groups", [])]
-        return state, rows, gr.update(choices=choices, value=choices[0][1] if choices else None), status
+        choices = [(group.get("name", ""), group.get("name", "")) for group in groups]
+        return (state, rows, gr.update(choices=choices, value=choices[0][1] if choices else None),
+                status, gr.update(value=_next_experiment_project_group_name(groups)))
 
     if not project:
-        return {}, [], gr.update(choices=[], value=None), "❌ 請先載入實驗專案。"
-    clean_name = str(name or "").strip()
-    if not clean_name:
-        return response(project, "❌ 請輸入實驗組名稱。")
+        return {}, [], gr.update(choices=[], value=None), "❌ 請先載入實驗專案。", gr.update(value="實驗組 1")
     groups = list(project.get("groups") or [])
+    clean_name = str(name or "").strip() or _next_experiment_project_group_name(groups)
     if any(group.get("name") == clean_name for group in groups):
         return response(project, f"❌ 實驗組名稱「{clean_name}」已存在。")
     if not answer_model:
@@ -3108,6 +3139,14 @@ def add_experiment_project_group_for_ui(
     except (OSError, ValueError) as exc:
         return response(project, f"❌ 實驗組保存失敗：{exc}")
     return response(updated, f"✅ 已加入實驗組「{clean_name}」。")
+
+
+def _next_experiment_project_group_name(groups: list[dict[str, Any]]) -> str:
+    names = {str(group.get("name", "")) for group in groups}
+    index = 1
+    while f"實驗組 {index}" in names:
+        index += 1
+    return f"實驗組 {index}"
 
 
 def remove_experiment_project_group_for_ui(
@@ -4095,6 +4134,8 @@ def build_app() -> gr.Blocks:
     llm_profile = llm_settings["profiles"][llm_settings["active"]]
     embedding_profile = embedding_settings["profiles"][embedding_settings["active"]]
     preferred_llm = preferred_service_model(llm_settings)
+    experiment_llm_choices = _configured_service_choice_items(llm_settings)
+    experiment_default_llm = preferred_llm or (experiment_llm_choices[0][1] if experiment_llm_choices else None)
     project_choices = _project_choices()
     initial_llm_credentials = [
         resolve_model_credentials_for_ui(llm_settings, preferred_llm)
@@ -4743,9 +4784,9 @@ def build_app() -> gr.Blocks:
             gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，使用各專案自己的問題集與 Neo4j Database 執行。")
             gr.Markdown("#### 實驗組參數")
             with gr.Row():
-                experiment_project_group_name = gr.Textbox(label="實驗組名稱")
+                experiment_project_group_name = gr.Textbox(label="實驗組名稱", placeholder="留白時自動命名：實驗組 1")
                 experiment_project_answer_model = gr.Dropdown(
-                    choices=llm_choices, value=preferred_llm, label="跨專案回答模型",
+                    choices=experiment_llm_choices, value=experiment_default_llm, label="跨專案回答模型",
                 )
                 experiment_project_answer_effort = gr.Dropdown(
                     choices=list(GPT_6_LUNA_REASONING_EFFORTS), value=DEFAULT_REASONING_EFFORT,
@@ -4769,12 +4810,8 @@ def build_app() -> gr.Blocks:
                 experiment_project_remove_group = gr.Dropdown(choices=[], label="移除實驗組")
                 remove_experiment_project_group_button = gr.Button("移除選取組")
             with gr.Row():
-                experiment_project_judge_model = gr.Dropdown(
-                    choices=llm_choices, value=preferred_llm, label="跨專案評測模型", scale=2,
-                )
-                experiment_project_judge_effort = gr.Dropdown(
-                    choices=list(GPT_6_LUNA_REASONING_EFFORTS), value=DEFAULT_REASONING_EFFORT,
-                    label="評測推理強度", visible=preferred_llm == GPT_6_LUNA_MODEL,
+                experiment_project_cross_judge_model = gr.Dropdown(
+                    choices=experiment_llm_choices, value=experiment_default_llm, label="跨專案評測模型", scale=2,
                 )
                 experiment_project_max_concurrency = gr.Number(
                     value=5, minimum=1, precision=0, label="回答最大並行請求數",
@@ -4786,8 +4823,8 @@ def build_app() -> gr.Blocks:
             stop_experiment_project_button = gr.Button("停止實驗", variant="stop")
             gr.Markdown("#### 評測模型設定")
             with gr.Row():
-                experiment_project_judge_model = gr.Dropdown(
-                    choices=llm_choices, value=preferred_llm, label="全域評測模型", scale=2,
+                experiment_project_global_judge_model = gr.Dropdown(
+                    choices=experiment_llm_choices, value=experiment_default_llm, label="全域評測模型", scale=2,
                 )
                 experiment_project_judge_effort = gr.Dropdown(
                     choices=list(GPT_6_LUNA_REASONING_EFFORTS), value=DEFAULT_REASONING_EFFORT,
@@ -5139,18 +5176,27 @@ def build_app() -> gr.Blocks:
             load_experiment_project_setup_for_ui,
             inputs=[experiment_project_state],
             outputs=[
-                experiment_project_remove_group, experiment_project_judge_model,
+                experiment_project_remove_group, experiment_project_cross_judge_model,
                 experiment_project_judge_effort, experiment_project_max_concurrency,
                 experiment_project_groups_table, experiment_project_summary_table,
                 experiment_project_details_table, experiment_project_test_status,
+                experiment_project_group_name,
             ],
         ).then(
             load_experiment_project_runtime_state_for_ui,
             inputs=[experiment_project_state],
-                outputs=[experiment_project_judge_model, experiment_project_judge_effort,
+            outputs=[experiment_project_cross_judge_model, experiment_project_global_judge_model,
+                     experiment_project_judge_effort,
                      experiment_project_judge_concurrency, experiment_project_pending_answers_state,
                      experiment_project_results_state, evaluate_experiment_project_button,
                      experiment_project_answers_status],
+        ).then(
+            refresh_experiment_model_choices_for_ui,
+            inputs=[llm_service_state, experiment_project_answer_model,
+                    experiment_project_cross_judge_model, experiment_project_global_judge_model],
+            outputs=[experiment_project_answer_model, experiment_project_cross_judge_model,
+                     experiment_project_global_judge_model],
+            show_progress="hidden",
         )
         add_experiment_project_group_button.click(
             add_experiment_project_group_for_ui,
@@ -5163,6 +5209,7 @@ def build_app() -> gr.Blocks:
             outputs=[
                 experiment_project_state, experiment_project_groups_table,
                 experiment_project_remove_group, experiment_project_groups_status,
+                experiment_project_group_name,
             ],
         )
         remove_experiment_project_group_button.click(
@@ -5179,18 +5226,42 @@ def build_app() -> gr.Blocks:
             outputs=[experiment_project_state, experiment_project_groups_status],
             show_progress="hidden",
         )
-        for component in [experiment_project_judge_model, experiment_project_judge_effort,
-                          experiment_project_judge_concurrency]:
+        experiment_project_cross_judge_model.input(
+            save_experiment_project_judge_settings_for_ui,
+            inputs=[experiment_project_state, experiment_project_cross_judge_model,
+                    experiment_project_judge_effort, experiment_project_judge_concurrency,
+                    llm_service_state],
+            outputs=[experiment_project_state, experiment_project_groups_status,
+                     experiment_project_global_judge_model],
+            show_progress="hidden",
+        )
+        experiment_project_global_judge_model.input(
+            save_experiment_project_judge_settings_for_ui,
+            inputs=[experiment_project_state, experiment_project_global_judge_model,
+                    experiment_project_judge_effort, experiment_project_judge_concurrency,
+                    llm_service_state],
+            outputs=[experiment_project_state, experiment_project_groups_status,
+                     experiment_project_cross_judge_model],
+            show_progress="hidden",
+        )
+        for component in [experiment_project_judge_effort, experiment_project_judge_concurrency]:
             component.input(
                 save_experiment_project_judge_settings_for_ui,
-                inputs=[experiment_project_state, experiment_project_judge_model,
-                        experiment_project_judge_effort, experiment_project_judge_concurrency],
-                outputs=[experiment_project_state, experiment_project_groups_status],
+                inputs=[experiment_project_state, experiment_project_global_judge_model,
+                        experiment_project_judge_effort, experiment_project_judge_concurrency,
+                        llm_service_state],
+                outputs=[experiment_project_state, experiment_project_groups_status,
+                         experiment_project_cross_judge_model],
                 show_progress="hidden",
             )
-        experiment_project_judge_model.change(
+        experiment_project_global_judge_model.change(
             reasoning_effort_visibility,
-            inputs=experiment_project_judge_model, outputs=experiment_project_judge_effort,
+            inputs=experiment_project_global_judge_model, outputs=experiment_project_judge_effort,
+            show_progress="hidden",
+        )
+        experiment_project_cross_judge_model.change(
+            reasoning_effort_visibility,
+            inputs=experiment_project_cross_judge_model, outputs=experiment_project_judge_effort,
             show_progress="hidden",
         )
         experiment_project_answer_model.change(
@@ -5221,7 +5292,7 @@ def build_app() -> gr.Blocks:
         evaluate_experiment_project_button.click(
             evaluate_experiment_project_answers_for_ui,
             inputs=[experiment_project_state, experiment_project_pending_answers_state,
-                    experiment_project_judge_model, experiment_project_judge_effort,
+                    experiment_project_cross_judge_model, experiment_project_judge_effort,
                     experiment_project_judge_concurrency, llm_service_state,
                     experiment_project_run_control_state],
             outputs=[experiment_project_test_status, experiment_project_results_state,
@@ -5457,11 +5528,13 @@ def build_app() -> gr.Blocks:
                     refresh_experiment_model_choices_for_ui,
                     inputs=[llm_service_state, evaluation_judge_model,
                             experiment_judge_model, experiment_project_answer_model,
-                            experiment_project_judge_model,
+                            experiment_project_cross_judge_model,
+                            experiment_project_global_judge_model,
                             *[row[1] for row in experiment_group_rows]],
                     outputs=[evaluation_judge_model,
                              experiment_judge_model, experiment_project_answer_model,
-                             experiment_project_judge_model,
+                             experiment_project_cross_judge_model,
+                             experiment_project_global_judge_model,
                              *[row[1] for row in experiment_group_rows]],
                     show_progress="hidden",
                 )
@@ -5487,11 +5560,13 @@ def build_app() -> gr.Blocks:
             refresh_experiment_model_choices_for_ui,
             inputs=[llm_service_state, evaluation_judge_model,
                     experiment_judge_model, experiment_project_answer_model,
-                    experiment_project_judge_model,
+                    experiment_project_cross_judge_model,
+                    experiment_project_global_judge_model,
                     *[row[1] for row in experiment_group_rows]],
             outputs=[evaluation_judge_model,
                      experiment_judge_model, experiment_project_answer_model,
-                     experiment_project_judge_model,
+                     experiment_project_cross_judge_model,
+                     experiment_project_global_judge_model,
                      *[row[1] for row in experiment_group_rows]],
             show_progress="hidden",
         )
@@ -5515,7 +5590,8 @@ def build_app() -> gr.Blocks:
             (evaluation_generation_model, evaluation_generation_effort),
             (evaluation_test_model, evaluation_test_effort),
             (evaluation_judge_model, evaluation_judge_effort),
-            (experiment_project_judge_model, experiment_project_judge_effort),
+            (experiment_project_cross_judge_model, experiment_project_judge_effort),
+            (experiment_project_global_judge_model, experiment_project_judge_effort),
             (experiment_project_answer_model, experiment_project_answer_effort),
         ]:
             model_field.change(
