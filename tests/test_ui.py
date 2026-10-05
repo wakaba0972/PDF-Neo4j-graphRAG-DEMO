@@ -2808,6 +2808,39 @@ def test_answer_question_for_ui_can_disable_reranker(tmp_path, monkeypatch) -> N
     ]]
 
 
+def test_answer_question_for_ui_keeps_expanded_evidence_without_reranker(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ui, "load_latest_graph", lambda *args: {
+        "run_id": "run-1", "document": "manual.pdf", "embedding_model": "embed",
+    })
+    monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]])
+    monkeypatch.setattr(ui, "search_graph_evidence", lambda *args, **kwargs: [
+        {"evidence_id": "direct-1", "kind": "原文", "text": "直接命中", "matched_by": ["official-hybrid"]},
+        {"evidence_id": "direct-2", "kind": "原文", "text": "另一直接命中", "matched_by": ["official-hybrid"]},
+        {"evidence_id": "graph-1", "kind": "關係", "text": "圖譜關聯證據", "matched_by": ["graph"]},
+        {"evidence_id": "graph-2", "kind": "原文", "text": "關聯原文", "matched_by": ["graph"]},
+    ])
+    captured = {}
+
+    def fake_answer(*args, **kwargs):
+        captured["evidence"] = args[5]
+        return {"answer": "答案", "evidence": args[5]}
+
+    monkeypatch.setattr(ui, "answer_graph_question", fake_answer)
+
+    status, answer, _rows = ui.answer_question_for_ui(
+        "http://models/v1", "key", "http://embed/v1", "embed-key",
+        "bolt://db", "neo4j", "user", "password",
+        "answer", "問題", "混合檢索", 4, False, True,
+    )
+
+    assert status.startswith("✅ 混合檢索")
+    assert answer == "答案"
+    assert [item["evidence_id"] for item in captured["evidence"]] == [
+        "direct-1", "graph-1", "direct-2", "graph-2",
+    ]
+
+
 def test_evaluation_preferences_keep_generation_and_test_models_separate(monkeypatch) -> None:
     captured = {}
     monkeypatch.setattr(ui, "load_project", lambda project_id: {"evaluation": {}})

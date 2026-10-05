@@ -100,3 +100,28 @@ def test_rerank_evidence_preserves_hybrid_order_for_equal_scores() -> None:
     ranked = qa_service.rerank_evidence("E01", evidence, 2)
 
     assert [item["evidence_id"] for item in ranked] == ["first", "second"]
+
+
+def test_interleave_expanded_evidence_keeps_graph_hits_within_top_k() -> None:
+    evidence = [
+        {"evidence_id": f"direct-{index}", "matched_by": ["official-hybrid"]}
+        for index in range(1, 7)
+    ] + [
+        {"evidence_id": f"graph-{index}", "matched_by": ["graph"]}
+        for index in range(1, 4)
+    ]
+
+    selected = qa_service.interleave_expanded_evidence(evidence, 4)
+
+    assert [item["evidence_id"] for item in selected] == [
+        "direct-1", "graph-1", "direct-2", "graph-2",
+    ]
+    assert len(selected) == 4
+
+
+def test_interleave_expanded_evidence_preserves_order_without_graph_hits() -> None:
+    evidence = [{"evidence_id": str(index)} for index in range(4)]
+
+    selected = qa_service.interleave_expanded_evidence(evidence, 2)
+
+    assert [item["evidence_id"] for item in selected] == ["0", "1"]

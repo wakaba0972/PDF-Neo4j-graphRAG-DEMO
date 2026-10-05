@@ -69,6 +69,7 @@ from .qa_service import (
     answer_graph_question,
     check_embedding_connection,
     embedding_vectors,
+    interleave_expanded_evidence,
     rerank_evidence,
 )
 from .service_settings import (
@@ -4077,6 +4078,8 @@ def answer_question_for_ui(
         )
         if use_reranker:
             evidence = rerank_evidence(question, evidence, int(top_k))
+        elif expand_evidence:
+            evidence = interleave_expanded_evidence(evidence, int(top_k))
         else:
             evidence = evidence[:int(top_k)]
         result = answer_graph_question(

@@ -55,6 +55,42 @@ def rerank_evidence(
     return [item for _, _, item in ranked[:limit]]
 
 
+def interleave_expanded_evidence(
+    evidence: list[dict[str, Any]],
+    top_k: int,
+) -> list[dict[str, Any]]:
+    """Keep graph-expanded evidence in a bounded, interleaved context budget."""
+    limit = max(int(top_k), 0)
+    if not limit:
+        return []
+
+    primary = [
+        item for item in evidence
+        if "graph" not in (item.get("matched_by") or [])
+    ]
+    expanded = [
+        item for item in evidence
+        if "graph" in (item.get("matched_by") or [])
+    ]
+    if not expanded:
+        return evidence[:limit]
+
+    # Reserve up to half of the context slots for graph neighbors, while
+    # retaining as many top-ranked direct hits as the remaining budget allows.
+    expanded_slots = min(len(expanded), limit // 2)
+    primary_slots = limit - expanded_slots
+    primary = primary[:primary_slots]
+    expanded = expanded[:expanded_slots]
+
+    interleaved: list[dict[str, Any]] = []
+    for index in range(max(len(primary), len(expanded))):
+        if index < len(primary):
+            interleaved.append(primary[index])
+        if index < len(expanded):
+            interleaved.append(expanded[index])
+    return interleaved[:limit]
+
+
 def embedding_vectors(base_url: str, api_key: str, model: str, texts: list[str]) -> list[list[float]]:
     if not model.strip():
         raise ValueError("此建圖結果沒有 Embedding 模型")
