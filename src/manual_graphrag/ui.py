@@ -1283,6 +1283,25 @@ def _group_expansion_mode(group: dict[str, Any]) -> str:
     return "證據擴展" if bool(group.get("expand_evidence")) else "停用"
 
 
+def _saved_reranker_mode(preferences: dict[str, Any]) -> str:
+    mode = preferences.get("reranker_mode")
+    if mode in RERANKER_MODES:
+        return mode
+    return "Reranker" if bool(preferences.get("use_reranker")) else "停用"
+
+
+def _saved_expansion_mode(preferences: dict[str, Any]) -> str:
+    mode = preferences.get("evidence_expansion_mode")
+    if mode in EVIDENCE_EXPANSION_MODES:
+        return mode
+    return "證據擴展" if bool(preferences.get("expand_evidence")) else "停用"
+
+
+def _selected_retrieval_mode(value: str | bool, legacy_mode: str) -> str:
+    """Accept current dropdown modes and legacy checkbox values."""
+    return (legacy_mode if value else "停用") if isinstance(value, bool) else str(value or "停用")
+
+
 def _experiment_group_rows(groups: list[dict[str, Any]]) -> list[list[object]]:
     return [[
         item["name"], item["answer_model"],
@@ -2070,8 +2089,8 @@ def load_evaluation_for_ui(project_id: str) -> tuple[Any, ...]:
         preferences.get("test_model", legacy_model), preferences.get("question_count", 10),
         _display_retrieval_mode(preferences.get("retrieval_mode")), preferences.get("top_k", 8),
         preferences.get("allow_parallel_generation", False),
-        preferences.get("use_reranker", False),
-        preferences.get("expand_evidence", False),
+        _saved_reranker_mode(preferences),
+        _saved_expansion_mode(preferences),
         preferences.get("test_max_concurrent_requests", 3),
         judge_model,
         preferences.get("judge_max_concurrent_requests", 3),
@@ -2094,8 +2113,8 @@ def save_evaluation_preferences_for_ui(
     retrieval_mode: str, top_k: int,
     allow_parallel_generation: bool = False,
     test_max_concurrent_requests: int = 3,
-    use_reranker: bool = False,
-    expand_evidence: bool = False,
+    use_reranker: str | bool = "停用",
+    expand_evidence: str | bool = "停用",
     judge_model: str | None = None,
     generation_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     test_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
@@ -2113,14 +2132,22 @@ def save_evaluation_preferences_for_ui(
             raise ValueError("評測最大並行請求數必須大於 0")
         project = load_project(project_id)
         evaluation = dict(project.get("evaluation") or {})
+        reranker_mode = _selected_retrieval_mode(use_reranker, "Reranker")
+        expansion_mode = _selected_retrieval_mode(expand_evidence, "證據擴展")
+        if reranker_mode not in RERANKER_MODES:
+            raise ValueError("Reranker 模式無效")
+        if expansion_mode not in EVIDENCE_EXPANSION_MODES:
+            raise ValueError("證據擴展模式無效")
         evaluation["preferences"] = {
             "generation_model": generation_model, "test_model": test_model,
             "judge_model": judge_model or test_model,
             "question_count": int(question_count),
             "retrieval_mode": retrieval_mode, "top_k": int(top_k),
             "allow_parallel_generation": bool(allow_parallel_generation),
-            "use_reranker": bool(use_reranker),
-            "expand_evidence": bool(expand_evidence),
+            "reranker_mode": reranker_mode,
+            "evidence_expansion_mode": expansion_mode,
+            "use_reranker": reranker_mode != "停用",
+            "expand_evidence": expansion_mode != "停用",
             "test_max_concurrent_requests": int(test_max_concurrent_requests),
             "judge_max_concurrent_requests": judge_concurrency,
             "generation_reasoning_effort": generation_reasoning_effort or DEFAULT_REASONING_EFFORT,
@@ -2138,8 +2165,8 @@ def generate_evaluation_for_ui(
     test_model: str, question_count: int, retrieval_mode: str, top_k: int,
     chunks: list[TextChunk], allow_parallel_generation: bool = False,
     test_max_concurrent_requests: int = 3,
-    use_reranker: bool = False,
-    expand_evidence: bool = False,
+    use_reranker: str | bool = "停用",
+    expand_evidence: str | bool = "停用",
     reasoning_effort: str | None = None,
 ) -> tuple[str, list[list[object]], dict[str, Any], list[list[object]]]:
     if not project_id:
@@ -2230,6 +2257,10 @@ def generate_evaluation_for_ui(
         for document_questions in document_results:
             for question in document_questions:
                 questions.append({**question, "number": len(questions) + 1})
+        reranker_mode = _selected_retrieval_mode(use_reranker, "Reranker")
+        expansion_mode = _selected_retrieval_mode(expand_evidence, "證據擴展")
+        if reranker_mode not in RERANKER_MODES or expansion_mode not in EVIDENCE_EXPANSION_MODES:
+            raise ValueError("Reranker 或證據擴展模式無效")
         existing_preferences = dict(existing_evaluation.get("preferences") or {})
         evaluation = {
             **existing_evaluation,
@@ -2237,8 +2268,10 @@ def generate_evaluation_for_ui(
                             "question_count": int(question_count),
                             "retrieval_mode": retrieval_mode, "top_k": int(top_k),
                             "allow_parallel_generation": bool(allow_parallel_generation),
-                            "use_reranker": bool(use_reranker),
-                            "expand_evidence": bool(expand_evidence),
+                            "reranker_mode": reranker_mode,
+                            "evidence_expansion_mode": expansion_mode,
+                            "use_reranker": reranker_mode != "停用",
+                            "expand_evidence": expansion_mode != "停用",
                             "test_max_concurrent_requests": int(test_max_concurrent_requests),
                             "generation_reasoning_effort": reasoning_effort or DEFAULT_REASONING_EFFORT},
             "questions": questions, "results": [], "pending_answers": [], "dirty": False,
@@ -2258,8 +2291,8 @@ def generate_evaluation_answers_for_ui(
     neo4j_uri: str, neo4j_database: str, neo4j_username: str, neo4j_password: str,
     model: str, retrieval_mode: str, top_k: int, evaluation: dict[str, Any],
     max_concurrent_requests: int = 3,
-    use_reranker: bool = False,
-    expand_evidence: bool = False,
+    use_reranker: str | bool = "停用",
+    expand_evidence: str | bool = "停用",
     answer_reasoning_effort: str | None = None,
     progress=gr.Progress(),
 ) -> tuple[str, dict[str, Any], list[list[object]]]:
@@ -2273,6 +2306,10 @@ def generate_evaluation_answers_for_ui(
         return "❌ 題目尚未完成自動儲存，請稍後再試。", evaluation, []
     if not model:
         return "❌ 請選擇回答模型。", evaluation, []
+    reranker_mode = _selected_retrieval_mode(use_reranker, "Reranker")
+    expansion_mode = _selected_retrieval_mode(expand_evidence, "證據擴展")
+    if reranker_mode not in RERANKER_MODES or expansion_mode not in EVIDENCE_EXPANSION_MODES:
+        return "❌ Reranker 或證據擴展模式無效。", evaluation, []
     try:
         concurrency = int(max_concurrent_requests)
         if concurrency < 1:
@@ -2287,13 +2324,17 @@ def generate_evaluation_answers_for_ui(
             model_endpoint, api_key, embedding_api_base, embedding_api_key,
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
             model, item["question"], retrieval_mode, max(int(top_k), 10),
-            use_reranker, expand_evidence,
+            reranker_mode != "停用", expansion_mode != "停用",
             **_reasoning_effort_kwargs(model, answer_reasoning_effort),
+            reranker_mode=reranker_mode,
+            evidence_expansion_mode=expansion_mode,
         )
         rank = _retrieval_rank(item, evidence_rows, document_ids_by_name)
         return {
             **item,
             "answer_model": model,
+            "reranker_mode": reranker_mode,
+            "evidence_expansion_mode": expansion_mode,
             **_reasoning_effort_record(model, answer_reasoning_effort, "answer_reasoning_effort"),
             "actual_answer": actual,
             "answer_status": status,
@@ -2384,8 +2425,8 @@ def run_evaluation_for_ui(
     neo4j_uri: str, neo4j_database: str, neo4j_username: str, neo4j_password: str,
     model: str, retrieval_mode: str, top_k: int, evaluation: dict[str, Any],
     max_concurrent_requests: int = 3,
-    use_reranker: bool = False,
-    expand_evidence: bool = False,
+    use_reranker: str | bool = "停用",
+    expand_evidence: str | bool = "停用",
     judge_model_endpoint: str | None = None,
     judge_api_key: str | None = None,
     judge_model: str | None = None,
@@ -2405,6 +2446,10 @@ def run_evaluation_for_ui(
         return "❌ 請選擇回答模型與評測模型。", [], evaluation
     if judge_model_endpoint is not None and not judge_model_endpoint:
         return "❌ 無法解析評測模型的服務設定。", [], evaluation
+    reranker_mode = _selected_retrieval_mode(use_reranker, "Reranker")
+    expansion_mode = _selected_retrieval_mode(expand_evidence, "證據擴展")
+    if reranker_mode not in RERANKER_MODES or expansion_mode not in EVIDENCE_EXPANSION_MODES:
+        return "❌ Reranker 或證據擴展模式無效。", [], evaluation
     concurrency = int(max_concurrent_requests)
     if concurrency < 1:
         return "❌ 測試最大並行請求數必須大於 0", [], evaluation
@@ -2414,8 +2459,10 @@ def run_evaluation_for_ui(
             model_endpoint, api_key, embedding_api_base, embedding_api_key,
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
             model, item["question"], retrieval_mode, max(int(top_k), 10),
-            use_reranker, expand_evidence,
+            reranker_mode != "停用", expansion_mode != "停用",
             **_reasoning_effort_kwargs(model, answer_reasoning_effort),
+            reranker_mode=reranker_mode,
+            evidence_expansion_mode=expansion_mode,
         )
         retrieval_rank = _retrieval_rank(item, evidence_rows, document_ids_by_name)
         if status.startswith("✅"):
@@ -2435,6 +2482,8 @@ def run_evaluation_for_ui(
             **item,
             "answer_model": model,
             "judge_model": effective_judge_model,
+            "reranker_mode": reranker_mode,
+            "evidence_expansion_mode": expansion_mode,
             **_reasoning_effort_record(model, answer_reasoning_effort, "answer_reasoning_effort"),
             **_reasoning_effort_record(effective_judge_model, judge_reasoning_effort, "judge_reasoning_effort"),
             "actual_answer": actual,
@@ -4150,11 +4199,11 @@ def answer_question_for_ui(
             embedding_api_base, embedding_api_key, graph_state.get("embedding_model", ""),
             [question.strip()],
         )[0]
-        effective_reranker_mode = reranker_mode or (
-            "LLM Reranker" if use_reranker else "停用"
+        effective_reranker_mode = reranker_mode or _selected_retrieval_mode(
+            use_reranker, "LLM Reranker"
         )
-        effective_expansion_mode = evidence_expansion_mode or (
-            "證據擴展 V2" if expand_evidence else "停用"
+        effective_expansion_mode = evidence_expansion_mode or _selected_retrieval_mode(
+            expand_evidence, "證據擴展 V2"
         )
         if effective_reranker_mode not in RERANKER_MODES:
             raise ValueError("Reranker 模式無效")
@@ -4543,10 +4592,13 @@ def build_app() -> gr.Blocks:
             with gr.Row():
                 retrieval_mode = gr.Radio(["基本向量檢索", "混合檢索"], value="混合檢索", label="檢索模式")
                 top_k = gr.Slider(1, 50, value=8, step=1, label="Top K")
-                use_reranker = gr.Checkbox(value=False, label="使用 LLM Reranker")
-                expand_evidence = gr.Checkbox(
-                    value=False, label="證據擴展 V2",
-                    info="僅在「混合檢索」模式生效。",
+                use_reranker = gr.Dropdown(
+                    choices=list(RERANKER_MODES), value="停用", label="Reranker 模式",
+                    allow_custom_value=False,
+                )
+                expand_evidence = gr.Dropdown(
+                    choices=list(EVIDENCE_EXPANSION_MODES), value="停用", label="證據擴展模式",
+                    info="僅在「混合檢索」模式生效。", allow_custom_value=False,
                 )
             ask_button = gr.Button("送出問題", variant="primary")
             answer_status = gr.Markdown()
@@ -4664,9 +4716,14 @@ def build_app() -> gr.Blocks:
                         ["基本向量檢索", "混合檢索"], value="混合檢索", label="檢索模式",
                     )
                     evaluation_top_k = gr.Slider(1, 50, value=8, step=1, label="Top K")
-                    evaluation_use_reranker = gr.Checkbox(value=False, label="使用 LLM Reranker")
-                    evaluation_expand_evidence = gr.Checkbox(
-                        value=False, label="證據擴展 V2", info="透過圖譜關係擴展；僅在「混合檢索」模式生效。",
+                    evaluation_use_reranker = gr.Dropdown(
+                        choices=list(RERANKER_MODES), value="停用", label="Reranker 模式",
+                        allow_custom_value=False,
+                    )
+                    evaluation_expand_evidence = gr.Dropdown(
+                        choices=list(EVIDENCE_EXPANSION_MODES), value="停用", label="證據擴展模式",
+                        info="透過圖譜關係擴展；僅在「混合檢索」模式生效。",
+                        allow_custom_value=False,
                     )
                     evaluation_test_max_concurrent_requests = gr.Number(
                         value=3, minimum=1, precision=0, label="最大並行請求數",

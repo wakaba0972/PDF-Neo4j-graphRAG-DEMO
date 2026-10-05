@@ -244,13 +244,19 @@ def test_all_concurrency_inputs_show_ollama_recommendation() -> None:
 
 def test_reranker_and_graph_evidence_expansion_default_off() -> None:
     app = build_app()
-    defaults = {
-        component.get("props", {}).get("label"): component.get("props", {}).get("value")
-        for component in app.config["components"]
-        if component.get("props", {}).get("label") in {"使用 LLM Reranker", "證據擴展 V2"}
+    controls = {
+        label: [component for component in app.config["components"]
+                if component.get("props", {}).get("label") == label]
+        for label in ("Reranker 模式", "證據擴展模式")
     }
-
-    assert defaults == {"使用 LLM Reranker": False, "證據擴展 V2": False}
+    assert len(controls["Reranker 模式"]) >= 2
+    assert len(controls["證據擴展模式"]) >= 2
+    assert all(
+        component.get("props", {}).get("value") == "停用"
+        for component in app.config["components"]
+        if component.get("props", {}).get("label") in {"Reranker 模式", "證據擴展模式"}
+    )
+    assert all(component["type"] == "dropdown" for group in controls.values() for component in group)
 
 
 
@@ -1091,7 +1097,7 @@ def test_retrieval_rank_maps_legacy_source_name_to_document_id() -> None:
 def test_run_evaluation_for_ui_judges_and_saves(monkeypatch) -> None:
     monkeypatch.setattr(
         ui, "answer_question_for_ui",
-        lambda *args: ("✅ 完成", "實際答案", [[
+        lambda *args, **kwargs: ("✅ 完成", "實際答案", [[
             "原文", "證據", "official-hybrid", "0.9",
             "manual.pdf：1", "manual.pdf：9", "manual.pdf",
         ]]),
@@ -1137,7 +1143,7 @@ def test_generate_answers_defers_display_and_evaluation(monkeypatch) -> None:
     answer_calls = []
     monkeypatch.setattr(
         ui, "answer_question_for_ui",
-        lambda *args: answer_calls.append(args) or ("✅ 完成", "隱藏的回答", []),
+        lambda *args, **kwargs: answer_calls.append((args, kwargs)) or ("✅ 完成", "隱藏的回答", []),
     )
     monkeypatch.setattr(ui, "save_project", lambda project_id, payload: captured.update(payload) or {})
     evaluation = {"questions": [{"number": 1, "question": "Q", "expected_answer": "A"}]}
@@ -1216,7 +1222,7 @@ def test_manual_evaluation_edit_updates_reason_and_accuracy(monkeypatch) -> None
 def test_run_evaluation_for_ui_forwards_credentials_to_answer_question_for_ui(monkeypatch) -> None:
     captured = {}
 
-    def fake_answer_question_for_ui(*args):
+    def fake_answer_question_for_ui(*args, **kwargs):
         captured["args"] = args
         return "✅ 完成", "實際答案", []
 
@@ -1247,7 +1253,7 @@ def test_run_evaluation_uses_separate_judge_model_and_records_both(monkeypatch) 
     captured = {}
     monkeypatch.setattr(
         ui, "answer_question_for_ui",
-        lambda *args: ("✅ 完成", "回答內容", []),
+        lambda *args, **kwargs: ("✅ 完成", "回答內容", []),
     )
     monkeypatch.setattr(
         ui, "judge_evaluation_answer",
@@ -2817,7 +2823,7 @@ def test_answer_question_for_ui_can_disable_reranker(tmp_path, monkeypatch) -> N
     status, answer, rows = ui.answer_question_for_ui(
         "http://models/v1", "key", "http://embed/v1", "embed-key",
         "bolt://db", "neo4j", "user", "password",
-        "answer", " E01 怎麼處理？ ", "基本檢索", 8, False, False,
+        "answer", " E01 怎麼處理？ ", "基本檢索", 8, "停用", "停用",
     )
 
     assert status.startswith("✅ 基本檢索")
@@ -2920,6 +2926,8 @@ def test_evaluation_preferences_keep_generation_and_test_models_separate(monkeyp
         "retrieval_mode": "基本檢索",
         "top_k": 6,
         "allow_parallel_generation": True,
+        "reranker_mode": "停用",
+        "evidence_expansion_mode": "停用",
         "use_reranker": False,
         "expand_evidence": False,
         "test_max_concurrent_requests": 5,
@@ -2928,6 +2936,37 @@ def test_evaluation_preferences_keep_generation_and_test_models_separate(monkeyp
         "test_reasoning_effort": "low",
         "judge_reasoning_effort": "low",
     }
+
+
+def test_evaluation_preferences_save_new_modes(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(ui, "load_project", lambda project_id: {"evaluation": {}})
+    monkeypatch.setattr(ui, "save_project", lambda project_id, payload: captured.update(payload) or {})
+
+    status = ui.save_evaluation_preferences_for_ui(
+        "project", "generation-model", "test-model", 12, "混合檢索", 6,
+        False, 5, "LLM Reranker", "證據擴展 V2", "judge-model",
+    )
+
+    assert status.startswith("✅")
+    preferences = captured["evaluation"]["preferences"]
+    assert preferences["reranker_mode"] == "LLM Reranker"
+    assert preferences["evidence_expansion_mode"] == "證據擴展 V2"
+    assert preferences["use_reranker"] is True
+    assert preferences["expand_evidence"] is True
+
+
+def test_load_evaluation_restores_retrieval_modes(monkeypatch) -> None:
+    monkeypatch.setattr(ui, "load_project", lambda _project_id: {"evaluation": {
+        "preferences": {
+            "reranker_mode": "LLM Reranker",
+            "evidence_expansion_mode": "證據擴展 V2",
+        },
+    }})
+
+    loaded = ui.load_evaluation_for_ui("project")
+
+    assert loaded[9:11] == ("LLM Reranker", "證據擴展 V2")
 
 
 def test_load_evaluation_restores_saved_summary(monkeypatch) -> None:
@@ -2985,8 +3024,8 @@ def test_load_evaluation_supports_legacy_shared_model(monkeypatch) -> None:
     loaded = ui.load_evaluation_for_ui("project")
 
     assert loaded[8] is False
-    assert loaded[9] is False
-    assert loaded[10] is False
+    assert loaded[9] == "停用"
+    assert loaded[10] == "停用"
     assert loaded[11] == 3
     assert loaded[3:5] == ("legacy-model", "legacy-model")
     assert loaded[12] == "gpt-6-luna"
