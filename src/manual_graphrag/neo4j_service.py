@@ -199,15 +199,6 @@ def search_graph_evidence(
     """
     try:
         with GraphDatabase.driver(uri.strip(), auth=(username.strip(), password)) as driver:
-            with driver.session(database=database.strip()) as session:
-                total_record = session.run(
-                    "MATCH (node:GraphEvidence) RETURN count(node) AS count"
-                ).single()
-                candidate_count = max(
-                    retrieval_top_k,
-                    int(total_record["count"]) if total_record else int(top_k),
-                )
-
             query_params = {"run_id": run_id}
             if retrieval_mode in {"基本向量檢索", "基本檢索", "向量 RAG"}:
                 retriever = VectorCypherRetriever(
@@ -219,7 +210,7 @@ def search_graph_evidence(
                 )
                 result = retriever.search(
                     query_vector=embedding,
-                    top_k=candidate_count,
+                    top_k=retrieval_top_k,
                     effective_search_ratio=3,
                     query_params=query_params,
                 )
@@ -235,7 +226,7 @@ def search_graph_evidence(
                 result = retriever.search(
                     query_text=_escape_fulltext_query(question),
                     query_vector=embedding,
-                    top_k=candidate_count,
+                    top_k=retrieval_top_k,
                     effective_search_ratio=3,
                     query_params=query_params,
                     ranker="naive",

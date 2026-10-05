@@ -435,6 +435,7 @@ def test_search_graph_evidence_uses_official_hybrid_retriever(monkeypatch) -> No
     assert arguments["effective_search_ratio"] == 3
     assert arguments["query_params"] == {"run_id": "run-1"}
     assert arguments["ranker"] == "naive"
+    assert not any("count(node)" in query for query, _parameters in session.calls)
 
 
 def test_basic_vector_retrieval_uses_vector_cypher_retriever(monkeypatch) -> None:
@@ -470,6 +471,7 @@ def test_basic_vector_retrieval_uses_vector_cypher_retriever(monkeypatch) -> Non
         "effective_search_ratio": 3,
         "query_params": {"run_id": "run-1"},
     }
+    assert not any("count(node)" in query for query, _parameters in session.calls)
 
 
 class ExpansionSearchSession:
