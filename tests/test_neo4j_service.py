@@ -604,6 +604,7 @@ def test_graph_expansion_fetches_new_source_chunks_once(monkeypatch) -> None:
     expansion_query = next(query for query, _parameters in session.calls if "MATCH path = (seed)-[" in query)
     assert "EXTRACTED_RELATION" in expansion_query
     assert "*1..4" in expansion_query
+    assert "WHERE NOT (candidate.evidence_id IN $seed_ids)" in expansion_query
     assert "name IN $names" not in expansion_query
 
 

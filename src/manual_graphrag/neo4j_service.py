@@ -356,7 +356,7 @@ def search_graph_evidence(
                                 :REPRESENTS|EVIDENCE_SOURCE|EVIDENCE_TARGET|
                                  MENTIONS_ENTITY|EXTRACTED_RELATION*1..{graph_hops}
                             ]-(candidate:GraphEvidence {{run_id: $run_id}})
-                            WHERE candidate.evidence_id NOT IN $seed_ids
+                            WHERE NOT (candidate.evidence_id IN $seed_ids)
                             WITH candidate, min(length(path)) AS distance
                             RETURN candidate {{
                                 .evidence_id, .kind, .name, .source, .target, .text,
