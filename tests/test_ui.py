@@ -3010,14 +3010,20 @@ def test_import_experiment_project_questions_saves_per_member(tmp_path, monkeypa
         "answer_sources": [{"document": "guide.pdf", "pages": [3]}],
     }]), encoding="utf-8")
 
-    updated, rows, status = ui.import_experiment_project_questions_for_ui(
+    updated, rows, status, file_update = ui.import_experiment_project_questions_for_ui(
         str(question_file), experiment, member["project_id"],
     )
 
     assert status.startswith("✅")
     assert len(rows) == 1
     assert len(updated["questions_by_project"][member["project_id"]]) == 1
+    assert file_update == {"value": None, "__type__": "update"}
     assert not ui.load_project(member["project_id"]).get("experiment")
+
+
+def test_experiment_project_banner_uses_experiment_name():
+    assert ui.experiment_project_banner_for_ui({"name": "跨車型實驗"}) == "### 📁 目前專案：跨車型實驗"
+    assert ui.experiment_project_banner_for_ui({}) == "### 📁 目前專案：尚未選擇"
 
 
 def test_multi_project_experiment_runs_each_projects_own_database(tmp_path, monkeypatch):
@@ -3067,3 +3073,58 @@ def test_multi_project_experiment_runs_each_projects_own_database(tmp_path, monk
     assert summaries[0][3:6] == [2, "1 / 2", "50.0%"]
     assert {row[1] for row in details} == {member["name"] for member in members}
     assert len(saved["results"]) == 2
+
+
+def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    member = ui.create_project("跨專案成員")
+    ui.save_project(member["project_id"], {"graph_state": {"neo4j_imported": True}})
+    experiment = ui.create_experiment_project("分階段測試")
+    question = {"number": 1, "question": "Q", "expected_answer": "A", "document": "manual.pdf"}
+    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
+        "members": [member["project_id"]],
+        "questions_by_project": {member["project_id"]: [question]},
+        "groups": [{"name": "G", "answer_model": "answer", "retrieval_mode": "混合檢索",
+                    "top_k": 5, "use_reranker": False, "expand_evidence": False}],
+    })
+    monkeypatch.setattr(ui, "resolve_model_credentials_for_ui", lambda *_: ("endpoint", "key"))
+    monkeypatch.setattr(ui, "answer_question_for_ui", lambda *args, **kwargs: ("✅ 完成", "A", []))
+    generated_status, pending, summaries, details, saved = ui.generate_experiment_project_answers_for_ui(
+        experiment, 2, {}, "embed", "key", "bolt", "user", "password",
+    )
+    assert generated_status.startswith("✅ 已生成")
+    assert len(pending) == 1 and pending[0]["actual_answer"] == "A"
+    assert summaries == details == []
+    assert saved["pending_answers"] == pending
+
+    monkeypatch.setattr(ui, "judge_evaluation_answer", lambda *args, **kwargs: {"passed": True, "reason": "符合"})
+    evaluated_status, results, summaries, details, saved = ui.evaluate_experiment_project_answers_for_ui(
+        saved, pending, "judge", "low", 2, {},
+    )
+    assert evaluated_status == "✅ 評測完成｜答對 1 / 1 個跨專案實驗題次。"
+    assert results[0]["passed"] is True
+    assert summaries[0][4] == "1 / 1"
+    assert details[0][1:3] == ["跨專案成員", 1]
+
+    details[0][7] = False
+    edited_status, summaries, _details, saved = ui.update_manual_experiment_project_result_for_ui(
+        saved, details, results,
+    )
+    assert "答對 0 / 1" in edited_status
+    assert summaries[0][4] == "0 / 1"
+    assert saved["results"][0]["reason"] == "人工評判"
+
+
+def test_experiment_project_inline_groups_preserve_saved_groups_on_empty_snapshot(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    experiment = ui.create_experiment_project("保留實驗組")
+    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
+        "groups": [{"name": "G", "answer_model": "answer", "retrieval_mode": "混合檢索",
+                    "top_k": 8, "use_reranker": False, "expand_evidence": False}],
+        "pending_answers": [{"actual_answer": "A"}],
+    })
+
+    restored, message = ui.save_experiment_project_groups_from_rows_for_ui(experiment, [])
+    assert message.startswith("✅ 保留已保存")
+    assert restored["groups"] == experiment["groups"]
+    assert restored["pending_answers"] == experiment["pending_answers"]
