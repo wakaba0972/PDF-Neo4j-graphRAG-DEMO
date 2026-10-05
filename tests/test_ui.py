@@ -279,7 +279,7 @@ def test_evaluation_results_table_uses_smaller_font_class() -> None:
     assert "font-size: 14px !important" in html_styles
 
 
-def test_pages_stay_locked_until_project_is_created_or_loaded() -> None:
+def test_single_project_pages_stay_locked_but_experiment_pages_are_enabled() -> None:
     app = build_app()
     protected_labels = {
         "0-2 PDF 與參數", "0-3 建圖",
@@ -299,7 +299,7 @@ def test_pages_stay_locked_until_project_is_created_or_loaded() -> None:
 
     assert len(tabs) == 5
     assert len(experiment_tabs) == 4
-    assert all(tab["props"]["interactive"] is False for tab in experiment_tabs)
+    assert all(tab["props"]["interactive"] is True for tab in experiment_tabs)
     assert not any(
         "歷史紀錄" in str(component.get("props", {}).get("label", ""))
         for component in app.config["components"]

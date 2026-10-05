@@ -4418,7 +4418,7 @@ def build_app() -> gr.Blocks:
                 experiment_compact_export_file = gr.File(label="簡潔指標結果 JSON", interactive=False)
             experiment_export_status = gr.Markdown()
 
-        with gr.Tab("1-0 實驗專案", interactive=False) as experiment_project_tab:
+        with gr.Tab("1-0 實驗專案", interactive=True) as experiment_project_tab:
             gr.Markdown("建立實驗專案，並加入多個已完成建圖的 0 系列專案。各成員專案的 Neo4j Database 仍彼此獨立。")
             with gr.Row():
                 experiment_project_selector = gr.Dropdown(
@@ -4441,7 +4441,7 @@ def build_app() -> gr.Blocks:
                 datatype=["str", "str", "str"], interactive=False, wrap=True,
             )
 
-        with gr.Tab("1-1 成員專案連線測試", interactive=False) as experiment_connection_tab:
+        with gr.Tab("1-1 成員專案連線測試", interactive=True) as experiment_connection_tab:
             gr.Markdown("使用 0-1 的 Neo4j URI／帳密，逐一測試實驗專案內各成員專案自己的 Database。")
             test_experiment_connections_button = gr.Button("測試所有成員專案連線", variant="primary")
             experiment_connection_status = gr.Markdown("請先在 1-0 載入實驗專案。")
@@ -4450,7 +4450,7 @@ def build_app() -> gr.Blocks:
                 datatype=["str", "str", "str", "str"], interactive=False, wrap=True,
             )
 
-        with gr.Tab("1-2 問題集準備", interactive=False) as experiment_questions_tab:
+        with gr.Tab("1-2 問題集準備", interactive=True) as experiment_questions_tab:
             gr.Markdown("為實驗專案中的每個成員專案分別匯入問題集；題目會在該專案自己的圖譜上檢索與評測。")
             experiment_questions_member = gr.Dropdown(choices=[], label="成員專案")
             with gr.Row():
@@ -4464,7 +4464,7 @@ def build_app() -> gr.Blocks:
                 datatype=["number", "str", "str", "str", "str"], interactive=False, wrap=True,
             )
 
-        with gr.Tab("1-3 自動實驗測試", interactive=False) as experiment_project_test_tab:
+        with gr.Tab("1-3 自動實驗測試", interactive=True) as experiment_project_test_tab:
             gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，使用各專案自己的問題集與 Neo4j Database 執行。")
             gr.Markdown("#### 實驗組參數")
             with gr.Row():
