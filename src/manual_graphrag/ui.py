@@ -32,6 +32,7 @@ from .evaluation_service import (
     generate_evaluation_questions,
     judge_evaluation_answer,
     sample_random_page_context,
+    verify_evaluation_judgment,
 )
 from .graph_service import (
     GPT_6_LUNA_MODEL,
@@ -140,6 +141,43 @@ def _reasoning_effort_record(model: str | None, effort: str | None, field: str) 
         {field: effort or DEFAULT_REASONING_EFFORT}
         if str(model or "").strip().casefold() == GPT_6_LUNA_MODEL else {}
     )
+
+
+def _verify_judgment_if_enabled(
+    judgment: dict[str, Any], verification_enabled: bool,
+    endpoint: str, api_key: str, model: str,
+    question: str, expected_answer: str, actual_answer: str,
+    reasoning_effort: str | None = None,
+) -> dict[str, Any]:
+    result = {**judgment, "verification_enabled": bool(verification_enabled)}
+    if not verification_enabled:
+        return {**result, "verification_changed": None}
+    first_passed = bool(judgment.get("passed"))
+    first_reason = str(judgment.get("reason", ""))
+    try:
+        verified = verify_evaluation_judgment(
+            endpoint, api_key, model, question, expected_answer, actual_answer,
+            first_passed, first_reason,
+            **_reasoning_effort_kwargs(model, reasoning_effort),
+        )
+    except ValueError as exc:
+        return {
+            **result,
+            "first_passed": first_passed,
+            "first_reason": first_reason,
+            "verification_changed": None,
+            "verification_error": str(exc),
+        }
+    return {
+        **result,
+        "first_passed": first_passed,
+        "first_reason": first_reason,
+        "verification_passed": verified["passed"],
+        "verification_reason": verified["reason"],
+        "verification_changed": bool(verified["passed"]) != first_passed,
+        "passed": verified["passed"],
+        "reason": verified["reason"],
+    }
 
 
 def connection_summary(
@@ -1242,6 +1280,7 @@ def load_experiment_project_setup_for_ui(
         (project or {}).get("summary_rows", []), (project or {}).get("detail_rows", []),
         (project or {}).get("status", "請設定實驗組並執行。"),
         "實驗組設定會自動儲存。",
+        gr.update(value=bool((project or {}).get("verification_enabled", False))),
     )
 
 
@@ -1793,12 +1832,12 @@ def load_experiment_for_ui(
             # Older saved UI rows included the two model columns. Keep them in
             # the result objects/export, but omit them from the visible table.
             detail_rows.append([
-                row[0], row[3], row[5], row[4], row[6], row[7], row[8], row[9],
+                row[0], row[3], row[5], row[4], row[6], row[7], row[8], None, row[9],
             ])
         elif row and len(row) == 9:
             # Older detail rows also included retrieval rank; it remains in the
             # full result/export data, not in the visible table.
-            detail_rows.append([row[0], row[1], row[3], row[2], *row[4:8]])
+            detail_rows.append([row[0], row[1], row[3], row[2], *row[4:7], None, row[7]])
         else:
             detail_rows.append(row)
     if not results:
@@ -1849,6 +1888,7 @@ def load_experiment_for_ui(
         data.get("judge_max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         pending_answers,
         *_experiment_answer_availability(pending_answers),
+        gr.update(value=bool(data.get("verification_enabled", False))),
     )
 
 
@@ -2037,6 +2077,7 @@ def _evaluation_result_rows(results: list[dict[str, Any]]) -> list[list[object]]
         item.get("document", ""),
         item.get("actual_answer", ""),
         bool(item.get("passed")),
+        item.get("verification_changed"),
         item.get("reason", ""),
     ] for item in results]
 
@@ -2262,13 +2303,13 @@ def load_evaluation_for_ui(project_id: str) -> tuple[Any, ...]:
     if not project_id:
         return ({}, [], [], *([gr.update()] * 11),
                 *([gr.update(value=DEFAULT_REASONING_EFFORT, visible=False)] * 3),
-                "請先選擇專案。")
+                "請先選擇專案。", gr.update(value=False))
     try:
         project = load_project(project_id)
     except (OSError, ValueError) as exc:
         return ({}, [], [], *([gr.update()] * 11),
                 *([gr.update(value=DEFAULT_REASONING_EFFORT, visible=False)] * 3),
-                f"❌ {exc}")
+                f"❌ {exc}", gr.update(value=False))
     evaluation = dict(project.get("evaluation") or {})
     evaluation.setdefault("dirty", False)
     preferences = evaluation.get("preferences") or {}
@@ -2298,6 +2339,7 @@ def load_evaluation_for_ui(project_id: str) -> tuple[Any, ...]:
                   choices=list(GPT_6_LUNA_REASONING_EFFORTS)),
         (_evaluation_summary(results, loaded=True) if results else
          f"已載入 {len(questions)} 道題目與 0 筆測試結果。"),
+        gr.update(value=bool(evaluation.get("verification_enabled", False))),
     )
 
 
@@ -2558,6 +2600,7 @@ def evaluate_generated_answers_for_ui(
     judge_model: str, evaluation: dict[str, Any],
     max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
     judge_reasoning_effort: str | None = None,
+    verification_enabled: bool = False,
     progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], dict[str, Any]]:
     """Judge saved answers and only then display the complete per-question results."""
@@ -2585,10 +2628,17 @@ def evaluate_generated_answers_for_ui(
                     item["question"], item["expected_answer"], item.get("actual_answer", ""),
                     **_reasoning_effort_kwargs(judge_model, judge_reasoning_effort),
                 )
+                judgment = _verify_judgment_if_enabled(
+                    judgment, verification_enabled, judge_model_endpoint, judge_api_key,
+                    judge_model, item["question"], item["expected_answer"],
+                    item.get("actual_answer", ""), judge_reasoning_effort,
+                )
             except ValueError as exc:
                 judgment = {"passed": False, "reason": f"評判失敗：{exc}"}
         else:
             judgment = {"passed": False, "reason": status or "回答生成失敗"}
+        judgment.setdefault("verification_enabled", bool(verification_enabled))
+        judgment.setdefault("verification_changed", None)
         return {
             **item,
             "judge_model": judge_model,
@@ -2606,6 +2656,7 @@ def evaluate_generated_answers_for_ui(
         final_results = [item for item in results if item is not None]
         current["results"] = final_results
         current["judge_model"] = judge_model
+        current["verification_enabled"] = bool(verification_enabled)
         save_project(project_id, {"evaluation": current})
     except (OSError, TypeError, ValueError) as exc:
         return f"❌ 評測或保存失敗：{exc}", [], current
@@ -2625,6 +2676,7 @@ def run_evaluation_for_ui(
     judge_model: str | None = None,
     answer_reasoning_effort: str | None = None,
     judge_reasoning_effort: str | None = None,
+    verification_enabled: bool = False,
     progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], dict[str, Any]]:
     questions = evaluation.get("questions") if evaluation else None
@@ -2667,10 +2719,19 @@ def run_evaluation_for_ui(
                     item["expected_answer"], actual,
                     **_reasoning_effort_kwargs(effective_judge_model, judge_reasoning_effort),
                 )
+                judgment = _verify_judgment_if_enabled(
+                    judgment, verification_enabled,
+                    judge_model_endpoint or model_endpoint,
+                    api_key if judge_api_key is None else judge_api_key,
+                    effective_judge_model, item["question"], item["expected_answer"],
+                    actual, judge_reasoning_effort,
+                )
             except ValueError as exc:
                 judgment = {"passed": False, "reason": f"評判失敗：{exc}"}
         else:
             judgment = {"passed": False, "reason": status}
+        judgment.setdefault("verification_enabled", bool(verification_enabled))
+        judgment.setdefault("verification_changed", None)
         return {
             **item,
             "answer_model": model,
@@ -2701,6 +2762,7 @@ def run_evaluation_for_ui(
     results = [result for result in results if result is not None]
     updated = dict(evaluation)
     updated["results"] = results
+    updated["verification_enabled"] = bool(verification_enabled)
     try:
         save_project(project_id, {"evaluation": updated})
     except (OSError, ValueError) as exc:
@@ -2724,6 +2786,7 @@ def run_experiment_groups_for_ui(
     judge_model: str | None = None,
     judge_reasoning_effort: str | None = None,
     persist: bool = True,
+    verification_enabled: bool = False,
     progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], list[list[object]], list[dict[str, Any]]]:
     if not project_id:
@@ -2814,6 +2877,14 @@ def run_experiment_groups_for_ui(
                 judgment = {"passed": False, "reason": f"評判失敗：{exc}"}
         else:
             judgment = {"passed": False, "reason": status}
+        if status.startswith("✅") and "verification_error" not in judgment:
+            judgment = _verify_judgment_if_enabled(
+                judgment, verification_enabled, judge_endpoint, judge_key,
+                effective_judge_model, item["question"], item["expected_answer"],
+                actual, effective_judge_effort,
+            )
+        judgment.setdefault("verification_enabled", bool(verification_enabled))
+        judgment.setdefault("verification_changed", None)
         return {
             "group_index": group_index,
             "group_name": group["name"],
@@ -2885,7 +2956,8 @@ def run_experiment_groups_for_ui(
         item["group_name"], item["answer_model"], item["judge_model"],
         item["number"], item["question"], item["document"],
         item["expected_answer"], item["actual_answer"],
-        "✅ 通過" if item["passed"] else "❌ 未通過", item["reason"],
+        "✅ 通過" if item["passed"] else "❌ 未通過",
+        item.get("verification_changed"), item["reason"],
         item["retrieval_rank"],
     ] for item in completed_results]
     stopped = _run_control_stopped(run_control)
@@ -2903,6 +2975,7 @@ def run_experiment_groups_for_ui(
                 "max_concurrent_requests": concurrency,
                 "judge_model": effective_judge_model,
                 "judge_reasoning_effort": effective_judge_effort,
+                "verification_enabled": bool(verification_enabled),
                 "results": completed_results, "summary_rows": summary_rows,
                 "detail_rows": detail_rows, "status": status,
             })
@@ -2937,7 +3010,7 @@ def _single_experiment_detail_rows(results: list[dict[str, Any]]) -> list[list[o
     return [[
         item["group_name"], item["number"], item.get("document", ""), item["question"],
         item["expected_answer"], item.get("actual_answer", ""),
-        item.get("passed"), item.get("reason", ""),
+        item.get("passed"), item.get("verification_changed"), item.get("reason", ""),
     ] for item in results]
 
 
@@ -2945,7 +3018,8 @@ def _experiment_project_detail_rows(results: list[dict[str, Any]]) -> list[list[
     return [[
         item["group_name"], item["source_project_name"], item["number"],
         item.get("document", ""), item["question"], item["expected_answer"],
-        item.get("actual_answer", ""), item.get("passed"), item.get("reason", ""),
+        item.get("actual_answer", ""), item.get("passed"),
+        item.get("verification_changed"), item.get("reason", ""),
     ] for item in results]
 
 
@@ -3066,6 +3140,7 @@ def evaluate_experiment_answers_for_ui(
     project_id: str, pending_answers: list[dict[str, Any]], groups: list[dict[str, Any]],
     judge_model: str, judge_reasoning_effort: str, max_concurrent_requests: int | float,
     judge_endpoint: str, judge_key: str, run_control: RunControl | None = None,
+    verification_enabled: bool = False,
     progress=gr.Progress(),
 ) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]]]:
     if not project_id:
@@ -3091,10 +3166,17 @@ def evaluate_experiment_answers_for_ui(
                     item["expected_answer"], item.get("actual_answer", ""),
                     **_reasoning_effort_kwargs(judge_model, judge_reasoning_effort),
                 )
+                verdict = _verify_judgment_if_enabled(
+                    verdict, verification_enabled, judge_endpoint, judge_key,
+                    judge_model, item["question"], item["expected_answer"],
+                    item.get("actual_answer", ""), judge_reasoning_effort,
+                )
             except ValueError as exc:
                 verdict = {"passed": False, "reason": f"評判失敗：{exc}"}
         else:
             verdict = {"passed": False, "reason": item.get("answer_status") or "回答生成失敗"}
+        verdict.setdefault("verification_enabled", bool(verification_enabled))
+        verdict.setdefault("verification_changed", None)
         return {
             **item, "judge_model": judge_model,
             **_reasoning_effort_record(judge_model, judge_reasoning_effort, "judge_reasoning_effort"),
@@ -3138,6 +3220,7 @@ def evaluate_experiment_answers_with_services_for_ui(
     project_id: str, pending_answers: list[dict[str, Any]], groups: list[dict[str, Any]],
     judge_model: str, judge_reasoning_effort: str, max_concurrent_requests: int | float,
     llm_state: dict[str, Any], run_control: RunControl | None = None,
+    verification_enabled: bool = False,
     progress=gr.Progress(),
 ) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]]]:
     judge_endpoint, judge_key = resolve_model_credentials_for_ui(llm_state, judge_model)
@@ -3145,7 +3228,8 @@ def evaluate_experiment_answers_with_services_for_ui(
         return "❌ 無法取得評測模型連線設定；請先測試模型服務連線並確認該模型可用。", [], [], []
     return evaluate_experiment_answers_for_ui(
         project_id, pending_answers, groups, judge_model, judge_reasoning_effort,
-        max_concurrent_requests, judge_endpoint, judge_key, run_control, progress,
+        max_concurrent_requests, judge_endpoint, judge_key,
+        run_control=run_control, verification_enabled=verification_enabled, progress=progress,
     )
 
 
@@ -3252,7 +3336,9 @@ def export_experiment_results_for_ui(
             "number", "question", "document", "expected_answer", "actual_answer",
             "answer_model", "judge_model", "passed", "reason", "retrieval_rank", "recall_at_5", "recall_at_10",
             "reciprocal_rank", "answer_reasoning_effort", "judge_reasoning_effort",
-            "manual_judgment",
+            "manual_judgment", "verification_enabled", "first_passed", "first_reason",
+            "verification_passed", "verification_reason", "verification_changed",
+            "verification_error",
         )
         exported_groups = []
         for group_index, group in enumerate(groups):
@@ -3614,7 +3700,8 @@ def evaluate_experiment_project_answers_for_ui(
     project: dict[str, Any] | None, pending_answers: list[dict[str, Any]] | None,
     judge_model: str | None, judge_reasoning_effort: str | None,
     max_concurrent_requests: int | float, llm_state: dict[str, Any],
-    run_control: RunControl | None = None, progress=gr.Progress(),
+    run_control: RunControl | None = None, verification_enabled: bool = False,
+    progress=gr.Progress(),
 ) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]], dict[str, Any]]:
     if not project or not pending_answers:
         return "❌ 請先完成「檢索並生成回答」。", [], [], [], project or {}
@@ -3640,10 +3727,17 @@ def evaluate_experiment_project_answers_for_ui(
                     item.get("actual_answer", ""),
                     **_reasoning_effort_kwargs(judge_model, judge_reasoning_effort),
                 )
+                verdict = _verify_judgment_if_enabled(
+                    verdict, verification_enabled, endpoint, key, judge_model,
+                    item["question"], item["expected_answer"],
+                    item.get("actual_answer", ""), judge_reasoning_effort,
+                )
             except ValueError as exc:
                 verdict = {"passed": False, "reason": f"評判失敗：{exc}"}
         else:
             verdict = {"passed": False, "reason": item.get("answer_status") or "回答生成失敗"}
+        verdict.setdefault("verification_enabled", bool(verification_enabled))
+        verdict.setdefault("verification_changed", None)
         return {**item, "judge_model": judge_model,
                 **_reasoning_effort_record(judge_model, judge_reasoning_effort, "judge_reasoning_effort"), **verdict}
 
@@ -3671,6 +3765,7 @@ def evaluate_experiment_project_answers_for_ui(
         updated = save_experiment_project(project["experiment_project_id"], {
             "pending_answers": pending_answers, "results": results, "summary_rows": summary,
             "detail_rows": details, "judge_model": judge_model,
+            "verification_enabled": bool(verification_enabled),
             "judge_reasoning_effort": judge_reasoning_effort or DEFAULT_REASONING_EFFORT,
             "judge_max_concurrent_requests": concurrency, "status": status,
         })
@@ -4961,6 +5056,10 @@ def build_app() -> gr.Blocks:
                         value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="最大並行請求數",
                         info=OLLAMA_CONCURRENCY_HINT,
                     )
+                evaluation_verify_judgment = gr.Checkbox(
+                    value=False, label="二階段驗證：複核第一輪判定與理由",
+                    info="再呼叫一次評測模型；依第二輪複核結果作為最終判定。",
+                )
                 run_evaluation_button = gr.Button(
                     "進行評測", variant="primary", interactive=False,
                     elem_classes="evaluation-judge-button",
@@ -4971,9 +5070,9 @@ def build_app() -> gr.Blocks:
                 info="預設鎖定判定欄；勾選後才可修改逐題正確／錯誤結果。",
             )
             evaluation_results_table = gr.Dataframe(
-                headers=["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（勾選=正確）", "評判理由"],
-                datatype=["number", "str", "str", "str", "str", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 6], wrap=True,
+                headers=["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（勾選=正確）", "複核後判定有變更", "評判理由"],
+                datatype=["number", "str", "str", "str", "str", "bool", "bool", "str"],
+                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 6, 7], wrap=True,
                 elem_classes=["evaluation-table", "evaluation-results-table"],
             )
             with gr.Group(elem_classes="evaluation-metrics-box"):
@@ -5073,6 +5172,10 @@ def build_app() -> gr.Blocks:
                         value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
                         label="最大並行請求數", info=OLLAMA_CONCURRENCY_HINT,
                     )
+                experiment_verify_judgment = gr.Checkbox(
+                    value=False, label="二階段驗證：複核第一輪判定與理由",
+                    info="再呼叫一次評測模型；依第二輪複核結果作為最終判定。",
+                )
                 evaluate_experiments_button = gr.Button(
                     "進行評測", variant="primary", interactive=False,
                     elem_classes="evaluation-judge-button",
@@ -5099,11 +5202,11 @@ def build_app() -> gr.Blocks:
             experiment_details_table = gr.Dataframe(
                 headers=[
                     "實驗組", "題號", "來源文件", "題目", "正確答案", "實際答案",
-                    "答案結果（勾選=正確）", "評判理由",
+                    "答案結果（勾選=正確）", "複核後判定有變更", "評判理由",
                 ],
-                datatype=["str", "number", "str", "str", "str", "str", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 7],
-                column_widths=[90, 60, 140, 300, 420, 420, 120, 300],
+                datatype=["str", "number", "str", "str", "str", "str", "bool", "bool", "str"],
+                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 7, 8],
+                column_widths=[90, 60, 140, 300, 420, 420, 120, 150, 300],
                 wrap=True, elem_classes=["evaluation-table", "evaluation-results-table"],
             )
             with gr.Row():
@@ -5258,6 +5361,10 @@ def build_app() -> gr.Blocks:
                     value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="評測最大並行請求數",
                     info=OLLAMA_CONCURRENCY_HINT,
                 )
+            experiment_project_verify_judgment = gr.Checkbox(
+                value=False, label="二階段驗證：複核第一輪判定與理由",
+                info="再呼叫一次評測模型；依第二輪複核結果作為最終判定。",
+            )
             evaluate_experiment_project_button = gr.Button(
                 "開始評測", variant="primary", interactive=False,
                 elem_classes="evaluation-judge-button",
@@ -5272,9 +5379,9 @@ def build_app() -> gr.Blocks:
                 interactive=False, wrap=True,
             )
             experiment_project_details_table = gr.Dataframe(
-                headers=["實驗組", "成員專案", "題號", "來源文件", "題目", "正確答案", "實際答案", "答案結果（勾選=正確）", "評判理由"],
-                datatype=["str", "str", "number", "str", "str", "str", "str", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 8],
+                headers=["實驗組", "成員專案", "題號", "來源文件", "題目", "正確答案", "實際答案", "答案結果（勾選=正確）", "複核後判定有變更", "評判理由"],
+                datatype=["str", "str", "number", "str", "str", "str", "str", "bool", "bool", "str"],
+                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 8, 9],
                 wrap=True,
             )
             experiment_project_manual_edit = gr.Checkbox(value=False, label="啟用答案結果人工修改", info="預設鎖定判定欄；勾選後才可修改正確／錯誤。")
@@ -5305,7 +5412,8 @@ def build_app() -> gr.Blocks:
                      evaluation_judge_max_concurrent_requests,
                      evaluation_generation_effort, evaluation_test_effort,
                      evaluation_judge_effort,
-                     evaluation_status, evaluation_answers_status, run_evaluation_button],
+                     evaluation_status, evaluation_verify_judgment,
+                     evaluation_answers_status, run_evaluation_button],
         )
         evaluation_state.change(
             _evaluation_answer_availability,
@@ -5325,7 +5433,7 @@ def build_app() -> gr.Blocks:
                 experiment_judge_model, experiment_judge_effort,
                 experiment_judge_max_concurrent_requests,
                 experiment_pending_answers_state, experiment_answers_status,
-                evaluate_experiments_button,
+                evaluate_experiments_button, experiment_verify_judgment,
             ],
         )
         experiment_pending_answers_state.change(
@@ -5398,7 +5506,8 @@ def build_app() -> gr.Blocks:
             evaluate_generated_answers_for_ui,
             inputs=[project_selector, evaluation_judge_endpoint, evaluation_judge_key,
                     evaluation_judge_model, evaluation_state,
-                    evaluation_judge_max_concurrent_requests, evaluation_judge_effort],
+                    evaluation_judge_max_concurrent_requests, evaluation_judge_effort,
+                    evaluation_verify_judgment],
             outputs=[evaluation_status, evaluation_results_table, evaluation_state],
         )
         evaluation_manual_edit_enabled.change(
@@ -5510,7 +5619,7 @@ def build_app() -> gr.Blocks:
                 project_selector, experiment_pending_answers_state, experiment_groups_state,
                 experiment_judge_model, experiment_judge_effort,
                 experiment_judge_max_concurrent_requests, llm_service_state,
-                experiment_run_control_state,
+                experiment_run_control_state, experiment_verify_judgment,
             ],
             outputs=[
                 experiment_status, experiment_results_state,
@@ -5625,7 +5734,7 @@ def build_app() -> gr.Blocks:
                 *experiment_project_group_all_components,
                 experiment_project_max_concurrency, experiment_project_summary_table,
                 experiment_project_details_table, experiment_project_test_status,
-                experiment_project_groups_status,
+                experiment_project_groups_status, experiment_project_verify_judgment,
             ],
         ).then(
             load_experiment_project_runtime_state_for_ui,
@@ -5718,7 +5827,7 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_project_state, experiment_project_pending_answers_state,
                     experiment_project_global_judge_model, experiment_project_judge_effort,
                     experiment_project_judge_concurrency, experiment_llm_service_state,
-                    experiment_project_run_control_state],
+                    experiment_project_run_control_state, experiment_project_verify_judgment],
             outputs=[experiment_project_test_status, experiment_project_results_state,
                      experiment_project_summary_table, experiment_project_details_table,
                      experiment_project_state],

@@ -386,3 +386,40 @@ def judge_evaluation_answer(
         validator=validate,
         reasoning_effort=reasoning_effort,
     )
+
+
+def verify_evaluation_judgment(
+    base_url: str,
+    api_key: str,
+    model: str,
+    question: str,
+    expected_answer: str,
+    actual_answer: str,
+    first_passed: bool,
+    first_reason: str,
+    reasoning_effort: str | None = None,
+) -> dict[str, Any]:
+    """Independently review a first-pass answer judgment and its rationale."""
+    def validate(payload: dict[str, Any]) -> dict[str, Any]:
+        passed = payload.get("passed")
+        reason = str(payload.get("reason", "")).strip()
+        if not isinstance(passed, bool) or not reason:
+            raise ValueError("複核結果必須包含 passed boolean 與 reason")
+        return {"passed": passed, "reason": reason}
+
+    first_result = "正確" if first_passed else "錯誤"
+    return _chat_json(
+        base_url,
+        api_key,
+        model,
+        "你是獨立的第二輪問答評測複核員。重新核對題目、標準答案和實際答案，"
+        "並檢查第一輪的正誤判定及理由是否成立。不要因為第一輪已給結論就照單全收；"
+        "若第一輪忽略標準答案的核心事實、數值、單位、條件或錯把不完整答案判正確，應修正判定。"
+        "拒答不能視為正確。只輸出 JSON。",
+        f"問題：{question}\n標準答案：{expected_answer}\n實際答案：{actual_answer}\n"
+        f"第一輪判定：{first_result}\n第一輪理由：{first_reason}\n"
+        "請重新獨立檢查；輸出最終判定及簡短理由，格式為 "
+        '{"passed":true,"reason":"複核後理由"}。',
+        validator=validate,
+        reasoning_effort=reasoning_effort,
+    )

@@ -324,7 +324,7 @@ def test_evaluation_results_table_uses_smaller_font_class() -> None:
         component
         for component in app.config["components"]
         if component.get("props", {}).get("headers")
-        == ["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（勾選=正確）", "評判理由"]
+        == ["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（勾選=正確）", "複核後判定有變更", "評判理由"]
     )
     html_styles = "\n".join(
         str(component.get("props", {}).get("value", ""))
@@ -609,7 +609,7 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     result_table_index = next(
         index for index, component in enumerate(components)
         if component.get("props", {}).get("headers")
-        == ["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（勾選=正確）", "評判理由"]
+            == ["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（勾選=正確）", "複核後判定有變更", "評判理由"]
     )
     assert question_table_index < answer_heading_index < answer_availability_index < judge_heading_index < result_title_index < result_table_index
     results_table = components[result_table_index]
@@ -1190,7 +1190,7 @@ def test_run_evaluation_for_ui_judges_and_saves(monkeypatch) -> None:
     assert "Recall@5：100.0%" in status
     assert "Recall@10：100.0%" in status
     assert "MRR：1.000" in status
-    assert rows[0][3:] == ["manual.pdf", "實際答案", True, "正確"]
+    assert rows[0][3:] == ["manual.pdf", "實際答案", True, None, "正確"]
     assert captured["test_workers"] == 2
     assert updated["results"][0]["passed"] is True
     assert captured["evaluation"] == updated
@@ -1253,6 +1253,39 @@ def test_evaluation_judges_saved_answers_without_generating_again(monkeypatch) -
     assert updated["results"][0]["reason"] == "正確"
     assert captured["evaluation"] == updated
     assert captured["judge_workers"] == 2
+
+
+def test_evaluation_verification_rechecks_judgment_without_changing_answer(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(ui, "judge_evaluation_answer", lambda *args: {
+        "passed": True, "reason": "第一輪理由",
+    })
+    monkeypatch.setattr(ui, "verify_evaluation_judgment", lambda *args, **kwargs: {
+        "passed": False, "reason": "複核發現答案缺少關鍵條件",
+    })
+    monkeypatch.setattr(ui, "save_project", lambda project_id, payload: captured.update(payload) or {})
+    evaluation = {
+        "questions": [{"number": 1, "question": "Q", "expected_answer": "A"}],
+        "pending_answers": [{
+            "number": 1, "question": "Q", "expected_answer": "A",
+            "actual_answer": "原始實際答案", "answer_status": "✅ 完成",
+        }],
+    }
+
+    status, rows, updated = ui.evaluate_generated_answers_for_ui(
+        "project", "judge-endpoint", "judge-key", "judge-model", evaluation,
+        verification_enabled=True,
+    )
+
+    assert "答對 0 題 / 1 題" in status
+    assert rows[0][4] == "原始實際答案"
+    assert rows[0][5:8] == [False, True, "複核發現答案缺少關鍵條件"]
+    result = updated["results"][0]
+    assert result["actual_answer"] == "原始實際答案"
+    assert result["first_passed"] is True
+    assert result["first_reason"] == "第一輪理由"
+    assert result["verification_changed"] is True
+    assert captured["evaluation"]["results"] == updated["results"]
 
 
 def test_manual_evaluation_edit_updates_reason_and_accuracy(monkeypatch) -> None:
@@ -1849,7 +1882,7 @@ def test_generate_experiment_answers_populates_table_without_judging(monkeypatch
     assert status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
     assert pending[0]["actual_answer"] == "隱藏答案"
     assert results == summaries == []
-    assert details == [["G", 1, "", "Q", "A", "隱藏答案", None, ""]]
+    assert details == [["G", 1, "", "Q", "A", "隱藏答案", None, None, ""]]
     assert captured["experiment"]["pending_answers"] == pending
     assert captured["experiment"]["results"] == []
     assert captured["experiment"]["detail_rows"] == details
@@ -1901,7 +1934,7 @@ def test_experiment_evaluation_resolves_current_model_credentials_at_click_time(
     )
     monkeypatch.setattr(
         ui, "evaluate_experiment_answers_for_ui",
-        lambda *args: (resolved.update(core_args=args) or ("✅ 評測完成", [], [], [])),
+        lambda *args, **kwargs: (resolved.update(core_args=args, core_kwargs=kwargs) or ("✅ 評測完成", [], [], [])),
     )
     llm_state = {"kind": "llm", "active": "OpenAI"}
 
@@ -2020,7 +2053,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     assert "評測模型" not in result_table["props"]["headers"]
     assert result_table["props"]["headers"][1:4] == ["題號", "來源文件", "題目"]
     assert "答案來源排名" not in result_table["props"]["headers"]
-    assert len(result_table["props"]["headers"]) == 8
+    assert len(result_table["props"]["headers"]) == 9
     column_widths = [int(str(width).removesuffix("px")) for width in result_table["props"]["column_widths"]]
     assert column_widths[0] < column_widths[4] and column_widths[0] < column_widths[5]
     assert column_widths[1] < column_widths[4] and column_widths[1] < column_widths[5]
@@ -2050,7 +2083,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         dependency for dependency in app.config["dependencies"]
         if str(dependency.get("api_name", "")).startswith("evaluate_experiment_answers_with_services_for_ui")
     )
-    assert len(evaluation_dependency["inputs"]) == 8
+    assert len(evaluation_dependency["inputs"]) == 9
     assert any(
         str(dependency.get("api_name", "")).startswith("load_experiment_for_ui")
         for dependency in app.config["dependencies"]
@@ -3058,11 +3091,11 @@ def test_load_evaluation_restores_saved_summary(monkeypatch) -> None:
 
     loaded = ui.load_evaluation_for_ui("project")
 
-    assert "已載入測試結果" in loaded[-1]
-    assert "答案正確率：50.0%" in loaded[-1]
-    assert "Recall@5：50.0%" in loaded[-1]
-    assert "Recall@10：50.0%" in loaded[-1]
-    assert "MRR：0.250" in loaded[-1]
+    assert "已載入測試結果" in loaded[-2]
+    assert "答案正確率：50.0%" in loaded[-2]
+    assert "Recall@5：50.0%" in loaded[-2]
+    assert "Recall@10：50.0%" in loaded[-2]
+    assert "MRR：0.250" in loaded[-2]
     assert len(loaded[2]) == 2
 
 
@@ -3078,7 +3111,7 @@ def test_load_evaluation_restores_separate_judge_model(monkeypatch) -> None:
     assert loaded[4] == "answer-model"
     assert loaded[12] == "judge-model"
     assert loaded[13] == 10
-    assert "已載入" in loaded[-1]
+    assert "已載入" in loaded[-2]
 
 
 
@@ -3385,7 +3418,7 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     assert generated_status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
     assert len(pending) == 1 and pending[0]["actual_answer"] == "A"
     assert summaries == []
-    assert details == [["G", "跨專案成員", 1, "manual.pdf", "Q", "A", "A", None, ""]]
+    assert details == [["G", "跨專案成員", 1, "manual.pdf", "Q", "A", "A", None, None, ""]]
     assert saved["pending_answers"] == pending
     assert saved["detail_rows"] == details
 

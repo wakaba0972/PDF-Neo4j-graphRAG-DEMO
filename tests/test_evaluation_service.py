@@ -233,6 +233,28 @@ def test_judge_evaluation_answer_returns_boolean(monkeypatch) -> None:
     assert result == {"passed": True, "reason": "語意相符"}
 
 
+def test_verify_evaluation_judgment_reviews_first_pass_and_reason(monkeypatch) -> None:
+    captured = {}
+
+    def fake_chat(base_url, api_key, model, system_prompt, user_prompt, **kwargs):
+        captured.update(
+            base_url=base_url, api_key=api_key, model=model,
+            system_prompt=system_prompt, user_prompt=user_prompt,
+        )
+        return kwargs["validator"]({"passed": False, "reason": "標準答案中的數值遺漏"})
+
+    monkeypatch.setattr(evaluation_service, "_chat_json", fake_chat)
+    result = evaluation_service.verify_evaluation_judgment(
+        "url", "key", "judge", "問題", "標準答案", "實際答案",
+        True, "第一輪認為正確", reasoning_effort="low",
+    )
+
+    assert result == {"passed": False, "reason": "標準答案中的數值遺漏"}
+    assert "第一輪判定：正確" in captured["user_prompt"]
+    assert "第一輪理由：第一輪認為正確" in captured["user_prompt"]
+    assert "實際答案：實際答案" in captured["user_prompt"]
+
+
 def test_judge_rejects_abstention_when_expected_answer_has_fact(monkeypatch) -> None:
     monkeypatch.setattr(
         evaluation_service,
