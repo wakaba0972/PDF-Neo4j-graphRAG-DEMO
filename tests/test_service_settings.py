@@ -107,7 +107,7 @@ def test_default_model_credentials_refresh_before_service_connection(monkeypatch
     ) + ("https://api.openai.com/v1", "embedding-key")
 
 
-def test_experiment_llm_credentials_are_isolated_from_0_series_settings(monkeypatch):
+def test_experiment_llm_credentials_share_global_openai_settings(monkeypatch):
     monkeypatch.setattr(ui, "check_model_connection", lambda *_: None)
     experiment = service("experiment_llm")
     tested = act(
@@ -117,11 +117,34 @@ def test_experiment_llm_credentials_are_isolated_from_0_series_settings(monkeypa
     assert tested["kind"] == "experiment_llm"
     assert tested["profiles"]["OpenAI"]["api_key"] == "experiment-secret"
     assert tested["profiles"]["OpenAI"]["base_url"] == "https://experiment.example/v1"
-    assert settings.load_service_settings("llm")["profiles"]["OpenAI"]["api_key"] == ""
-    assert settings.load_service_settings("llm")["profiles"]["OpenAI"]["base_url"] == "https://api.openai.com/v1"
+    assert settings.load_service_settings("llm")["profiles"]["OpenAI"]["api_key"] == "experiment-secret"
+    assert settings.load_service_settings("llm")["profiles"]["OpenAI"]["base_url"] == "https://experiment.example/v1"
     assert settings.load_service_settings("experiment_llm")["profiles"]["OpenAI"]["api_key"] == "experiment-secret"
     experiment_profile = settings.load_service_settings("experiment_llm")["profiles"]["OpenAI"]
     assert experiment_profile["base_url"] == "https://experiment.example/v1"
+
+
+def test_global_api_settings_persist_once_and_are_shared(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    llm = service("llm")
+    embedding = service("embedding")
+    experiment = service("experiment_llm")
+
+    outputs = ui.persist_global_api_settings_for_ui(
+        "edit", "https://llm.example/v1", "llm-key",
+        "https://embedding.example/v1", "embedding-key",
+        llm, embedding, experiment,
+        *(["gpt-6-luna"] * 6), "text-embedding-3-small",
+    )
+
+    assert len(outputs) == 24
+    assert settings.load_service_settings("llm")["profiles"]["OpenAI"]["api_key"] == "llm-key"
+    assert settings.load_service_settings("experiment_llm")["profiles"]["OpenAI"]["api_key"] == "llm-key"
+    assert settings.load_service_settings("embedding")["profiles"]["OpenAI"]["api_key"] == "embedding-key"
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert 'MODEL_OPENAI_API_KEY="llm-key"' in env_text
+    assert 'EMBEDDING_OPENAI_API_KEY="embedding-key"' in env_text
+    assert "EXPERIMENT_MODEL_OPENAI_API_KEY" not in env_text
 
 
 def test_only_openai_profiles_are_loaded_and_saved(tmp_path, monkeypatch):

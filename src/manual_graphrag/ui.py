@@ -426,11 +426,16 @@ def reload_env_with_services_for_ui() -> tuple[Any, ...]:
     env = load_env()
     llm_state = load_service_settings("llm", env)
     embedding_state = load_service_settings("embedding", env)
+    llm_profile = llm_state["profiles"]["OpenAI"]
+    embedding_profile = embedding_state["profiles"]["OpenAI"]
     return (
         env["NEO4J_URI"], env["NEO4J_USERNAME"], env["NEO4J_PASSWORD"],
         llm_state["active"], *render_service_for_ui(llm_state),
         embedding_state["active"], *render_service_for_ui(embedding_state),
-        "✅ 已重新讀取 .env；可用 0-1 的連線測試診斷服務，無須先測試即可操作。",
+        llm_profile["base_url"], llm_profile["api_key"],
+        embedding_profile["base_url"], embedding_profile["api_key"],
+        llm_profile["status"], embedding_profile["status"],
+        "✅ 已重新讀取 .env；可用連線測試診斷服務，無須先測試即可操作。",
     )
 
 
@@ -467,6 +472,27 @@ def reload_env_settings() -> tuple[str, ...]:
         llm_profile["models"][0], embedding_profile["models"][0], llm_profile["models"][4],
         "✅ 已重新讀取 .env 與模型 YAML",
     )
+
+
+def persist_global_api_settings_for_ui(
+    action: str,
+    llm_endpoint: str, llm_key: str, embedding_endpoint: str, embedding_key: str,
+    llm_state: dict[str, Any], embedding_state: dict[str, Any],
+    experiment_llm_state: dict[str, Any], *models: str | None,
+) -> tuple[Any, ...]:
+    """Persist the only visible OpenAI credentials form and refresh service states."""
+    llm = service_action_for_ui(
+        action, "OpenAI", llm_state, llm_endpoint, llm_key, [], *models[:6],
+    )
+    embedding = service_action_for_ui(
+        action, "OpenAI", embedding_state, embedding_endpoint, embedding_key, [], *models[6:7],
+    )
+    experiment = capture_service_settings(
+        experiment_llm_state, llm_endpoint, llm_key, [],
+        list(experiment_llm_state["profiles"]["OpenAI"]["models"]),
+    )
+    save_service_settings(experiment)
+    return (*llm, *embedding, experiment, llm[6], embedding[6])
 
 
 def workflow_tabs_for_ui(
@@ -1094,7 +1120,7 @@ def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
     return (
         gr.update(choices=experiment_project_choices_for_ui(), value=None), {}, [],
         gr.update(choices=_built_project_choices(), value=[]), status,
-        [], {}, "請先在 1-0 載入實驗專案。",
+        [], {}, "請先在 2-0 載入實驗專案。",
         gr.update(choices=[], value=None), [], "請選擇成員專案。",
         *_inline_group_updates([], _configured_service_choice_items(load_service_settings("experiment_llm"))),
         "實驗組設定會自動儲存。", DEFAULT_MAX_CONCURRENT_REQUESTS,
@@ -3777,12 +3803,12 @@ def run_experiment_project_for_ui(
     groups = current.get("groups") or []
     question_map = current.get("questions_by_project") or {}
     if not members:
-        return "❌ 請先在 1-0 加入已建圖專案。", [], [], current
+        return "❌ 請先在 2-0 加入已建圖專案。", [], [], current
     if not groups:
         return "❌ 請至少新增一個實驗組。", [], [], current
     missing = [member_id for member_id in members if not question_map.get(member_id)]
     if missing:
-        return f"❌ 尚未為 {len(missing)} 個成員專案準備題目集，請到 1-2 匯入。", [], [], current
+        return f"❌ 尚未為 {len(missing)} 個成員專案準備題目集，請到 2-2 匯入。", [], [], current
     if not judge_model:
         return "❌ 請選擇全域評測模型。", [], [], current
     control = run_control or RunControl()
@@ -4573,8 +4599,39 @@ def build_app() -> gr.Blocks:
         experiment_project_run_control_state = gr.State(RunControl())
         experiment_project_pending_answers_state = gr.State([])
         experiment_project_results_state = gr.State([])
+        # Internal service states are shared by workflows; credentials are editable only on 0-0.
+        llm_provider = gr.State("OpenAI")
+        model_endpoint = gr.State(llm_profile["base_url"])
+        api_key = gr.State(llm_profile["api_key"])
+        model_test_button = gr.State(False)
+        model_list_button = gr.State(False)
+        llm_models_table = gr.State([])
+        model_connection_status = gr.State(llm_profile["status"])
+        embedding_provider = gr.State("OpenAI")
+        embedding_api_base = gr.State(embedding_profile["base_url"])
+        embedding_api_key = gr.State(embedding_profile["api_key"])
+        embedding_test_button = gr.State(False)
+        embedding_list_button = gr.State(False)
+        embedding_models_table = gr.State([])
+        embedding_connection_status = gr.State(embedding_profile["status"])
 
-        with gr.Tab("0-0 專案設定") as project_tab:
+        with gr.Tab("0-0 API Key 設定"):
+            gr.Markdown("集中設定 OpenAI 對話／建圖與 Embedding API。設定會寫入本機 `.env`，其他頁面共用這組設定，不需逐頁設定。")
+            with gr.Row():
+                global_llm_endpoint = gr.Textbox(label="OpenAI API Base URL", value=llm_profile["base_url"])
+                global_llm_key = gr.Textbox(label="OpenAI API Key", value=llm_profile["api_key"], type="password")
+            with gr.Row():
+                global_embedding_endpoint = gr.Textbox(label="OpenAI Embedding API Base URL", value=embedding_profile["base_url"])
+                global_embedding_key = gr.Textbox(label="OpenAI Embedding API Key", value=embedding_profile["api_key"], type="password")
+            with gr.Row():
+                global_llm_test_button = gr.Button("測試 OpenAI 連線", variant="primary")
+                global_embedding_test_button = gr.Button("測試 OpenAI Embedding 連線", variant="primary")
+                reload_button = gr.Button("重新讀取 .env")
+            global_llm_status = gr.Markdown(llm_profile["status"])
+            global_embedding_status = gr.Markdown(embedding_profile["status"])
+            global_api_status = gr.Markdown("API 設定修改後會自動儲存。連線測試僅供診斷，不是後續操作的前置條件。")
+
+        with gr.Tab("1-0 專案設定") as project_tab:
             gr.Markdown("### 專案工作區\n建立或載入專案後，可保存本頁面所有連線、模型、參數、Chunk、文件、建圖狀態與問答紀錄。")
             with gr.Row():
                 project_selector = gr.Dropdown(
@@ -4596,7 +4653,7 @@ def build_app() -> gr.Blocks:
             project_status = gr.Markdown("尚未選擇專案；載入後，設定與處理結果都會自動保存。")
             gr.Markdown("⚠️ 專案設定保存在本機 `data/projects/`，其中 Neo4j Password 為明文；模型 API Key 僅保存在 `.env`。")
 
-        with gr.Tab("0-1 連線設定"):
+        with gr.Tab("1-1 連線設定"):
             one_click_connection_test_button = gr.Button("一鍵測試", variant="primary")
             with gr.Row():
                 with gr.Column():
@@ -4608,34 +4665,11 @@ def build_app() -> gr.Blocks:
                     neo4j_test_button = gr.Button("測試 Neo4j 連線", variant="primary")
                     neo4j_connection_status = gr.Markdown()
                 with gr.Column():
-                    gr.Markdown("### 模型服務（對話／建圖用）")
-                    llm_provider = gr.State("OpenAI")
-                    model_endpoint = gr.Textbox(label="API Base URL", value=llm_profile["base_url"])
-                    api_key = gr.Textbox(
-                        label="OpenAI API Key", value=llm_profile["api_key"], type="password"
-                    )
-                    model_test_button = gr.Button("測試 OpenAI 連線", variant="primary")
-                    model_list_button = gr.State(False)
-                    llm_models_table = gr.State([])
-                    model_connection_status = gr.Markdown(llm_profile["status"])
-                    gr.Markdown("### Embedding 服務")
-                    embedding_provider = gr.State("OpenAI")
-                    embedding_api_base = gr.Textbox(
-                        label="OpenAI Embedding API Base URL", value=embedding_profile["base_url"]
-                    )
-                    embedding_api_key = gr.Textbox(
-                        label="OpenAI Embedding API Key",
-                        value=embedding_profile["api_key"], type="password",
-                    )
-                    embedding_test_button = gr.Button("測試 OpenAI Embedding 連線", variant="primary")
-                    embedding_list_button = gr.State(False)
-                    embedding_models_table = gr.State([])
-                    embedding_connection_status = gr.Markdown(embedding_profile["status"])
-                    reload_button = gr.Button("重新讀取 .env")
-            gr.Markdown("⚠️ Password、API Base URL 與 API Key 會寫入本機 `.env`；模型清單與選擇保存在 `config/model_settings.yaml`。")
-            env_status = gr.Markdown("啟動時已讀取 `.env` 與模型 YAML；欄位修改後會自動儲存。")
+                    gr.Markdown("模型與 Embedding API 設定統一由 0-0 管理。")
+            gr.Markdown("Neo4j 連線設定保存在此頁。模型與 Embedding API 請至 0 API 金鑰設定管理。")
+            env_status = gr.Markdown("Neo4j 設定欄位修改後會自動儲存。")
 
-        with gr.Tab("0-2 PDF 與參數", interactive=False) as pdf_tab:
+        with gr.Tab("1-2 PDF 與參數", interactive=False) as pdf_tab:
             with gr.Row():
                 with gr.Column(scale=1):
                     pdf_file = gr.File(
@@ -4675,7 +4709,7 @@ def build_app() -> gr.Blocks:
                         column_widths=[80, 160, 120, 100, 900],
                     )
 
-        with gr.Tab("0-3 建圖", interactive=False) as graph_tab:
+        with gr.Tab("1-3 建圖", interactive=False) as graph_tab:
             gr.Markdown("### 規劃並抽取知識圖譜")
             with gr.Row():
                 pause_button = gr.Button("⏸ 暫停")
@@ -4812,7 +4846,7 @@ def build_app() -> gr.Blocks:
                 )
                 import_status = gr.Markdown("尚未執行 Embedding 與匯入。")
 
-        with gr.Tab("0-4 問答測試", interactive=False) as qa_tab:
+        with gr.Tab("1-4 問答測試", interactive=False) as qa_tab:
             gr.Markdown(
                 "直接使用連線設定中的 Neo4j；預設查詢最近更新的建圖結果。"
                 "可選擇使用 LLM Reranker 重排候選，或啟用證據擴展 V2。"
@@ -4874,7 +4908,7 @@ def build_app() -> gr.Blocks:
                 wrap=True,
             )
 
-        with gr.Tab("0-5 自動問答測試", interactive=False) as evaluation_tab:
+        with gr.Tab("1-5 自動問答測試", interactive=False) as evaluation_tab:
             gr.Markdown(
                 "### 從 PDF 自動建立問答測試集\n"
                 "每份 PDF 建立指定數量的題目與標準答案；先生成測試回答，再獨立進行模型評測。"
@@ -5013,7 +5047,7 @@ def build_app() -> gr.Blocks:
                     "請先載入專案並解析 PDF。", elem_classes="evaluation-metrics"
                 )
 
-        with gr.Tab("0-6 單一專案實驗", interactive=False) as experiment_tab:
+        with gr.Tab("1-6 單一專案實驗", interactive=False) as experiment_tab:
             gr.Markdown(
                 "匯入同一份題目集，建立多個不同回答／檢索設定的實驗組，"
                 "先生成各組回答，再獨立評測並比較答案正確率、Recall@5、Recall@10 與 MRR。"
@@ -5148,8 +5182,8 @@ def build_app() -> gr.Blocks:
                 experiment_compact_export_file = gr.File(label="簡潔指標結果 JSON", interactive=False)
             experiment_export_status = gr.Markdown()
 
-        with gr.Tab("1-0 實驗專案", interactive=True) as experiment_project_tab:
-            gr.Markdown("建立實驗專案，並加入多個已完成建圖的 0 系列專案。各成員專案的 Neo4j Database 仍彼此獨立。")
+        with gr.Tab("2-0 實驗專案", interactive=True) as experiment_project_tab:
+            gr.Markdown("建立實驗專案，並加入多個已完成建圖的 1 系列專案。各成員專案的 Neo4j Database 仍彼此獨立。")
             with gr.Row():
                 experiment_project_selector = gr.Dropdown(
                     choices=experiment_project_choices_for_ui(), value=None,
@@ -5163,7 +5197,7 @@ def build_app() -> gr.Blocks:
             experiment_project_status = gr.Markdown("建立或載入實驗專案。")
             experiment_project_members = gr.Dropdown(
                 choices=_built_project_choices(), value=[], multiselect=True,
-                label="加入已建圖的 0 系列專案",
+                label="加入已建圖的 1 系列專案",
                 info="只列出已完成 Neo4j 圖譜匯入的專案。",
             )
             save_experiment_members_button = gr.Button("保存成員專案")
@@ -5172,32 +5206,17 @@ def build_app() -> gr.Blocks:
                 datatype=["str", "str", "str"], interactive=False, wrap=True,
             )
 
-        with gr.Tab("1-1 成員專案連線測試", interactive=True) as experiment_connection_tab:
-            gr.Markdown("使用 0-1 的 Neo4j URI／帳密，逐一測試實驗專案內各成員專案自己的 Database；下方回答模型服務設定則與 0-1 分開保存。")
+        with gr.Tab("2-1 成員專案連線測試", interactive=True) as experiment_connection_tab:
+            gr.Markdown("使用 1-1 的 Neo4j URI／帳密，逐一測試實驗專案內各成員專案自己的 Database；回答與 Embedding 模型共用 0-0 的 OpenAI 設定。")
             test_experiment_connections_button = gr.Button("測試所有成員專案連線", variant="primary")
-            experiment_connection_status = gr.Markdown("請先在 1-0 載入實驗專案。")
+            experiment_connection_status = gr.Markdown("請先在 2-0 載入實驗專案。")
             experiment_connection_table = gr.Dataframe(
                 headers=["專案", "專案 ID", "Neo4j Database", "連線結果"],
                 datatype=["str", "str", "str", "str"], interactive=False, wrap=True,
             )
-            gr.Markdown("#### 實驗專案回答模型服務（獨立於 0-1）")
-            experiment_llm_profile = experiment_llm_settings["profiles"][experiment_llm_settings["active"]]
-            with gr.Row():
-                experiment_llm_provider = gr.State("OpenAI")
-                experiment_llm_endpoint = gr.Textbox(
-                    value=experiment_llm_profile["base_url"], label="API Base URL",
-                )
-                experiment_llm_api_key = gr.Textbox(
-                    value=experiment_llm_profile["api_key"], label="API Key", type="password",
-                )
-            with gr.Row():
-                experiment_llm_test_button = gr.Button("測試模型連線", variant="primary")
-                experiment_llm_fetch_button = gr.State(False)
-            experiment_llm_models_table = gr.State([])
-            experiment_llm_openai_info = gr.Markdown("模型服務使用 OpenAI API 與系統允許清單。")
-            experiment_llm_connection_status = gr.Markdown(experiment_llm_profile["status"])
+            gr.Markdown("回答模型服務共用 0-0 的 OpenAI 設定。")
 
-        with gr.Tab("1-2 問題集準備", interactive=True) as experiment_questions_tab:
+        with gr.Tab("2-2 問題集準備", interactive=True) as experiment_questions_tab:
             gr.Markdown("為實驗專案中的每個成員專案分別匯入問題集；題目會在該專案自己的圖譜上檢索與評測。")
             experiment_questions_member = gr.Dropdown(choices=[], label="成員專案")
             with gr.Row():
@@ -5211,7 +5230,7 @@ def build_app() -> gr.Blocks:
                 datatype=["number", "str", "str", "str", "str"], interactive=False, wrap=True,
             )
 
-        with gr.Tab("1-3 自動實驗測試", interactive=True) as experiment_project_test_tab:
+        with gr.Tab("2-3 自動實驗測試", interactive=True) as experiment_project_test_tab:
             gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，使用各專案自己的問題集與 Neo4j Database 執行。")
             gr.Markdown("#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）")
             gr.Markdown("實驗組名稱　回答模型／推理強度　檢索策略　Top K　Reranker　證據擴展")
@@ -5296,7 +5315,7 @@ def build_app() -> gr.Blocks:
                 "<style>.evaluation-judge-button button {background:#f59e0b !important;border-color:#f59e0b !important;color:#1f2937 !important;}</style>",
                 padding=False,
             )
-            experiment_project_test_status = gr.Markdown("請在 1-0 加入專案，並在 1-2 為每個專案匯入題目集。")
+            experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並在 2-2 為每個專案匯入題目集。")
             experiment_project_summary_table = gr.Dataframe(
                 headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "答對數 / 總題數", "答案正確率", "Recall@5", "Recall@10", "MRR"],
                 interactive=False, wrap=True,
@@ -5916,7 +5935,7 @@ def build_app() -> gr.Blocks:
         )
         auto_save_components = [
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
-            model_endpoint, api_key, graph_llm_model, graph_embedding_model,
+            graph_llm_model, graph_embedding_model,
             answer_model, chunk_size, chunk_overlap,
             graph_temperature, schema_granularity,
             max_concurrent_requests,
@@ -5983,69 +6002,47 @@ def build_app() -> gr.Blocks:
             embedding_service_state, embedding_api_base, embedding_api_key, embedding_models_table,
             embedding_test_button, embedding_list_button, embedding_connection_status, graph_embedding_model,
         ]
-        for provider, state, endpoint, key, table, test_button, fields, outputs in [
-            (llm_provider, llm_service_state, model_endpoint, api_key, llm_models_table,
-             model_test_button, llm_model_fields, llm_service_outputs),
-            (embedding_provider, embedding_service_state, embedding_api_base, embedding_api_key,
-             embedding_models_table, embedding_test_button,
-             [graph_embedding_model], embedding_service_outputs),
-        ]:
-            inputs = [provider, state, endpoint, key, table, *fields]
-            service_events = [
-                test_button.click(partial(service_action_for_ui, "test"), inputs=inputs, outputs=outputs, concurrency_id="service-settings"),
-            ]
-            for component in [endpoint, key, *fields]:
-                service_events.append(component.input(partial(service_action_for_ui, "edit"), inputs=inputs, outputs=outputs, show_progress="hidden", concurrency_id="service-settings"))
-            for service_event in service_events:
-                service_event.then(
-                    workflow_tabs_for_ui, inputs=access_inputs, outputs=protected_tabs,
-                    show_progress="hidden",
-                ).then(
-                    refresh_experiment_model_choices_for_ui,
-                    inputs=[llm_service_state, evaluation_judge_model,
-                            experiment_judge_model,
-                            *[row[1] for row in experiment_group_rows]],
-                    outputs=[evaluation_judge_model,
-                             experiment_judge_model,
-                             *[row[1] for row in experiment_group_rows]],
-                    show_progress="hidden",
-                ).then(
-                    refresh_model_credentials_for_ui,
-                    inputs=credential_refresh_inputs,
-                    outputs=credential_refresh_outputs,
-                    show_progress="hidden",
-                )
-        experiment_llm_service_outputs = [
-            experiment_llm_service_state, experiment_llm_endpoint, experiment_llm_api_key,
-            experiment_llm_models_table, experiment_llm_test_button,
-            experiment_llm_fetch_button, experiment_llm_connection_status,
-            experiment_llm_openai_info,
+        global_service_outputs = [
+            *llm_service_outputs, *embedding_service_outputs,
+            experiment_llm_service_state, global_llm_status, global_embedding_status,
         ]
-        experiment_service_inputs = [
-            experiment_llm_provider, experiment_llm_service_state,
-            experiment_llm_endpoint, experiment_llm_api_key, experiment_llm_models_table,
+        global_service_inputs = [
+            llm_service_state, embedding_service_state, experiment_llm_service_state,
+            global_llm_endpoint, global_llm_key,
+            global_embedding_endpoint, global_embedding_key,
+            *llm_model_fields, graph_embedding_model,
         ]
-        experiment_service_events = [
-            experiment_llm_test_button.click(
-                partial(experiment_service_action_for_ui, "test"),
-                inputs=experiment_service_inputs, outputs=experiment_llm_service_outputs,
-                concurrency_id="experiment-service-settings",
+        global_service_events = [
+            global_llm_test_button.click(
+                partial(persist_global_api_settings_for_ui, "test"),
+                inputs=global_service_inputs, outputs=global_service_outputs,
+                concurrency_id="service-settings",
+            ),
+            global_embedding_test_button.click(
+                partial(persist_global_api_settings_for_ui, "test"),
+                inputs=global_service_inputs, outputs=global_service_outputs,
+                concurrency_id="service-settings",
             ),
         ]
-        for component in [experiment_llm_endpoint, experiment_llm_api_key]:
-            experiment_service_events.append(component.input(
-                partial(experiment_service_action_for_ui, "edit"),
-                inputs=experiment_service_inputs, outputs=experiment_llm_service_outputs,
-                show_progress="hidden", concurrency_id="experiment-service-settings",
+        for component in [global_llm_endpoint, global_llm_key,
+                          global_embedding_endpoint, global_embedding_key]:
+            global_service_events.append(component.input(
+                partial(persist_global_api_settings_for_ui, "edit"),
+                inputs=global_service_inputs, outputs=global_service_outputs,
+                show_progress="hidden", concurrency_id="service-settings",
             ))
-        for event in experiment_service_events:
-            event.then(
+        for service_event in global_service_events:
+            service_event.then(
                 refresh_experiment_model_choices_for_ui,
-                inputs=[experiment_llm_service_state,
-                        *[row[1] for row in experiment_project_group_rows],
-                        experiment_project_global_judge_model],
-                outputs=[*[row[1] for row in experiment_project_group_rows],
-                         experiment_project_global_judge_model],
+                inputs=[llm_service_state, evaluation_judge_model,
+                        experiment_judge_model,
+                        *[row[1] for row in experiment_group_rows]],
+                outputs=[evaluation_judge_model, experiment_judge_model,
+                         *[row[1] for row in experiment_group_rows]],
+                show_progress="hidden",
+            ).then(
+                refresh_model_credentials_for_ui,
+                inputs=credential_refresh_inputs, outputs=credential_refresh_outputs,
                 show_progress="hidden",
             )
         all_connection_test_event = one_click_connection_test_button.click(
@@ -6125,25 +6122,20 @@ def build_app() -> gr.Blocks:
             outputs=[selected_embedding_endpoint, selected_embedding_key],
             show_progress="hidden",
         )
-        env_inputs = [
-            neo4j_uri,
-            neo4j_username,
-            neo4j_password,
-            model_endpoint,
-            api_key,
-            embedding_api_base,
-            embedding_api_key,
-            graph_llm_model,
-            graph_embedding_model,
-            answer_model,
-        ]
-        for component in env_inputs:
+        env_inputs = [neo4j_uri, neo4j_username, neo4j_password,
+                      model_endpoint, api_key, embedding_api_base,
+                      embedding_api_key, graph_llm_model, graph_embedding_model,
+                      answer_model]
+        for component in [neo4j_uri, neo4j_username, neo4j_password]:
             component.change(persist_env_settings, inputs=env_inputs, outputs=env_status)
         reload_event = reload_button.click(
             reload_env_with_services_for_ui,
             outputs=[neo4j_uri, neo4j_username, neo4j_password,
                      llm_provider, *llm_service_outputs,
-                     embedding_provider, *embedding_service_outputs, env_status],
+                     embedding_provider, *embedding_service_outputs,
+                     global_llm_endpoint, global_llm_key,
+                     global_embedding_endpoint, global_embedding_key,
+                     global_llm_status, global_embedding_status, env_status],
         )
         reload_reset_event = reload_event.then(
             lambda: False, outputs=neo4j_connected_state, show_progress="hidden",

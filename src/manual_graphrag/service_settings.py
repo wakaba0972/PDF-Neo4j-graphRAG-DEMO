@@ -105,10 +105,7 @@ def preferred_service_model(state: dict[str, Any]) -> str | None:
 
 
 def _credentials(env: dict[str, str], kind: str) -> tuple[str, str]:
-    prefix = (
-        "EXPERIMENT_MODEL" if kind == "experiment_llm"
-        else ("MODEL" if kind == "llm" else "EMBEDDING")
-    )
+    prefix = "EMBEDDING" if kind == "embedding" else "MODEL"
     return env[f"{prefix}_OPENAI_API_BASE"], env[f"{prefix}_OPENAI_API_KEY"]
 
 
@@ -196,10 +193,7 @@ def save_service_settings(state: dict[str, Any]) -> None:
             }},
         }
         _save_document(document)
-        prefix = (
-            "EXPERIMENT_MODEL" if kind == "experiment_llm"
-            else ("MODEL" if kind == "llm" else "EMBEDDING")
-        )
+        prefix = "EMBEDDING" if kind == "embedding" else "MODEL"
         profile = state["profiles"]["OpenAI"]
         save_env({f"{prefix}_OPENAI_API_BASE": profile["base_url"],
                   f"{prefix}_OPENAI_API_KEY": profile["api_key"]})

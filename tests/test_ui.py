@@ -341,8 +341,8 @@ def test_evaluation_results_table_uses_smaller_font_class() -> None:
 def test_single_project_pages_stay_locked_but_experiment_pages_are_enabled() -> None:
     app = build_app()
     protected_labels = {
-        "0-2 PDF 與參數", "0-3 建圖",
-        "0-4 問答測試", "0-5 自動問答測試", "0-6 單一專案實驗",
+        "1-2 PDF 與參數", "1-3 建圖",
+        "1-4 問答測試", "1-5 自動問答測試", "1-6 單一專案實驗",
     }
     tabs = [
         component for component in app.config["components"]
@@ -351,8 +351,8 @@ def test_single_project_pages_stay_locked_but_experiment_pages_are_enabled() -> 
     experiment_tabs = [
         component for component in app.config["components"]
         if component.get("props", {}).get("label") in {
-            "1-0 實驗專案", "1-1 成員專案連線測試",
-            "1-2 問題集準備", "1-3 自動實驗測試",
+            "2-0 實驗專案", "2-1 成員專案連線測試",
+            "2-2 問題集準備", "2-3 自動實驗測試",
         }
     ]
 
@@ -365,7 +365,7 @@ def test_single_project_pages_stay_locked_but_experiment_pages_are_enabled() -> 
     )
     connection_tab = next(
         component for component in app.config["components"]
-        if component.get("props", {}).get("label") == "0-1 連線設定"
+        if component.get("props", {}).get("label") == "1-1 連線設定"
     )
     assert connection_tab["props"].get("interactive", True) is True
     assert all(tab["props"]["interactive"] is False for tab in tabs)
@@ -380,10 +380,10 @@ def test_single_project_pages_stay_locked_but_experiment_pages_are_enabled() -> 
         component.get("props", {}).get("label") for component in app.config["components"]
     }
     assert {
-        "0-0 專案設定", "0-1 連線設定", "0-2 PDF 與參數", "0-3 建圖",
-        "0-4 問答測試", "0-5 自動問答測試", "0-6 單一專案實驗",
-        "1-0 實驗專案", "1-1 成員專案連線測試", "1-2 問題集準備",
-        "1-3 自動實驗測試",
+        "1-0 專案設定", "1-1 連線設定", "1-2 PDF 與參數", "1-3 建圖",
+        "1-4 問答測試", "1-5 自動問答測試", "1-6 單一專案實驗",
+        "2-0 實驗專案", "2-1 成員專案連線測試", "2-2 問題集準備",
+        "2-3 自動實驗測試",
     } <= page_labels
     gate_dependencies = [
         dependency for dependency in app.config["dependencies"]
@@ -557,13 +557,13 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     labels = [
         component.get("props", {}).get("label") for component in app.config["components"]
     ]
-    assert labels.index("0-0 專案設定") < labels.index("0-1 連線設定")
-    assert labels.index("0-4 問答測試") < labels.index("0-5 自動問答測試")
-    assert labels.index("0-5 自動問答測試") < labels.index("0-6 單一專案實驗")
-    assert labels.index("0-6 單一專案實驗") < labels.index("1-0 實驗專案")
-    assert labels.index("1-0 實驗專案") < labels.index("1-1 成員專案連線測試")
-    assert labels.index("1-1 成員專案連線測試") < labels.index("1-2 問題集準備")
-    assert labels.index("1-2 問題集準備") < labels.index("1-3 自動實驗測試")
+    assert labels.index("1-0 專案設定") < labels.index("1-1 連線設定")
+    assert labels.index("1-4 問答測試") < labels.index("1-5 自動問答測試")
+    assert labels.index("1-5 自動問答測試") < labels.index("1-6 單一專案實驗")
+    assert labels.index("1-6 單一專案實驗") < labels.index("2-0 實驗專案")
+    assert labels.index("2-0 實驗專案") < labels.index("2-1 成員專案連線測試")
+    assert labels.index("2-1 成員專案連線測試") < labels.index("2-2 問題集準備")
+    assert labels.index("2-2 問題集準備") < labels.index("2-3 自動實驗測試")
     components = app.config["components"]
     question_table_index = next(
         index for index, component in enumerate(components)
@@ -737,6 +737,23 @@ def test_build_app_exposes_only_openai_service_controls() -> None:
     assert not {"獲得模型清單", "獲得 Embedding 模型清單", "測試模型服務連線", "測試 Embedding 服務連線"} & buttons.keys()
     labels = {c.get("props", {}).get("label") for c in components}
     assert not {"模型服務來源", "Embedding 服務來源", "LLM 模型清單", "Embedding 模型清單"} & labels
+
+
+def test_global_api_credentials_exist_only_on_page_zero() -> None:
+    app = build_app()
+    components = app.config["components"]
+    labels = [component.get("props", {}).get("label") for component in components]
+
+    assert "0-0 API Key 設定" in labels
+    assert labels.count("OpenAI API Key") == 1
+    assert labels.count("OpenAI Embedding API Key") == 1
+    assert labels.count("OpenAI API Base URL") == 1
+    assert labels.count("OpenAI Embedding API Base URL") == 1
+    assert not any("API Key" in str(label) for label in labels if label not in {
+        "0-0 API Key 設定", "OpenAI API Key", "OpenAI Embedding API Key",
+    })
+    assert {"1-0 專案設定", "1-1 連線設定", "1-6 單一專案實驗",
+            "2-0 實驗專案", "2-3 自動實驗測試"} <= set(labels)
 
 
 def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:

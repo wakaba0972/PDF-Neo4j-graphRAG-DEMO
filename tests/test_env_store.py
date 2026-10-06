@@ -7,14 +7,14 @@ def test_env_round_trip_preserves_special_characters(tmp_path) -> None:
         {
             "NEO4J_PASSWORD": "p#a ss=word",
             "MODEL_OPENAI_API_KEY": "sk-test",
-            "EXPERIMENT_MODEL_OPENAI_API_KEY": "sk-experiment",
+        "MODEL_OPENAI_API_BASE": "https://api.openai.com/v1",
         },
         path,
     )
     loaded = load_env(path)
     assert loaded["NEO4J_PASSWORD"] == "p#a ss=word"
     assert loaded["MODEL_OPENAI_API_KEY"] == "sk-test"
-    assert loaded["EXPERIMENT_MODEL_OPENAI_API_KEY"] == "sk-experiment"
+    assert loaded["MODEL_OPENAI_API_BASE"] == "https://api.openai.com/v1"
 
 
 def test_save_env_preserves_unmanaged_values(tmp_path) -> None:
