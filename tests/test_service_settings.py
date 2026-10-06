@@ -93,7 +93,7 @@ def test_default_model_credentials_refresh_before_service_connection(monkeypatch
     monkeypatch.setattr(ui, "check_model_connection", lambda *_: None)
     monkeypatch.setattr(ui, "check_embedding_connection", lambda *_: None)
     llm = act(service("llm"), "test", key="llm-key")[0]
-    embedding = act(service("embedding"), "test", key="embedding-key")[0]
+    embedding = act(service("embedding"), "test", key="llm-key")[0]
 
     credentials = ui.refresh_model_credentials_for_ui(
         llm, embedding, "gpt-6-luna", "gpt-6-luna", "gpt-6-luna",
@@ -104,7 +104,7 @@ def test_default_model_credentials_refresh_before_service_connection(monkeypatch
         value
         for _ in range(6)
         for value in ("https://api.openai.com/v1", "llm-key")
-    ) + ("https://api.openai.com/v1", "embedding-key")
+    ) + ("https://api.openai.com/v1", "llm-key")
 
 
 def test_experiment_llm_credentials_share_global_openai_settings(monkeypatch):
@@ -133,17 +133,16 @@ def test_global_api_settings_persist_once_and_are_shared(tmp_path, monkeypatch):
     outputs = ui.persist_global_api_settings_for_ui(
         "edit", llm, embedding, experiment,
         "https://llm.example/v1", "llm-key",
-        "https://embedding.example/v1", "embedding-key",
         *(["gpt-6-luna"] * 6), "text-embedding-3-small",
     )
 
-    assert len(outputs) == 24
+    assert len(outputs) == 23
     assert settings.load_service_settings("llm")["profiles"]["OpenAI"]["api_key"] == "llm-key"
     assert settings.load_service_settings("experiment_llm")["profiles"]["OpenAI"]["api_key"] == "llm-key"
-    assert settings.load_service_settings("embedding")["profiles"]["OpenAI"]["api_key"] == "embedding-key"
+    assert settings.load_service_settings("embedding")["profiles"]["OpenAI"]["api_key"] == "llm-key"
     env_text = (tmp_path / ".env").read_text(encoding="utf-8")
     assert 'MODEL_OPENAI_API_KEY="llm-key"' in env_text
-    assert 'EMBEDDING_OPENAI_API_KEY="embedding-key"' in env_text
+    assert "EMBEDDING_OPENAI_API_" not in env_text
     assert "EXPERIMENT_MODEL_OPENAI_API_KEY" not in env_text
 
 
@@ -273,13 +272,13 @@ def test_profile_load_rejects_invalid_yaml_without_exposing_keys(tmp_path, monke
     assert "sensitive" not in str(error.value)
 
 
-def test_reload_restores_both_profiles_and_revokes_openai_connection(monkeypatch):
+def test_reload_restores_shared_profile_and_revokes_openai_connection(monkeypatch):
     monkeypatch.setattr(ui, "check_model_connection", lambda *args: None)
     act(service(), "test", key="llm-key")
     act(service("embedding"), "test", key="embedding-key")
     loaded = ui.reload_env_with_services_for_ui()
     assert loaded[3] == "OpenAI"
-    assert loaded[6] == "llm-key"
+    assert loaded[6] == "embedding-key"
     assert loaded[17] == "OpenAI"
     assert loaded[20] == "embedding-key"
     assert loaded[11]["choices"]

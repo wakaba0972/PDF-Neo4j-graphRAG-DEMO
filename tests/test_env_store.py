@@ -33,7 +33,7 @@ def test_concurrent_connection_updates_preserve_openai_credentials(tmp_path) -> 
     path = tmp_path / ".env"
     updates = {
         "MODEL_OPENAI_API_KEY": "llm-openai-key",
-        "EMBEDDING_OPENAI_API_KEY": "embedding-openai-key",
+        "MODEL_OPENAI_API_BASE": "https://api.openai.com/v1",
     }
     barrier = Barrier(len(updates))
     def write(item):
@@ -46,16 +46,37 @@ def test_concurrent_connection_updates_preserve_openai_credentials(tmp_path) -> 
     assert all(loaded[key] == value for key, value in updates.items())
 
 
+def test_legacy_embedding_credentials_migrate_to_shared_openai_env(tmp_path) -> None:
+    path = tmp_path / ".env"
+    path.write_text(
+        'MODEL_OPENAI_API_KEY=""\n'
+        'EMBEDDING_OPENAI_API_BASE="https://legacy.example/v1"\n'
+        'EMBEDDING_OPENAI_API_KEY="legacy-key"\n',
+        encoding="utf-8",
+    )
+
+    loaded = load_env(path)
+    save_env({"MODEL_OPENAI_API_KEY": loaded["MODEL_OPENAI_API_KEY"]}, path)
+
+    assert loaded["MODEL_OPENAI_API_BASE"] == "https://legacy.example/v1"
+    assert loaded["MODEL_OPENAI_API_KEY"] == "legacy-key"
+    content = path.read_text(encoding="utf-8")
+    assert "EMBEDDING_OPENAI_API_" not in content
+    assert 'MODEL_OPENAI_API_KEY="legacy-key"' in content
+
+
 def test_save_env_removes_ollama_and_voyage_keys(tmp_path) -> None:
     path = tmp_path / ".env"
     path.write_text(
-        "MODEL_OLLAMA_API_KEY=legacy\nEMBEDDING_VOYAGE_API_KEY=legacy\n",
+        "MODEL_OLLAMA_API_KEY=legacy\nEMBEDDING_VOYAGE_API_KEY=legacy\n"
+        "EMBEDDING_OPENAI_API_KEY=legacy\n",
         encoding="utf-8",
     )
     save_env({"MODEL_OPENAI_API_KEY": "new"}, path)
     content = path.read_text(encoding="utf-8")
     assert "OLLAMA" not in content
     assert "VOYAGE" not in content
+    assert "EMBEDDING_OPENAI_API_" not in content
 
 
 def test_save_env_removes_legacy_model_and_profile_keys(tmp_path) -> None:

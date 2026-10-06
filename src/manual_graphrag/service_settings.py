@@ -105,8 +105,7 @@ def preferred_service_model(state: dict[str, Any]) -> str | None:
 
 
 def _credentials(env: dict[str, str], kind: str) -> tuple[str, str]:
-    prefix = "EMBEDDING" if kind == "embedding" else "MODEL"
-    return env[f"{prefix}_OPENAI_API_BASE"], env[f"{prefix}_OPENAI_API_KEY"]
+    return env["MODEL_OPENAI_API_BASE"], env["MODEL_OPENAI_API_KEY"]
 
 
 def load_service_settings(kind: str, env: dict[str, str] | None = None) -> dict[str, Any]:
@@ -193,10 +192,9 @@ def save_service_settings(state: dict[str, Any]) -> None:
             }},
         }
         _save_document(document)
-        prefix = "EMBEDDING" if kind == "embedding" else "MODEL"
         profile = state["profiles"]["OpenAI"]
-        save_env({f"{prefix}_OPENAI_API_BASE": profile["base_url"],
-                  f"{prefix}_OPENAI_API_KEY": profile["api_key"]})
+        save_env({"MODEL_OPENAI_API_BASE": profile["base_url"],
+                  "MODEL_OPENAI_API_KEY": profile["api_key"]})
 
 
 def capture_service_settings(state: dict[str, Any], base_url: str, api_key: str, rows: list[list[Any]], models: list[str | None]) -> dict[str, Any]:

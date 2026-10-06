@@ -12,7 +12,6 @@ _ENV_LOCK = RLock()
 ENV_KEYS = (
     "NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD",
     "MODEL_OPENAI_API_BASE", "MODEL_OPENAI_API_KEY",
-    "EMBEDDING_OPENAI_API_BASE", "EMBEDDING_OPENAI_API_KEY",
 )
 
 # These keys belonged to the former mixed connection/model format. save_env removes
@@ -24,6 +23,7 @@ LEGACY_ENV_KEYS = {
     "MODEL_OLLAMA_API_BASE", "MODEL_OLLAMA_API_KEY",
     "EXPERIMENT_MODEL_OLLAMA_API_BASE", "EXPERIMENT_MODEL_OLLAMA_API_KEY",
     "EXPERIMENT_MODEL_OPENAI_API_BASE", "EXPERIMENT_MODEL_OPENAI_API_KEY",
+    "EMBEDDING_OPENAI_API_BASE", "EMBEDDING_OPENAI_API_KEY",
     "EMBEDDING_OLLAMA_API_BASE", "EMBEDDING_OLLAMA_API_KEY",
     "EMBEDDING_VOYAGE_API_BASE", "EMBEDDING_VOYAGE_API_KEY",
 }
@@ -32,7 +32,6 @@ DEFAULTS = {
     "NEO4J_URI": "bolt://localhost:7687",
     "NEO4J_USERNAME": "neo4j", "NEO4J_PASSWORD": "",
     "MODEL_OPENAI_API_BASE": "https://api.openai.com/v1", "MODEL_OPENAI_API_KEY": "",
-    "EMBEDDING_OPENAI_API_BASE": "https://api.openai.com/v1", "EMBEDDING_OPENAI_API_KEY": "",
 }
 
 
@@ -52,14 +51,25 @@ def load_env(path: str | Path = ".env") -> dict[str, str]:
     target = Path(path)
     if not target.exists():
         return values
+    legacy_embedding_values: dict[str, str] = {}
+    present_keys: set[str] = set()
     for raw_line in target.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, raw_value = line.split("=", 1)
         key = key.strip()
+        present_keys.add(key)
         if key in ENV_KEYS:
             values[key] = _decode_value(raw_value)
+        elif key in {"EMBEDDING_OPENAI_API_BASE", "EMBEDDING_OPENAI_API_KEY"}:
+            legacy_embedding_values[key] = _decode_value(raw_value)
+    if not values["MODEL_OPENAI_API_KEY"] and legacy_embedding_values.get("EMBEDDING_OPENAI_API_KEY"):
+        values["MODEL_OPENAI_API_KEY"] = legacy_embedding_values["EMBEDDING_OPENAI_API_KEY"]
+        if "MODEL_OPENAI_API_BASE" not in present_keys:
+            values["MODEL_OPENAI_API_BASE"] = legacy_embedding_values.get(
+                "EMBEDDING_OPENAI_API_BASE", values["MODEL_OPENAI_API_BASE"],
+            )
     return values
 
 

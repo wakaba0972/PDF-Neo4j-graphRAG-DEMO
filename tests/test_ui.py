@@ -700,7 +700,7 @@ def test_build_app_exposes_only_openai_service_controls() -> None:
     components = app.config["components"]
     buttons = {c["props"]["value"]: c for c in components if c["type"] == "button"}
     assert "測試 OpenAI 連線" in buttons
-    assert "測試 OpenAI Embedding 連線" in buttons
+    assert "測試 OpenAI Embedding 連線" not in buttons
     assert not {"獲得模型清單", "獲得 Embedding 模型清單", "測試模型服務連線", "測試 Embedding 服務連線"} & buttons.keys()
     labels = {c.get("props", {}).get("label") for c in components}
     assert not {"模型服務來源", "Embedding 服務來源", "LLM 模型清單", "Embedding 模型清單"} & labels
@@ -713,11 +713,9 @@ def test_global_api_credentials_exist_only_on_page_zero() -> None:
 
     assert "0-0 API Key 設定" in labels
     assert labels.count("OpenAI API Key") == 1
-    assert labels.count("OpenAI Embedding API Key") == 1
     assert labels.count("OpenAI API Base URL") == 1
-    assert labels.count("OpenAI Embedding API Base URL") == 1
     assert not any("API Key" in str(label) for label in labels if label not in {
-        "0-0 API Key 設定", "OpenAI API Key", "OpenAI Embedding API Key",
+        "0-0 API Key 設定", "OpenAI API Key",
     })
     assert {"1-0 專案設定", "1-1 連線設定", "1-6 單一專案實驗",
             "2-0 實驗專案", "2-3 自動實驗測試"} <= set(labels)
@@ -779,8 +777,6 @@ def test_load_project_ignores_legacy_model_credentials(tmp_path, monkeypatch) ->
     monkeypatch.setattr(ui, "load_env", lambda: {
         "MODEL_OPENAI_API_BASE": "https://current.example/v1",
         "MODEL_OPENAI_API_KEY": "current-key",
-        "EMBEDDING_OPENAI_API_BASE": "https://current.example/v1",
-        "EMBEDDING_OPENAI_API_KEY": "current-key",
         "NEO4J_URI": "bolt://db",
         "NEO4J_USERNAME": "user",
         "NEO4J_PASSWORD": "password",

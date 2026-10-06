@@ -385,8 +385,7 @@ def reload_env_with_services_for_ui() -> tuple[Any, ...]:
         llm_state["active"], *render_service_for_ui(llm_state),
         embedding_state["active"], *render_service_for_ui(embedding_state),
         llm_profile["base_url"], llm_profile["api_key"],
-        embedding_profile["base_url"], embedding_profile["api_key"],
-        llm_profile["status"], embedding_profile["status"],
+        "✅ 已重新讀取共用 OpenAI 設定。",
         "✅ 已重新讀取 .env；可用連線測試診斷服務，無須先測試即可操作。",
     )
 
@@ -430,22 +429,26 @@ def persist_global_api_settings_for_ui(
     action: str,
     llm_state: dict[str, Any], embedding_state: dict[str, Any],
     experiment_llm_state: dict[str, Any],
-    llm_endpoint: str, llm_key: str, embedding_endpoint: str, embedding_key: str,
+    api_endpoint: str, api_key: str,
     *models: str | None,
 ) -> tuple[Any, ...]:
-    """Persist the only visible OpenAI credentials form and refresh service states."""
+    """Persist one shared OpenAI endpoint/key and refresh every service state."""
     llm = service_action_for_ui(
-        action, "OpenAI", llm_state, llm_endpoint, llm_key, [], *models[:6],
+        action, "OpenAI", llm_state, api_endpoint, api_key, [], *models[:6],
     )
     embedding = service_action_for_ui(
-        action, "OpenAI", embedding_state, embedding_endpoint, embedding_key, [], *models[6:7],
+        action, "OpenAI", embedding_state, api_endpoint, api_key, [], *models[6:7],
     )
     experiment = capture_service_settings(
-        experiment_llm_state, llm_endpoint, llm_key, [],
+        experiment_llm_state, api_endpoint, api_key, [],
         list(experiment_llm_state["profiles"]["OpenAI"]["models"]),
     )
     save_service_settings(experiment)
-    return (*llm, *embedding, experiment, llm[6], embedding[6])
+    status = (
+        f"✅ 共用 OpenAI 設定已保存。{llm[6]} {embedding[6]}"
+        if action == "test" else "✅ 共用 OpenAI 設定已自動保存。"
+    )
+    return (*llm, *embedding, experiment, status)
 
 
 def workflow_tabs_for_ui(
@@ -4569,19 +4572,13 @@ def build_app() -> gr.Blocks:
         embedding_connection_status = gr.State(embedding_profile["status"])
 
         with gr.Tab("0-0 API Key 設定"):
-            gr.Markdown("集中設定 OpenAI 對話／建圖與 Embedding API。設定會寫入本機 `.env`，其他頁面共用這組設定，不需逐頁設定。")
+            gr.Markdown("所有模型與 Embedding 呼叫共用同一組 OpenAI API 設定，並寫入本機 `.env`。")
             with gr.Row():
-                global_llm_endpoint = gr.Textbox(label="OpenAI API Base URL", value=llm_profile["base_url"])
-                global_llm_key = gr.Textbox(label="OpenAI API Key", value=llm_profile["api_key"], type="password")
+                global_api_endpoint = gr.Textbox(label="OpenAI API Base URL", value=llm_profile["base_url"])
+                global_api_key = gr.Textbox(label="OpenAI API Key", value=llm_profile["api_key"], type="password")
             with gr.Row():
-                global_embedding_endpoint = gr.Textbox(label="OpenAI Embedding API Base URL", value=embedding_profile["base_url"])
-                global_embedding_key = gr.Textbox(label="OpenAI Embedding API Key", value=embedding_profile["api_key"], type="password")
-            with gr.Row():
-                global_llm_test_button = gr.Button("測試 OpenAI 連線", variant="primary")
-                global_embedding_test_button = gr.Button("測試 OpenAI Embedding 連線", variant="primary")
+                global_api_test_button = gr.Button("測試 OpenAI 連線", variant="primary")
                 reload_button = gr.Button("重新讀取 .env")
-            global_llm_status = gr.Markdown(llm_profile["status"])
-            global_embedding_status = gr.Markdown(embedding_profile["status"])
             global_api_status = gr.Markdown("API 設定修改後會自動儲存。連線測試僅供診斷，不是後續操作的前置條件。")
 
         with gr.Tab("1-0 專案設定") as project_tab:
@@ -5956,28 +5953,21 @@ def build_app() -> gr.Blocks:
         ]
         global_service_outputs = [
             *llm_service_outputs, *embedding_service_outputs,
-            experiment_llm_service_state, global_llm_status, global_embedding_status,
+            experiment_llm_service_state, global_api_status,
         ]
         global_service_inputs = [
             llm_service_state, embedding_service_state, experiment_llm_service_state,
-            global_llm_endpoint, global_llm_key,
-            global_embedding_endpoint, global_embedding_key,
+            global_api_endpoint, global_api_key,
             *llm_model_fields, graph_embedding_model,
         ]
         global_service_events = [
-            global_llm_test_button.click(
-                partial(persist_global_api_settings_for_ui, "test"),
-                inputs=global_service_inputs, outputs=global_service_outputs,
-                concurrency_id="service-settings",
-            ),
-            global_embedding_test_button.click(
+            global_api_test_button.click(
                 partial(persist_global_api_settings_for_ui, "test"),
                 inputs=global_service_inputs, outputs=global_service_outputs,
                 concurrency_id="service-settings",
             ),
         ]
-        for component in [global_llm_endpoint, global_llm_key,
-                          global_embedding_endpoint, global_embedding_key]:
+        for component in [global_api_endpoint, global_api_key]:
             global_service_events.append(component.input(
                 partial(persist_global_api_settings_for_ui, "edit"),
                 inputs=global_service_inputs, outputs=global_service_outputs,
@@ -6052,9 +6042,8 @@ def build_app() -> gr.Blocks:
             outputs=[neo4j_uri, neo4j_username, neo4j_password,
                      llm_provider, *llm_service_outputs,
                      embedding_provider, *embedding_service_outputs,
-                     global_llm_endpoint, global_llm_key,
-                     global_embedding_endpoint, global_embedding_key,
-                     global_llm_status, global_embedding_status, env_status],
+                     global_api_endpoint, global_api_key,
+                     global_api_status, env_status],
         )
         reload_reset_event = reload_event.then(
             lambda: False, outputs=neo4j_connected_state, show_progress="hidden",

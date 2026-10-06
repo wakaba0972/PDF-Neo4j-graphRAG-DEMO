@@ -30,7 +30,7 @@
 - 從每份 PDF 自動建立指定數量的問題、標準答案、來源頁碼與來源 chunk；每題先隨機抽一頁，並由 LLM 檢查內容是否足以形成完整問答，不足時逐步擴展前後頁面；可選擇跨 PDF 並行生題，並支援手動編輯、自動保存、JSON／CSV 匯入與 JSON 匯出，再一鍵執行 RAG 回答及模型判分。
 - 提供「基本向量檢索」與「混合檢索」兩種模式：前者使用 Neo4j 官方 VectorCypherRetriever，後者使用 HybridCypherRetriever 執行向量與全文搜尋；混合檢索可選擇以本機 Reranker 重排擴大召回的候選，也可選擇是否擴展圖譜證據。
 - 模型與 Embedding 僅支援 OpenAI API，相容的 OpenAI API Base URL 亦可設定。連線測試只用於診斷，不是後續操作的前置條件；實際呼叫失敗時會回報 API 錯誤。
-- 「0-0 API Key 設定」是 OpenAI 對話／建圖與 Embedding API Base URL、Key 的唯一介面；所有 1、2 系列頁面共用，不再各自設定服務憑證。
+- 「0-0 API Key 設定」提供唯一一組 OpenAI API Base URL／Key，供對話、建圖及 Embedding 共用；所有 1、2 系列頁面共用，不再各自設定服務憑證。
 
 Neo4j 專案隔離需使用支援多資料庫的 Neo4j Enterprise，並提供可在 `system` database 建立 database 的管理權限；Neo4j Community 與 Aura 不支援此種每專案獨立 database 建立方式。
 
@@ -203,7 +203,7 @@ docker inspect --format '{{.State.Health.Status}}' pdf-graphrag
 
 狀態成為 `healthy` 後，開啟 <http://localhost:8080>。若主機 8080 已被占用，可把啟動參數改成 `-p 8081:8080`，再開啟 <http://localhost:8081>。
 
-進入介面後，在「0-0 API Key 設定」管理 OpenAI 與 Embedding 憑證；「1-1 連線設定」及「2-1 成員專案連線測試」用於 Neo4j 診斷。API 設定寫入已掛載的 `.env`，模型選擇保存在 `config/model_settings.yaml`；未先測試連線仍可操作，請求執行時才會驗證連線。
+進入介面後，在「0-0 API Key 設定」管理共用 OpenAI API 憑證；「1-1 連線設定」及「2-1 成員專案連線測試」用於 Neo4j 診斷。API 設定寫入已掛載的 `.env`，模型選擇保存在 `config/model_settings.yaml`；未先測試連線仍可操作，請求執行時才會驗證連線。
 
 ## 部署後如何啟動
 
