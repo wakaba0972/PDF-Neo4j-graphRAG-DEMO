@@ -3914,13 +3914,6 @@ def next_document(
     return switch_document(1, documents, chunks, active)
 
 
-def save_config(state: dict[str, Any]) -> tuple[str, str | None]:
-    if not state:
-        return "請先成功預覽 PDF。", None
-    output = write_json(Path("data/exports/latest-config.json"), state)
-    return f"設定已儲存：{output}", str(output)
-
-
 def schema_documents_for_ui(
     documents: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
@@ -4477,8 +4470,6 @@ def build_app() -> gr.Blocks:
                     chunk_size = gr.Slider(100, 10000, value=1500, step=100, label="Chunk size（字元）")
                     chunk_overlap = gr.Slider(0, 2000, value=200, step=50, label="Chunk overlap（字元）")
                     preview_button = gr.Button("解析並加入專案", variant="primary")
-                    export_button = gr.Button("匯出目前設定")
-                    export_file = gr.File(label="設定 JSON", interactive=False)
                     gr.Markdown("##### 已加入本專案的 PDF")
                     documents_table = gr.Dataframe(
                         headers=["選取", "文件", "頁碼範圍", "Chunk 數"],
@@ -6037,9 +6028,6 @@ def build_app() -> gr.Blocks:
             next_document,
             inputs=[documents_state, chunk_state, active_preview_state],
             outputs=[active_preview_state, active_chunks_state, chunk_table, page_status],
-        )
-        export_button.click(
-            save_config, inputs=[active_preview_state], outputs=[preview_status, export_file]
         )
         plan_schema_button.click(
             plan_schema_for_ui,
