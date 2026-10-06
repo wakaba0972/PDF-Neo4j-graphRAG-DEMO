@@ -35,6 +35,7 @@ if [[ ! -f ".env" ]]; then
 fi
 
 echo "[4/4] 啟動網站..."
-echo "網址：http://127.0.0.1:8080"
+echo "服務監聽：0.0.0.0:8080"
+echo "本機網址：http://127.0.0.1:8080"
 echo "按 Ctrl+C 可停止服務。"
 exec ".venv/bin/python" src/app.py
