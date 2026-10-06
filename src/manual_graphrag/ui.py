@@ -5229,6 +5229,7 @@ def build_app() -> gr.Blocks:
                     value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
                     label="最大並行請求數", info=OLLAMA_CONCURRENCY_HINT,
                 )
+            gr.Markdown("若遇到 OpenAI TPM 429，可先將並行數調低至 1–3；系統會退避並錯開重試。")
             run_experiment_project_button = gr.Button("檢索並生成回答", variant="primary")
             experiment_project_answer_progress = gr.HTML(value="", visible=False, padding=False)
             experiment_project_answers_status = gr.Markdown("尚未生成實驗回答；請先按「檢索並生成回答」。")

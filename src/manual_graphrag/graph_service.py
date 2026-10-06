@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import random
 import threading
 import time
 import urllib.error
@@ -112,10 +113,21 @@ def _rate_limit_retry_delay(exc: urllib.error.HTTPError, attempt: int) -> float:
     retry_after = exc.headers.get("Retry-After") if exc.headers else None
     if retry_after:
         try:
-            return max(float(retry_after), 0.5)
+            delay = max(float(retry_after), 0.5)
         except ValueError:
-            pass
-    return min(RATE_LIMIT_BASE_DELAY_SECONDS * (2**attempt), RATE_LIMIT_MAX_DELAY_SECONDS)
+            delay = min(
+                RATE_LIMIT_BASE_DELAY_SECONDS * (2**attempt),
+                RATE_LIMIT_MAX_DELAY_SECONDS,
+            )
+    else:
+        delay = min(
+            RATE_LIMIT_BASE_DELAY_SECONDS * (2**attempt),
+            RATE_LIMIT_MAX_DELAY_SECONDS,
+        )
+    # Spread parallel workers' retries so they do not all hit the TPM window
+    # again at the same instant (a thundering herd after Retry-After).
+    jitter = random.uniform(0.0, min(1.0, max(0.1, delay * 0.25)))
+    return min(delay + jitter, RATE_LIMIT_MAX_DELAY_SECONDS)
 
 
 def _is_ollama_chat_url(url: str) -> bool:

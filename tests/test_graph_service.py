@@ -464,6 +464,7 @@ def test_post_json_retries_after_rate_limit_then_succeeds(monkeypatch) -> None:
 
     monkeypatch.setattr(graph_service.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(graph_service.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(graph_service.random, "uniform", lambda _low, _high: 0.0)
 
     result = graph_service._post_json("http://models/v1/chat/completions", {"a": 1}, "key")
 
@@ -471,6 +472,13 @@ def test_post_json_retries_after_rate_limit_then_succeeds(monkeypatch) -> None:
     assert calls["count"] == 2
     assert sleeps == [0.5]
     assert first_error.fp.closed, "retried HTTPError response must be closed, not leaked"
+
+
+def test_rate_limit_retry_delay_adds_jitter_to_spread_parallel_retries(monkeypatch) -> None:
+    monkeypatch.setattr(graph_service.random, "uniform", lambda _low, high: high)
+
+    assert graph_service._rate_limit_retry_delay(_rate_limit_error("0"), 0) == 0.625
+    assert graph_service._rate_limit_retry_delay(_rate_limit_error(), 0) == 2.5
 
 
 def test_post_json_uses_extended_chat_timeout(monkeypatch) -> None:
