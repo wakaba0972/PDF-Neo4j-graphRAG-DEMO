@@ -706,6 +706,39 @@ def test_build_app_exposes_only_openai_service_controls() -> None:
     assert not {"模型服務來源", "Embedding 服務來源", "LLM 模型清單", "Embedding 模型清單"} & labels
 
 
+def test_project_pages_align_action_buttons_and_place_delete_by_load() -> None:
+    app = build_app()
+    components = app.config["components"]
+    button_values = [
+        component.get("props", {}).get("value")
+        for component in components
+        if component.get("type") == "button"
+    ]
+    assert button_values.index("刪除專案") == button_values.index("載入專案") + 1
+    assert "height:38px" in "".join(
+        component.get("props", {}).get("value", "")
+        for component in components
+        if component.get("type") == "html"
+    )
+    action_buttons = {
+        component.get("props", {}).get("value"): component
+        for component in components
+        if component.get("type") == "button"
+        and component.get("props", {}).get("value") in {
+            "載入專案", "刪除專案", "建立新專案", "載入實驗專案",
+            "刪除實驗專案", "建立實驗專案",
+        }
+    }
+    assert set(action_buttons) == {
+        "載入專案", "刪除專案", "建立新專案", "載入實驗專案",
+        "刪除實驗專案", "建立實驗專案",
+    }
+    assert all(
+        "project-workspace-action" in component["props"].get("elem_classes", [])
+        for component in action_buttons.values()
+    )
+
+
 def test_global_api_credentials_exist_only_on_page_zero() -> None:
     app = build_app()
     components = app.config["components"]

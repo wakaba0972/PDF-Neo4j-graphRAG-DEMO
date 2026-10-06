@@ -4537,6 +4537,10 @@ def build_app() -> gr.Blocks:
             "# PDF GraphRAG 測試工具\n"
             "上傳使用手冊、調整建圖參數，並測試 Neo4j GraphRAG。"
         )
+        gr.HTML("""<style>
+        .project-workspace-action {align-self:flex-end !important;}
+        .project-workspace-action button {height:38px !important;min-height:38px !important;}
+        </style>""")
         current_project_banner = gr.Markdown(_current_project_banner({}))
         llm_service_state = gr.State(llm_settings)
         experiment_llm_service_state = gr.State(experiment_llm_settings)
@@ -4589,11 +4593,17 @@ def build_app() -> gr.Blocks:
                     value=project_choices[0][1] if project_choices else None,
                     label="現有專案", interactive=True,
                 )
-                load_project_button = gr.Button("載入專案", variant="primary")
+                load_project_button = gr.Button(
+                    "載入專案", variant="primary", elem_classes="project-workspace-action",
+                )
+                delete_project_button = gr.Button(
+                    "刪除專案", variant="stop", elem_classes="project-workspace-action",
+                )
             with gr.Row():
                 new_project_name = gr.Textbox(label="新專案名稱", placeholder="例如：ALCX17 使用手冊")
-                create_project_button = gr.Button("建立新專案", variant="primary")
-                delete_project_button = gr.Button("刪除專案", variant="stop")
+                create_project_button = gr.Button(
+                    "建立新專案", variant="primary", elem_classes="project-workspace-action",
+                )
                 delete_project_completed = gr.State(False)
             with gr.Row():
                 export_project_button = gr.Button("匯出專案封裝")
@@ -5138,11 +5148,17 @@ def build_app() -> gr.Blocks:
                     choices=experiment_project_choices_for_ui(), value=None,
                     label="現有實驗專案",
                 )
-                load_experiment_project_button = gr.Button("載入實驗專案")
-                delete_experiment_project_button = gr.Button("刪除實驗專案", variant="stop")
+                load_experiment_project_button = gr.Button(
+                    "載入實驗專案", elem_classes="project-workspace-action",
+                )
+                delete_experiment_project_button = gr.Button(
+                    "刪除實驗專案", variant="stop", elem_classes="project-workspace-action",
+                )
             with gr.Row():
                 new_experiment_project_name = gr.Textbox(label="新實驗專案名稱")
-                create_experiment_project_button = gr.Button("建立實驗專案", variant="primary")
+                create_experiment_project_button = gr.Button(
+                    "建立實驗專案", variant="primary", elem_classes="project-workspace-action",
+                )
             experiment_project_status = gr.Markdown("建立或載入實驗專案。")
             experiment_project_members = gr.Dropdown(
                 choices=_built_project_choices(), value=[], multiselect=True,
