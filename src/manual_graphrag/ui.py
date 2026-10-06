@@ -41,7 +41,6 @@ from .graph_service import (
     RunControl,
     check_model_connection,
     extract_graph,
-    list_models,
     plan_graph_schema,
     validate_schema,
 )
@@ -82,7 +81,6 @@ from .service_settings import (
     configured_models,
     load_service_settings,
     preferred_service_model,
-    provider_models,
     resolve_model_service,
     restore_service_settings,
     save_service_settings,
@@ -95,7 +93,6 @@ DEFAULT_LLM_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_EVALUATION_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_MAX_CONCURRENT_REQUESTS = 10
-OLLAMA_CONCURRENCY_HINT = "使用 Ollama 時建議設為 1。"
 
 
 def _model_choices_with_fallback(
@@ -274,32 +271,18 @@ def test_all_connections_for_ui(
 
     llm_models = list(models[:6])
     embedding_models = list(models[6:7])
-    llm_state = dict(llm_state)
-    if llm_provider in llm_state.get("profiles", {}):
-        llm_state["active"] = llm_provider
-    embedding_state = dict(embedding_state)
-    if embedding_provider in embedding_state.get("profiles", {}):
-        embedding_state["active"] = embedding_provider
-    llm_action = "fetch" if llm_state.get("active") == "Ollama" else "test"
-    embedding_action = "fetch" if embedding_state.get("active") == "Ollama" else "test"
     llm_outputs = service_action_for_ui(
-        llm_action, llm_provider, llm_state, model_endpoint, api_key,
+        "test", "OpenAI", llm_state, model_endpoint, api_key,
         llm_rows, *llm_models,
     )
     embedding_outputs = service_action_for_ui(
-        embedding_action, embedding_provider, embedding_state,
+        "test", "OpenAI", embedding_state,
         embedding_api_base, embedding_api_key, embedding_rows, *embedding_models,
     )
     return (
         gr.update(value=database), neo4j_status, neo4j_connected,
         *llm_outputs, *embedding_outputs,
     )
-
-
-def selected_models_for_ui(rows: list[list[Any]] | None) -> list[str]:
-    return list(dict.fromkeys(
-        str(row[1]) for row in (rows or []) if len(row) == 2 and row[0] is True
-    ))
 
 
 def resolve_model_credentials_for_ui(
@@ -332,16 +315,13 @@ def refresh_model_credentials_for_ui(
 
 
 def render_service_for_ui(state: dict[str, Any]) -> tuple[Any, ...]:
-    profile = state["profiles"][state["active"]]
-    ollama = state["active"] == "Ollama"
+    profile = state["profiles"]["OpenAI"]
     allowed = service_choices(state)
     choice_items = service_choice_items(state)
-    rows = profile["rows"] if ollama else [[True, model] for model in provider_models(state, state["active"])]
     fallback = preferred_service_model(state)
     return (
         state, profile["base_url"], profile["api_key"],
-        gr.update(value=rows, visible=ollama), gr.update(visible=not ollama),
-        gr.update(visible=ollama), profile["status"],
+        [], gr.update(visible=True), False, profile["status"],
         *(gr.update(choices=choice_items, value=model if model in allowed else fallback) for model in profile["models"]),
     )
 
@@ -350,39 +330,22 @@ def service_action_for_ui(
     action: str, provider: str, state: dict[str, Any], base_url: str, api_key: str,
     rows: list[list[Any]], *models: str | None,
 ) -> tuple[Any, ...]:
+    if provider != "OpenAI":
+        raise gr.Error("目前僅支援 OpenAI 模型服務")
     state = capture_service_settings(state, base_url, api_key, rows, list(models))
-    if action == "switch":
-        if provider not in state["profiles"]:
-            raise gr.Error("不支援的服務")
-        state["active"] = provider
-    profile = state["profiles"][state["active"]]
+    profile = state["profiles"]["OpenAI"]
     try:
-        if action == "test" and state["active"] in {"OpenAI", "Voyage"}:
-            provider_name = state["active"]
+        if action == "test":
             settings_kind = "llm" if state["kind"] == "experiment_llm" else state["kind"]
-            allowed = configured_models(settings_kind, provider_name)
+            configured_models(settings_kind)
             profile["connected"] = False
-            if provider_name == "Voyage":
-                check_embedding_connection(profile["base_url"], profile["api_key"], allowed[0])
+            if settings_kind == "embedding":
+                model = profile["models"][0] or preferred_service_model(state)
+                check_embedding_connection(profile["base_url"], profile["api_key"], model)
             else:
                 check_model_connection(profile["base_url"], profile["api_key"])
             profile["connected"] = True
-            default_model = (
-                DEFAULT_LLM_MODEL
-                if state["kind"] in {"llm", "experiment_llm"} and DEFAULT_LLM_MODEL in allowed
-                else allowed[0]
-            )
-            profile["models"] = [
-                model if model in allowed else default_model for model in profile["models"]
-            ]
-            profile["status"] = "✅ 連線成功；可用模型：" + "、".join(allowed)
-        elif action == "fetch" and state["active"] == "Ollama":
-            profile["connected"] = False
-            available = list_models(profile["base_url"], profile["api_key"])
-            selected = selected_models_for_ui(profile["rows"])
-            profile["rows"] = [[model in selected, model] for model in available]
-            profile["connected"] = True
-            profile["status"] = f"✅ 已取得 {len(available)} 個模型；請勾選此服務要使用的模型。"
+            profile["status"] = "✅ OpenAI API 連線成功。"
         result = render_service_for_ui(state)
         save_service_settings(state)
         return result
@@ -401,9 +364,9 @@ def experiment_service_action_for_ui(
     rows: list[list[Any]],
 ) -> tuple[Any, ...]:
     """Update the isolated 1-series LLM service without touching 0-series settings."""
-    models = list(state["profiles"][state["active"]]["models"])
+    models = list(state["profiles"]["OpenAI"]["models"])
     rendered = service_action_for_ui(action, provider, state, base_url, api_key, rows, *models)
-    return (*rendered[:7], gr.update(visible=state["active"] != "Ollama"))
+    return (*rendered[:7], gr.update(visible=True))
 
 
 def load_project_with_services_for_ui(
@@ -1929,22 +1892,12 @@ def refresh_experiment_model_choices_for_ui(
 
 
 def _configured_service_choice_items(state: dict[str, Any]) -> list[tuple[str, str]]:
-    """Expose configured choices before a provider has been connection-tested."""
-    choices: list[tuple[str, str]] = []
-    for provider, profile in (state.get("profiles") or {}).items():
-        if provider == "Ollama":
-            models = list(dict.fromkeys(
-                str(row[1]).strip() for row in profile.get("rows", [])
-                if len(row) > 1 and row[0] and str(row[1]).strip()
-            ))
-        else:
-            try:
-                kind = state.get("kind", "llm")
-                models = configured_models("llm" if kind == "experiment_llm" else kind, provider)
-            except ValueError:
-                models = []
-        choices.extend((f"{provider}｜{model}", model) for model in models)
-    return choices
+    """Return the OpenAI allowlist for the selected service purpose."""
+    kind = "llm" if state.get("kind") == "experiment_llm" else state.get("kind", "llm")
+    try:
+        return [(f"OpenAI｜{model}", model) for model in configured_models(kind)]
+    except ValueError:
+        return []
 
 
 def add_experiment_group_for_ui(
@@ -3216,7 +3169,7 @@ def evaluate_experiment_answers_with_services_for_ui(
 ) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]]]:
     judge_endpoint, judge_key = resolve_model_credentials_for_ui(llm_state, judge_model)
     if not judge_endpoint:
-        return "❌ 無法取得評測模型連線設定；請先測試模型服務連線並確認該模型可用。", [], [], []
+        return "❌ 無法取得評測模型設定；請確認模型已列入 OpenAI 允許清單。", [], [], []
     return evaluate_experiment_answers_for_ui(
         project_id, pending_answers, groups, judge_model, judge_reasoning_effort,
         max_concurrent_requests, judge_endpoint, judge_key,
@@ -4656,39 +4609,27 @@ def build_app() -> gr.Blocks:
                     neo4j_connection_status = gr.Markdown()
                 with gr.Column():
                     gr.Markdown("### 模型服務（對話／建圖用）")
-                    llm_provider = gr.Radio(["OpenAI", "Ollama"], value=llm_settings["active"], label="模型服務來源")
+                    llm_provider = gr.State("OpenAI")
                     model_endpoint = gr.Textbox(label="API Base URL", value=llm_profile["base_url"])
                     api_key = gr.Textbox(
-                        label="API Key（Ollama 免填）", value=llm_profile["api_key"], type="password"
+                        label="OpenAI API Key", value=llm_profile["api_key"], type="password"
                     )
-                    model_test_button = gr.Button("測試模型服務連線", variant="primary", visible=llm_settings["active"] == "OpenAI")
-                    model_list_button = gr.Button("獲得模型清單", variant="primary", visible=llm_settings["active"] == "Ollama")
-                    llm_models_table = gr.Dataframe(
-                        value=llm_profile["rows"], visible=llm_settings["active"] == "Ollama",
-                        headers=["使用", "模型名稱"], datatype=["bool", "str"],
-                        type="array", interactive=True, static_columns=[1],
-                        row_count=(0, "fixed"), col_count=(2, "fixed"),
-                        label="LLM 模型清單", column_widths=[80, "80%"],
-                    )
+                    model_test_button = gr.Button("測試 OpenAI 連線", variant="primary")
+                    model_list_button = gr.State(False)
+                    llm_models_table = gr.State([])
                     model_connection_status = gr.Markdown(llm_profile["status"])
                     gr.Markdown("### Embedding 服務")
-                    embedding_provider = gr.Radio(["OpenAI", "Ollama", "Voyage"], value=embedding_settings["active"], label="Embedding 服務來源")
+                    embedding_provider = gr.State("OpenAI")
                     embedding_api_base = gr.Textbox(
-                        label="Embedding API Base URL", value=embedding_profile["base_url"]
+                        label="OpenAI Embedding API Base URL", value=embedding_profile["base_url"]
                     )
                     embedding_api_key = gr.Textbox(
-                        label="Embedding API Key（Ollama 免填）",
+                        label="OpenAI Embedding API Key",
                         value=embedding_profile["api_key"], type="password",
                     )
-                    embedding_test_button = gr.Button("測試 Embedding 服務連線", variant="primary", visible=embedding_settings["active"] == "OpenAI")
-                    embedding_list_button = gr.Button("獲得 Embedding 模型清單", variant="primary", visible=embedding_settings["active"] == "Ollama")
-                    embedding_models_table = gr.Dataframe(
-                        value=embedding_profile["rows"], visible=embedding_settings["active"] == "Ollama",
-                        headers=["使用", "模型名稱"], datatype=["bool", "str"],
-                        type="array", interactive=True, static_columns=[1],
-                        row_count=(0, "fixed"), col_count=(2, "fixed"),
-                        label="Embedding 模型清單", column_widths=[80, "80%"],
-                    )
+                    embedding_test_button = gr.Button("測試 OpenAI Embedding 連線", variant="primary")
+                    embedding_list_button = gr.State(False)
+                    embedding_models_table = gr.State([])
                     embedding_connection_status = gr.Markdown(embedding_profile["status"])
                     reload_button = gr.Button("重新讀取 .env")
             gr.Markdown("⚠️ Password、API Base URL 與 API Key 會寫入本機 `.env`；模型清單與選擇保存在 `config/model_settings.yaml`。")
@@ -4774,7 +4715,6 @@ def build_app() -> gr.Blocks:
                     max_concurrent_requests = gr.Number(
                         value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
                         label="最大並行請求數",
-                        info=OLLAMA_CONCURRENCY_HINT,
                     )
                 schema_documents = gr.Dataframe(
                     headers=["使用", "PDF"],
@@ -4836,7 +4776,6 @@ def build_app() -> gr.Blocks:
                     minimum=1,
                     precision=0,
                     label="最大並行請求數",
-                    info=OLLAMA_CONCURRENCY_HINT,
                 )
                 generate_graph_button = gr.Button(
                     "確認 Schema 並抽取", variant="primary"
@@ -5028,7 +4967,6 @@ def build_app() -> gr.Blocks:
                     )
                     evaluation_test_max_concurrent_requests = gr.Number(
                         value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="最大並行請求數",
-                        info=OLLAMA_CONCURRENCY_HINT,
                     )
                 generate_evaluation_answers_button = gr.Button("檢索並生成回答", variant="primary")
             with gr.Group(elem_classes="evaluation-metrics-box"):
@@ -5050,7 +4988,6 @@ def build_app() -> gr.Blocks:
                     )
                     evaluation_judge_max_concurrent_requests = gr.Number(
                         value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="最大並行請求數",
-                        info=OLLAMA_CONCURRENCY_HINT,
                     )
                 evaluation_verify_judgment = gr.Checkbox(
                     value=False, label="二階段驗證：複核第一輪判定與理由",
@@ -5142,7 +5079,7 @@ def build_app() -> gr.Blocks:
             with gr.Row():
                 experiment_max_concurrent_requests = gr.Number(
                     value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
-                    label="最大並行請求數", info=OLLAMA_CONCURRENCY_HINT,
+                    label="最大並行請求數",
                 )
             generate_experiments_answers_button = gr.Button("檢索並生成回答", variant="primary")
             with gr.Group(elem_classes="evaluation-metrics-box"):
@@ -5166,7 +5103,7 @@ def build_app() -> gr.Blocks:
                     )
                     experiment_judge_max_concurrent_requests = gr.Number(
                         value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
-                        label="最大並行請求數", info=OLLAMA_CONCURRENCY_HINT,
+                        label="最大並行請求數",
                     )
                 experiment_verify_judgment = gr.Checkbox(
                     value=False, label="二階段驗證：複核第一輪判定與理由",
@@ -5246,10 +5183,7 @@ def build_app() -> gr.Blocks:
             gr.Markdown("#### 實驗專案回答模型服務（獨立於 0-1）")
             experiment_llm_profile = experiment_llm_settings["profiles"][experiment_llm_settings["active"]]
             with gr.Row():
-                experiment_llm_provider = gr.Dropdown(
-                    choices=["OpenAI", "Ollama"], value=experiment_llm_settings["active"],
-                    label="服務提供者",
-                )
+                experiment_llm_provider = gr.State("OpenAI")
                 experiment_llm_endpoint = gr.Textbox(
                     value=experiment_llm_profile["base_url"], label="API Base URL",
                 )
@@ -5258,15 +5192,9 @@ def build_app() -> gr.Blocks:
                 )
             with gr.Row():
                 experiment_llm_test_button = gr.Button("測試模型連線", variant="primary")
-                experiment_llm_fetch_button = gr.Button("取得 Ollama 模型清單")
-            experiment_llm_models_table = gr.Dataframe(
-                headers=["使用", "模型名稱"], datatype=["bool", "str"],
-                value=experiment_llm_profile["rows"], interactive=True,
-                visible=experiment_llm_settings["active"] == "Ollama", row_count=(1, "dynamic"),
-            )
-            experiment_llm_openai_info = gr.Markdown(
-                "OpenAI 模型採用系統允許清單。", visible=experiment_llm_settings["active"] != "Ollama",
-            )
+                experiment_llm_fetch_button = gr.State(False)
+            experiment_llm_models_table = gr.State([])
+            experiment_llm_openai_info = gr.Markdown("模型服務使用 OpenAI API 與系統允許清單。")
             experiment_llm_connection_status = gr.Markdown(experiment_llm_profile["status"])
 
         with gr.Tab("1-2 問題集準備", interactive=True) as experiment_questions_tab:
@@ -5336,7 +5264,7 @@ def build_app() -> gr.Blocks:
             with gr.Row():
                 experiment_project_max_concurrency = gr.Number(
                     value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
-                    label="最大並行請求數", info=OLLAMA_CONCURRENCY_HINT,
+                    label="最大並行請求數",
                 )
             gr.Markdown("若遇到 OpenAI TPM 429，可先將並行數調低至 1–3；系統會退避並錯開重試。")
             run_experiment_project_button = gr.Button("檢索並生成回答", variant="primary")
@@ -5355,7 +5283,6 @@ def build_app() -> gr.Blocks:
                 )
                 experiment_project_judge_concurrency = gr.Number(
                     value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="評測最大並行請求數",
-                    info=OLLAMA_CONCURRENCY_HINT,
                 )
             experiment_project_verify_judgment = gr.Checkbox(
                 value=False, label="二階段驗證：複核第一輪判定與理由",
@@ -6056,20 +5983,18 @@ def build_app() -> gr.Blocks:
             embedding_service_state, embedding_api_base, embedding_api_key, embedding_models_table,
             embedding_test_button, embedding_list_button, embedding_connection_status, graph_embedding_model,
         ]
-        for provider, state, endpoint, key, table, test_button, fetch_button, fields, outputs in [
+        for provider, state, endpoint, key, table, test_button, fields, outputs in [
             (llm_provider, llm_service_state, model_endpoint, api_key, llm_models_table,
-             model_test_button, model_list_button, llm_model_fields, llm_service_outputs),
+             model_test_button, llm_model_fields, llm_service_outputs),
             (embedding_provider, embedding_service_state, embedding_api_base, embedding_api_key,
-             embedding_models_table, embedding_test_button, embedding_list_button,
+             embedding_models_table, embedding_test_button,
              [graph_embedding_model], embedding_service_outputs),
         ]:
             inputs = [provider, state, endpoint, key, table, *fields]
             service_events = [
-                provider.input(partial(service_action_for_ui, "switch"), inputs=inputs, outputs=outputs, concurrency_id="service-settings"),
                 test_button.click(partial(service_action_for_ui, "test"), inputs=inputs, outputs=outputs, concurrency_id="service-settings"),
-                fetch_button.click(partial(service_action_for_ui, "fetch"), inputs=inputs, outputs=outputs, concurrency_id="service-settings"),
             ]
-            for component in [endpoint, key, table, *fields]:
+            for component in [endpoint, key, *fields]:
                 service_events.append(component.input(partial(service_action_for_ui, "edit"), inputs=inputs, outputs=outputs, show_progress="hidden", concurrency_id="service-settings"))
             for service_event in service_events:
                 service_event.then(
@@ -6101,23 +6026,13 @@ def build_app() -> gr.Blocks:
             experiment_llm_endpoint, experiment_llm_api_key, experiment_llm_models_table,
         ]
         experiment_service_events = [
-            experiment_llm_provider.input(
-                partial(experiment_service_action_for_ui, "switch"),
-                inputs=experiment_service_inputs, outputs=experiment_llm_service_outputs,
-                concurrency_id="experiment-service-settings",
-            ),
             experiment_llm_test_button.click(
                 partial(experiment_service_action_for_ui, "test"),
                 inputs=experiment_service_inputs, outputs=experiment_llm_service_outputs,
                 concurrency_id="experiment-service-settings",
             ),
-            experiment_llm_fetch_button.click(
-                partial(experiment_service_action_for_ui, "fetch"),
-                inputs=experiment_service_inputs, outputs=experiment_llm_service_outputs,
-                concurrency_id="experiment-service-settings",
-            ),
         ]
-        for component in [experiment_llm_endpoint, experiment_llm_api_key, experiment_llm_models_table]:
+        for component in [experiment_llm_endpoint, experiment_llm_api_key]:
             experiment_service_events.append(component.input(
                 partial(experiment_service_action_for_ui, "edit"),
                 inputs=experiment_service_inputs, outputs=experiment_llm_service_outputs,

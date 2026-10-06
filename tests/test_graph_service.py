@@ -44,7 +44,7 @@ def test_plan_graph_schema_parses_fenced_json_and_uses_chunks(monkeypatch) -> No
     chunks = [TextChunk(1, "設備 A 使用設備 B", (2,))]
 
     plan = graph_service.plan_graph_schema(
-        "http://localhost:11434/v1", "secret", "model-a", chunks, 0.4
+        "https://api.openai.com/v1", "secret", "model-a", chunks, 0.4
     )
 
     assert plan.schema == SCHEMA
@@ -52,7 +52,7 @@ def test_plan_graph_schema_parses_fenced_json_and_uses_chunks(monkeypatch) -> No
     assert plan.batch_count == 1
     assert plan.merge_rounds == 0
     assert plan.total_chunks == 1
-    assert captured["url"] == "http://localhost:11434/v1/chat/completions"
+    assert captured["url"] == "https://api.openai.com/v1/chat/completions"
     assert captured["api_key"] == "secret"
     assert captured["payload"]["temperature"] == 0.4
     assert "max_tokens" not in captured["payload"]
@@ -494,106 +494,19 @@ def test_post_json_uses_extended_chat_timeout(monkeypatch) -> None:
     assert captured["timeout"] == graph_service.CHAT_COMPLETION_TIMEOUT_SECONDS == 600
 
 
-def test_identifies_only_configured_ollama_chat_url(monkeypatch) -> None:
-    monkeypatch.setattr(
-        graph_service,
-        "load_env",
-        lambda: {"MODEL_OLLAMA_API_BASE": "http://ollama:11434/v1"},
-    )
-
-    assert graph_service._is_ollama_chat_url(
-        "http://ollama:11434/v1/chat/completions"
-    )
-    assert not graph_service._is_ollama_chat_url(
-        "http://ollama:11434/v1/embeddings"
-    )
-    assert not graph_service._is_ollama_chat_url(
-        "http://openai/v1/chat/completions"
-    )
-
-
-def test_post_json_collects_ollama_chat_stream(monkeypatch) -> None:
-    captured = {}
-    chunks = [
-        {"choices": [{"delta": {"role": "assistant", "content": "{\"ok\":"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "true}"}, "finish_reason": "stop"}]},
-    ]
-    stream = "".join(
-        f"data: {json.dumps(chunk)}\n\n" for chunk in chunks
-    ) + "data: [DONE]\n\n"
-
-    def fake_urlopen(request, timeout=None):
-        captured["payload"] = json.loads(request.data)
-        captured["accept"] = request.headers.get("Accept")
-        return io.BytesIO(stream.encode("utf-8"))
-
-    monkeypatch.setattr(graph_service, "_is_ollama_chat_url", lambda _url: True)
-    monkeypatch.setattr(graph_service.urllib.request, "urlopen", fake_urlopen)
-
-    response = graph_service._post_json(
-        "http://ollama:11434/v1/chat/completions", {}, ""
-    )
-
-    assert captured == {
-        "payload": {"stream": True},
-        "accept": "text/event-stream",
-    }
-    assert graph_service._chat_response_content(response) == (
-        "{\"ok\":true}", "stop"
-    )
-
-
-def test_post_json_keeps_non_ollama_requests_non_streaming(monkeypatch) -> None:
+def test_post_json_sends_standard_json_request(monkeypatch) -> None:
     captured = {}
 
     def fake_urlopen(request, timeout=None):
         captured["payload"] = json.loads(request.data)
         return io.BytesIO(b"{\"ok\": true}")
 
-    monkeypatch.setattr(graph_service, "_is_ollama_chat_url", lambda _url: False)
     monkeypatch.setattr(graph_service.urllib.request, "urlopen", fake_urlopen)
 
     assert graph_service._post_json(
         "http://openai/v1/chat/completions", {}, ""
     ) == {"ok": True}
     assert captured["payload"] == {}
-
-
-def test_post_json_retries_ollama_stream_without_completion(monkeypatch) -> None:
-    calls = {"count": 0}
-    sleeps = []
-
-    def event(content, finish_reason=None):
-        return (
-            "data: "
-            + json.dumps({
-                "choices": [{
-                    "delta": {"content": content},
-                    "finish_reason": finish_reason,
-                }]
-            })
-            + "\n\n"
-        ).encode("utf-8")
-
-    def fake_urlopen(request, timeout=None):
-        calls["count"] += 1
-        if calls["count"] == 1:
-            return io.BytesIO(event("殘缺"))
-        return io.BytesIO(event("完整", "stop"))
-
-    monkeypatch.setattr(graph_service, "_is_ollama_chat_url", lambda _url: True)
-    monkeypatch.setattr(graph_service.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(
-        graph_service.time, "sleep", lambda seconds: sleeps.append(seconds)
-    )
-
-    response = graph_service._post_json(
-        "http://ollama:11434/v1/chat/completions", {}, ""
-    )
-
-    assert graph_service._chat_response_content(response) == ("完整", "stop")
-    assert calls["count"] == 2
-    assert sleeps == [graph_service.NETWORK_RETRY_BASE_DELAY_SECONDS]
 
 
 def test_post_json_raises_after_exhausting_rate_limit_retries(monkeypatch) -> None:
@@ -650,48 +563,6 @@ def test_post_json_reports_incomplete_response_after_retries(monkeypatch) -> Non
         )
 
     assert calls["count"] == graph_service.NETWORK_MAX_RETRIES + 1
-
-
-def test_list_models_returns_sorted_unique_ids(monkeypatch) -> None:
-    payload = {
-        "data": [
-            {"id": "llama3.1:8b"},
-            {"id": "nomic-embed-text"},
-            {"id": "llama3.1:8b"},
-            {"id": ""},
-            "not-a-dict",
-        ]
-    }
-
-    def fake_urlopen(request, timeout=None):
-        assert request.full_url == "http://localhost:11434/v1/models"
-        return io.BytesIO(json.dumps(payload).encode("utf-8"))
-
-    monkeypatch.setattr(graph_service.urllib.request, "urlopen", fake_urlopen)
-
-    models = graph_service.list_models("http://localhost:11434/v1", "")
-
-    assert models == ["llama3.1:8b", "nomic-embed-text"]
-
-
-def test_list_models_rejects_missing_data_field(monkeypatch) -> None:
-    def fake_urlopen(request, timeout=None):
-        return io.BytesIO(json.dumps({"object": "list"}).encode("utf-8"))
-
-    monkeypatch.setattr(graph_service.urllib.request, "urlopen", fake_urlopen)
-
-    with pytest.raises(ValueError, match="data 陣列"):
-        graph_service.list_models("http://localhost:11434/v1", "")
-
-
-def test_list_models_rejects_empty_model_list(monkeypatch) -> None:
-    def fake_urlopen(request, timeout=None):
-        return io.BytesIO(json.dumps({"data": []}).encode("utf-8"))
-
-    monkeypatch.setattr(graph_service.urllib.request, "urlopen", fake_urlopen)
-
-    with pytest.raises(ValueError, match="沒有回傳任何可用模型"):
-        graph_service.list_models("http://localhost:11434/v1", "")
 
 
 def test_check_model_connection_reports_http_error(monkeypatch) -> None:
@@ -864,5 +735,5 @@ def test_chat_json_reports_token_truncation_after_retry(monkeypatch) -> None:
         },
     )
 
-    with pytest.raises(ValueError, match="提高 Ollama context length"):
+    with pytest.raises(ValueError, match="提高模型可用輸出長度"):
         graph_service._chat_json("http://models/v1", "", "llm", "system", "user", 0)

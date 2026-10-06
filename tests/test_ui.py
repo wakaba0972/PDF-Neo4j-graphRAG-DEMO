@@ -116,8 +116,7 @@ def test_model_fields_only_offer_initially_checked_models() -> None:
     for field in fields.values():
         for display, value in field["props"]["choices"]:
             assert display in {
-                f"OpenAI｜{value}", f"Ollama｜{value}",
-                f"Voyage｜{value}",
+                f"OpenAI｜{value}",
                 f"OpenAI｜{value}（目前不可用）" if value == "gpt-6-luna" else "",
             }
 
@@ -284,7 +283,7 @@ def test_evaluation_generation_uses_parallel_checkbox() -> None:
     assert "生題最大並行請求數（跨 PDF）" not in fields
 
 
-def test_all_concurrency_inputs_show_ollama_recommendation() -> None:
+def test_all_concurrency_inputs_default_to_ten_without_provider_hints() -> None:
     app = build_app()
     concurrency_inputs = [
         component for component in app.config["components"]
@@ -293,10 +292,7 @@ def test_all_concurrency_inputs_show_ollama_recommendation() -> None:
 
     assert len(concurrency_inputs) == 8
     assert all(component["props"].get("value") == 10 for component in concurrency_inputs)
-    assert all(
-        component["props"].get("info") == ui.OLLAMA_CONCURRENCY_HINT
-        for component in concurrency_inputs
-    )
+    assert all(not component["props"].get("info") for component in concurrency_inputs)
 
 
 def test_reranker_and_graph_evidence_expansion_default_off() -> None:
@@ -406,27 +402,15 @@ def test_workflow_gate_requires_project_but_not_connection_tests() -> None:
     assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", True, llm, embedding))
 
 
-def test_ollama_saved_models_are_selectable_without_current_connection_test(tmp_path, monkeypatch) -> None:
+def test_openai_models_are_selectable_without_current_connection_test(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     state = settings.load_service_settings("llm")
-    profile = state["profiles"]["Ollama"]
-    state["active"] = "Ollama"
-    profile["rows"] = [[True, "local-model"]]
-    assert "local-model" in settings.service_choices(state)
-    monkeypatch.setattr(ui, "list_models", lambda *args: ["local-model"])
-    fetched = ui.service_action_for_ui(
-        "fetch", "Ollama", state, profile["base_url"], profile["api_key"],
-        profile["rows"], *profile["models"],
-    )
-    assert len(fetched) == 13
-    assert len(fetched[7:]) == 6
-    assert settings.service_choices(fetched[0]) == settings.openai_models("llm") + ["local-model"]
-    monkeypatch.setattr(ui, "list_models", lambda *args: (_ for _ in ()).throw(ValueError("offline")))
-    failed = ui.service_action_for_ui(
-        "fetch", "Ollama", fetched[0], fetched[1], fetched[2], fetched[3]["value"],
-        *[field["value"] for field in fetched[7:]],
-    )
-    assert settings.service_choices(failed[0]) == settings.openai_models("llm") + ["local-model"]
+    profile = state["profiles"]["OpenAI"]
+    assert settings.openai_models("llm") == ["gpt-4.1-mini", "gpt-4o-mini", "gpt-6-luna"]
+    rendered = ui.render_service_for_ui(state)
+    assert all(field["choices"] for field in rendered[7:])
+    with pytest.raises(ui.gr.Error, match="僅支援 OpenAI"):
+        ui.service_action_for_ui("fetch", "Voyage", state, profile["base_url"], profile["api_key"], [], *profile["models"])
 
 def test_delete_project_refreshes_list_after_server_delete(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
@@ -649,7 +633,7 @@ def test_build_app_has_manual_neo4j_import_button() -> None:
 
 def test_connection_summary_does_not_expose_secrets() -> None:
     status, settings = connection_summary(
-        "bolt://localhost:7687", "neo4j", "neo4j", "password", "http://localhost:11434/v1", "key"
+        "bolt://localhost:7687", "neo4j", "neo4j", "password", "https://api.openai.com/v1", "key"
     )
     assert status.startswith("✅")
     assert "password" not in settings
@@ -671,14 +655,14 @@ def test_one_click_connection_test_runs_neo4j_llm_and_embedding(monkeypatch, tmp
         return [f"{action}:{provider}"] * (13 if state["kind"] == "llm" else 8)
 
     monkeypatch.setattr(ui, "service_action_for_ui", fake_service_action)
-    llm_state = {"kind": "llm", "active": "OpenAI", "profiles": {"OpenAI": {}, "Ollama": {}}}
-    embedding_state = {"kind": "embedding", "active": "OpenAI", "profiles": {"OpenAI": {}, "Voyage": {}}}
+    llm_state = {"kind": "llm", "active": "OpenAI", "profiles": {"OpenAI": {}}}
+    embedding_state = {"kind": "embedding", "active": "OpenAI", "profiles": {"OpenAI": {}}}
 
     result = ui.test_all_connections_for_ui(
         project["project_id"], "bolt://neo4j", "", "user", "password",
-        "Ollama", llm_state, "http://llm", "llm-key", [[True, "llama"]],
-        "Voyage", embedding_state, "http://embedding", "embedding-key", [],
-        "model-1", "model-2", "model-3", "model-4", "model-5", "model-6", "voyage-model",
+        "OpenAI", llm_state, "https://api.openai.com/v1", "llm-key", [],
+        "OpenAI", embedding_state, "https://api.openai.com/v1", "embedding-key", [],
+        "model-1", "model-2", "model-3", "model-4", "model-5", "model-6", "text-embedding-3-small",
     )
 
     assert result[0]["value"] == project["neo4j_database"]
@@ -686,10 +670,10 @@ def test_one_click_connection_test_runs_neo4j_llm_and_embedding(monkeypatch, tmp
     assert len(neo4j_calls) == 1
     assert neo4j_calls[0] == ("bolt://neo4j", project["neo4j_database"], "user", "password")
     assert [(call[0], call[1], call[-1]) for call in service_calls] == [
-        ("fetch", "Ollama", "Ollama"), ("test", "Voyage", "Voyage"),
+        ("test", "OpenAI", "OpenAI"), ("test", "OpenAI", "OpenAI"),
     ]
-    assert result[3:16] == ("fetch:Ollama",) * 13
-    assert result[16:] == ("test:Voyage",) * 8
+    assert result[3:16] == ("test:OpenAI",) * 13
+    assert result[16:] == ("test:OpenAI",) * 8
 
 
 def test_persist_env_settings_writes_all_fields(tmp_path, monkeypatch) -> None:
@@ -744,33 +728,15 @@ def test_pdf_table_has_checkbox_and_new_project_resets_visible_status() -> None:
         for component in components
     )
 
-def test_build_app_has_independent_provider_switches_and_ollama_tables() -> None:
+def test_build_app_exposes_only_openai_service_controls() -> None:
     app = build_app()
     components = app.config["components"]
     buttons = {c["props"]["value"]: c for c in components if c["type"] == "button"}
-    assert "⚡ 套用 Ollama 本機預設（省 token）" not in buttons
-    assert not {"重新整理模型清單", "重新整理 Embedding 模型清單"} & buttons.keys()
-    for label, provider_label, fetch_label, test_label, count in [
-        ("LLM 模型清單", "模型服務來源", "獲得模型清單", "測試模型服務連線", 6),
-        ("Embedding 模型清單", "Embedding 服務來源", "獲得 Embedding 模型清單", "測試 Embedding 服務連線", 1),
-    ]:
-        table = next(c for c in components if c.get("props", {}).get("label") == label)
-        provider = next(c for c in components if c.get("props", {}).get("label") == provider_label)
-        expected_providers = [("OpenAI", "OpenAI"), ("Ollama", "Ollama")]
-        if provider_label == "Embedding 服務來源":
-            expected_providers.append(("Voyage", "Voyage"))
-        assert provider["props"]["choices"] == expected_providers
-        ollama = provider["props"]["value"] == "Ollama"
-        assert buttons[fetch_label]["props"]["visible"] == ollama
-        assert buttons[test_label]["props"]["visible"] != ollama
-        assert table["props"]["visible"] == ollama
-        assert table["props"]["datatype"] == ["bool", "str"]
-        assert table["props"]["static_columns"] == [1]
-        fetch = next(d for d in app.config["dependencies"] if (buttons[fetch_label]["id"], "click") in d["targets"])
-        selection = next(d for d in app.config["dependencies"] if (table["id"], "input") in d["targets"])
-        switch = next(d for d in app.config["dependencies"] if (provider["id"], "input") in d["targets"])
-        assert fetch["outputs"] == selection["outputs"] == switch["outputs"]
-        assert len(fetch["outputs"]) == count + 7
+    assert "測試 OpenAI 連線" in buttons
+    assert "測試 OpenAI Embedding 連線" in buttons
+    assert not {"獲得模型清單", "獲得 Embedding 模型清單", "測試模型服務連線", "測試 Embedding 服務連線"} & buttons.keys()
+    labels = {c.get("props", {}).get("label") for c in components}
+    assert not {"模型服務來源", "Embedding 服務來源", "LLM 模型清單", "Embedding 模型清單"} & labels
 
 
 def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
@@ -818,14 +784,8 @@ def test_load_project_ignores_legacy_model_credentials(tmp_path, monkeypatch) ->
     monkeypatch.setattr(ui, "load_env", lambda: {
         "MODEL_OPENAI_API_BASE": "https://current.example/v1",
         "MODEL_OPENAI_API_KEY": "current-key",
-        "MODEL_OLLAMA_API_BASE": "http://localhost:11434/v1",
-        "MODEL_OLLAMA_API_KEY": "",
         "EMBEDDING_OPENAI_API_BASE": "https://current.example/v1",
         "EMBEDDING_OPENAI_API_KEY": "current-key",
-        "EMBEDDING_OLLAMA_API_BASE": "http://localhost:11434/v1",
-        "EMBEDDING_OLLAMA_API_KEY": "",
-        "EMBEDDING_VOYAGE_API_BASE": "https://api.voyageai.com/v1",
-        "EMBEDDING_VOYAGE_API_KEY": "",
         "NEO4J_URI": "bolt://db",
         "NEO4J_USERNAME": "user",
         "NEO4J_PASSWORD": "password",
@@ -1951,7 +1911,7 @@ def test_experiment_evaluation_reports_unavailable_current_model(monkeypatch) ->
         "project", [{"question": "Q"}], [], "gpt-6-luna", "low", 5, {},
     )
 
-    assert "請先測試模型服務連線" in result[0]
+    assert "無法取得評測模型設定" in result[0]
 
 
 def test_inline_experiment_group_add_and_remove(tmp_path, monkeypatch) -> None:

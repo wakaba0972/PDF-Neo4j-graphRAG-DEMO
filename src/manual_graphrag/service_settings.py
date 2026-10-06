@@ -15,9 +15,9 @@ from .env_store import load_env, save_env
 MODEL_SETTINGS_PATH = Path("config/model_settings.yaml")
 MODEL_COUNTS = {"llm": 6, "experiment_llm": 6, "embedding": 1}
 PROVIDERS_BY_KIND = {
-    "llm": ("OpenAI", "Ollama"),
-    "experiment_llm": ("OpenAI", "Ollama"),
-    "embedding": ("OpenAI", "Ollama", "Voyage"),
+    "llm": ("OpenAI",),
+    "experiment_llm": ("OpenAI",),
+    "embedding": ("OpenAI",),
 }
 _SETTINGS_LOCK = RLock()
 DEFAULT_OPENAI_MODELS = {
@@ -27,10 +27,6 @@ DEFAULT_OPENAI_MODELS = {
 LEGACY_DEFAULT_OPENAI_MODELS = {
     "llm": ["gpt-4.1-mini", "gpt-4o-mini"],
 }
-DEFAULT_VOYAGE_MODELS = [
-    "voyage-4-large", "voyage-4", "voyage-4-lite", "voyage-code-3",
-    "voyage-finance-2", "voyage-law-2",
-]
 DEFAULT_SELECTIONS = {
     "llm": ["gpt-6-luna"] * 6,
     "experiment_llm": ["gpt-6-luna"] * 6,
@@ -41,19 +37,14 @@ DEFAULT_SELECTIONS = {
 def _default_document() -> dict[str, Any]:
     return {
         "openai_models": deepcopy(DEFAULT_OPENAI_MODELS),
-        "voyage_models": deepcopy(DEFAULT_VOYAGE_MODELS),
         "services": {
             kind: {
                 "active": "OpenAI",
                 "profiles": {
-                    provider: {
+                    "OpenAI": {
                         "rows": [],
-                        "models": (
-                            deepcopy(DEFAULT_SELECTIONS[kind]) if provider == "OpenAI"
-                            else (["voyage-4"] if provider == "Voyage" else [None] * MODEL_COUNTS[kind])
-                        ),
+                        "models": deepcopy(DEFAULT_SELECTIONS[kind]),
                     }
-                    for provider in PROVIDERS_BY_KIND[kind]
                 },
             } for kind in MODEL_COUNTS
         },
@@ -104,37 +95,21 @@ def openai_models(kind: str) -> list[str]:
     return normalized
 
 
-def configured_models(kind: str, provider: str) -> list[str]:
-    if provider == "OpenAI":
-        return openai_models(kind)
-    if provider == "Voyage" and kind == "embedding":
-        try:
-            models = _load_document()["voyage_models"]
-            if not isinstance(models, list) or not models or any(not isinstance(model, str) or not model.strip() for model in models):
-                raise ValueError()
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"模型設定檔無效：{MODEL_SETTINGS_PATH}（voyage_models）") from exc
-        return list(dict.fromkeys(model.strip() for model in models))
-    raise ValueError(f"{provider} 沒有固定模型清單")
+def configured_models(kind: str) -> list[str]:
+    return openai_models(kind)
 
 
 def preferred_service_model(state: dict[str, Any]) -> str | None:
-    providers = ("OpenAI", "Voyage", "Ollama") if state["kind"] == "embedding" else ("OpenAI", "Ollama")
-    for provider in providers:
-        if provider in state["profiles"]:
-            models = provider_models(state, provider)
-            if models:
-                return models[0]
-    return None
+    models = service_choices(state)
+    return models[0] if models else None
 
 
-def _credentials(env: dict[str, str], kind: str, provider: str) -> tuple[str, str]:
+def _credentials(env: dict[str, str], kind: str) -> tuple[str, str]:
     prefix = (
         "EXPERIMENT_MODEL" if kind == "experiment_llm"
         else ("MODEL" if kind == "llm" else "EMBEDDING")
     )
-    provider_key = provider.upper()
-    return env[f"{prefix}_{provider_key}_API_BASE"], env[f"{prefix}_{provider_key}_API_KEY"]
+    return env[f"{prefix}_OPENAI_API_BASE"], env[f"{prefix}_OPENAI_API_KEY"]
 
 
 def load_service_settings(kind: str, env: dict[str, str] | None = None) -> dict[str, Any]:
@@ -143,60 +118,61 @@ def load_service_settings(kind: str, env: dict[str, str] | None = None) -> dict[
     env = load_env() if env is None else env
     document = _load_document()
     try:
-        saved = (document.get("services") or {}).get(kind)
-        if saved is None:
-            saved = _default_document()["services"][kind]
-        active = saved["active"]
-        if active not in PROVIDERS_BY_KIND[kind]:
+        services = document.get("services", {})
+        if not isinstance(services, dict):
             raise ValueError()
-        profiles = {}
-        for provider in PROVIDERS_BY_KIND[kind]:
-            profile = saved["profiles"][provider]
-            rows, models = profile["rows"], profile["models"]
-            if kind == "llm" and isinstance(models, list) and len(models) == 5:
-                # Older profiles predate the experiment answer-model selector.
-                models = [*models, models[4]]
-            if not isinstance(models, list) or len(models) != MODEL_COUNTS[kind] or any(model is not None and not isinstance(model, str) for model in models):
+        saved = services.get(kind)
+        if saved is None:
+            if kind in services:
                 raise ValueError()
-            if not isinstance(rows, list) or any(not isinstance(row, list) or len(row) != 2 or not isinstance(row[0], bool) or not isinstance(row[1], str) for row in rows):
-                raise ValueError()
-            base_url, api_key = _credentials(env, kind, provider)
-            profiles[provider] = {"base_url": base_url, "api_key": api_key, "rows": deepcopy(rows), "models": deepcopy(models), "connected": False, "status": "尚未測試連線；此測試僅供診斷，不影響後續操作。"}
+            saved = _default_document()["services"][kind]
+        if not isinstance(saved, dict):
+            raise ValueError()
+        saved_profiles = saved.get("profiles", {})
+        if not isinstance(saved_profiles, dict):
+            raise ValueError()
+        if "profiles" not in saved or "OpenAI" not in saved_profiles:
+            raise ValueError()
+        saved_profile = saved_profiles.get("OpenAI", {})
+        if saved_profile is None:
+            saved_profile = {}
+        if not isinstance(saved_profile, dict):
+            raise ValueError()
+        models = saved_profile.get("models", DEFAULT_SELECTIONS[kind])
+        if kind == "llm" and isinstance(models, list) and len(models) == 5:
+            # Older profiles predate the experiment answer-model selector.
+            models = [*models, models[4]]
+        if not isinstance(models, list) or len(models) != MODEL_COUNTS[kind] or any(model is not None and not isinstance(model, str) for model in models):
+            raise ValueError()
+        base_url, api_key = _credentials(env, kind)
+        profiles = {"OpenAI": {
+            "base_url": base_url, "api_key": api_key, "rows": [],
+            "models": deepcopy(models), "connected": False,
+            "status": "尚未測試連線；此測試僅供診斷，不影響後續操作。",
+        }}
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"模型設定檔無效：{MODEL_SETTINGS_PATH}（services.{kind}）") from exc
-    profiles["OpenAI"]["rows"] = []
-    if "Voyage" in profiles:
-        profiles["Voyage"]["rows"] = []
-    return {"kind": kind, "active": active, "profiles": profiles}
-
-
-def provider_models(state: dict[str, Any], provider: str) -> list[str]:
-    profile = state["profiles"][provider]
-    if provider in {"OpenAI", "Voyage"}:
-        kind = "llm" if state["kind"] == "experiment_llm" else state["kind"]
-        try:
-            return configured_models(kind, provider)
-        except ValueError:
-            return []
-    return list(dict.fromkeys(row[1] for row in profile["rows"] if row[0]))
+    return {"kind": kind, "active": "OpenAI", "profiles": profiles}
 
 
 def service_choices(state: dict[str, Any]) -> list[str]:
-    return list(dict.fromkeys([model for provider in PROVIDERS_BY_KIND[state["kind"]] for model in provider_models(state, provider)]))
+    kind = "llm" if state["kind"] == "experiment_llm" else state["kind"]
+    try:
+        return configured_models(kind)
+    except ValueError:
+        return []
 
 
 def service_choice_items(state: dict[str, Any]) -> list[tuple[str, str]]:
-    return [(f"{provider}｜{model}", model) for provider in PROVIDERS_BY_KIND[state["kind"]] for model in provider_models(state, provider)]
+    return [(f"OpenAI｜{model}", model) for model in service_choices(state)]
 
 
 def resolve_model_service(state: dict[str, Any], model: str | None) -> tuple[str, str, str]:
     if not model:
         raise ValueError("請先選擇模型")
-    providers = [provider for provider in PROVIDERS_BY_KIND[state["kind"]] if model in provider_models(state, provider)]
-    if not providers:
-        raise ValueError(f"模型「{model}」未列入此服務的可用模型或尚未勾選")
-    provider = state["active"] if state["active"] in providers else providers[0]
-    profile = state["profiles"][provider]
+    if model not in service_choices(state):
+        raise ValueError(f"模型「{model}」未列入 OpenAI 模型允許清單")
+    profile = state["profiles"]["OpenAI"]
     return profile["base_url"], profile["api_key"], model
 
 
@@ -205,49 +181,48 @@ def save_service_settings(state: dict[str, Any]) -> None:
     with _SETTINGS_LOCK:
         document = _load_document()
         document.setdefault("openai_models", deepcopy(DEFAULT_OPENAI_MODELS))
-        document.setdefault("voyage_models", deepcopy(DEFAULT_VOYAGE_MODELS))
+        document.pop("voyage_models", None)
+        for saved_kind, saved_service in (document.get("services") or {}).items():
+            if isinstance(saved_service, dict):
+                openai_profile = (saved_service.get("profiles") or {}).get("OpenAI")
+                saved_service["active"] = "OpenAI"
+                saved_service["profiles"] = {"OpenAI": openai_profile or {
+                    "rows": [], "models": deepcopy(DEFAULT_SELECTIONS.get(saved_kind, [])),
+                }}
         document.setdefault("services", {})[kind] = {
-            "active": state["active"],
-            "profiles": {
-                provider: {key: deepcopy(profile[key]) for key in ("rows", "models")}
-                for provider, profile in state["profiles"].items()
-            },
+            "active": "OpenAI",
+            "profiles": {"OpenAI": {
+                "rows": [], "models": deepcopy(state["profiles"]["OpenAI"]["models"]),
+            }},
         }
         _save_document(document)
         prefix = (
             "EXPERIMENT_MODEL" if kind == "experiment_llm"
             else ("MODEL" if kind == "llm" else "EMBEDDING")
         )
-        connection_values = {}
-        for provider, profile in state["profiles"].items():
-            provider_key = provider.upper()
-            connection_values[f"{prefix}_{provider_key}_API_BASE"] = profile["base_url"]
-            connection_values[f"{prefix}_{provider_key}_API_KEY"] = profile["api_key"]
-        save_env(connection_values)
+        profile = state["profiles"]["OpenAI"]
+        save_env({f"{prefix}_OPENAI_API_BASE": profile["base_url"],
+                  f"{prefix}_OPENAI_API_KEY": profile["api_key"]})
 
 
 def capture_service_settings(state: dict[str, Any], base_url: str, api_key: str, rows: list[list[Any]], models: list[str | None]) -> dict[str, Any]:
     state = deepcopy(state)
-    profile = state["profiles"][state["active"]]
+    state["active"] = "OpenAI"
+    profile = state["profiles"]["OpenAI"]
     changed = (profile["base_url"], profile["api_key"]) != (base_url, api_key)
     profile.update(base_url=base_url, api_key=api_key)
     if changed:
         profile.update(connected=False, status="設定已變更；連線測試可用於診斷，執行請求時會驗證連線。")
-    else:
-        if state["active"] == "Ollama":
-            checked = {row[1] for row in rows if len(row) == 2 and row[0] is True}
-            profile["rows"] = [[model in checked, model] for _, model in profile["rows"]]
-        if state["active"] == "Ollama" or models:
-            allowed = service_choices(state) if state["active"] == "Ollama" else models
-            profile["models"] = [model if model in allowed else None for model in models]
+    if models:
+        allowed = service_choices(state)
+        profile["models"] = [model if model in allowed else None for model in models]
     return state
 
 
 def restore_service_settings(state: dict[str, Any], base_url: str, api_key: str, models: dict[int, str | None]) -> dict[str, Any]:
     state = deepcopy(state)
-    provider = next((name for name, profile in state["profiles"].items() if profile["base_url"] == base_url), state["active"])
-    state["active"] = provider
-    profile = state["profiles"][provider]
+    state["active"] = "OpenAI"
+    profile = state["profiles"]["OpenAI"]
     if (profile["base_url"], profile["api_key"]) != (base_url, api_key):
         profile.update(base_url=base_url, api_key=api_key, connected=False, status="設定已變更；連線測試可用於診斷，執行請求時會驗證連線。")
     for index, model in models.items():

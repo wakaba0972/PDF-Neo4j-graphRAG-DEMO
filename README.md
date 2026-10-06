@@ -29,9 +29,7 @@
 - 每次匯入前自動清空本工具建立的既有圖譜，再寫入本次抽取結果。
 - 從每份 PDF 自動建立指定數量的問題、標準答案、來源頁碼與來源 chunk；每題先隨機抽一頁，並由 LLM 檢查內容是否足以形成完整問答，不足時逐步擴展前後頁面；可選擇跨 PDF 並行生題，並支援手動編輯、自動保存、JSON／CSV 匯入與 JSON 匯出，再一鍵執行 RAG 回答及模型判分。
 - 提供「基本向量檢索」與「混合檢索」兩種模式：前者使用 Neo4j 官方 VectorCypherRetriever，後者使用 HybridCypherRetriever 執行向量與全文搜尋；混合檢索可選擇以本機 Reranker 重排擴大召回的候選，也可選擇是否擴展圖譜證據。
-- 模型服務可切換 OpenAI／Ollama，Embedding 服務可切換 OpenAI／Ollama／Voyage，並保留各自的連線設定。後續模型選單會顯示已驗證的 OpenAI、Ollama 與 Voyage 模型，執行時自動使用該模型所屬服務。
-- 使用 Ollama LLM 時，所有 Chat Completions 請求會自動啟用內部串流收集；系統持續接收 SSE 片段，完成後再交給既有 JSON 驗證或回答流程。未完整結束的串流會丟棄並整次重試，OpenAI 與 Embedding 請求維持非串流。
-- Schema 規劃、知識圖譜抽取與自動測試最大並行請求數均會提示：使用 Ollama 時建議設為 1，以降低小模型同時處理多個生成請求造成逾時或輸出品質下降的機率。
+- 模型與 Embedding 僅支援 OpenAI API，相容的 OpenAI API Base URL 亦可設定。連線測試只用於診斷，不是後續操作的前置條件；實際呼叫失敗時會回報 API 錯誤。
 
 Neo4j 專案隔離需使用支援多資料庫的 Neo4j Enterprise，並提供可在 `system` database 建立 database 的管理權限；Neo4j Community 與 Aura 不支援此種每專案獨立 database 建立方式。
 
@@ -126,24 +124,20 @@ New-Item -ItemType Directory -Force data
 
 | 主機路徑 | 容器路徑 | 用途 |
 |---|---|---|
-| `.env` | `/app/.env` | Neo4j、OpenAI、Ollama、Voyage 的 endpoint、帳號與 API key |
-| `config/model_settings.yaml` | `/app/config/model_settings.yaml` | 服務來源、模型選擇、模型白名單與 Ollama 勾選狀態 |
+| `.env` | `/app/.env` | Neo4j 與 OpenAI API endpoint、帳號及 API key |
+| `config/model_settings.yaml` | `/app/config/model_settings.yaml` | OpenAI 模型選擇與允許清單 |
 | `data/` | `/app/data/` | 專案 JSON、PDF 副本、測試題目與問答紀錄 |
 
-若 Neo4j 或 Ollama 執行在 Docker 主機上，請在 `.env` 使用 `host.docker.internal`，不能使用容器自己的 `localhost`：
+若 Neo4j 執行在 Docker 主機上，請在 `.env` 使用 `host.docker.internal`，不能使用容器自己的 `localhost`：
 
 ~~~dotenv
 NEO4J_URI=bolt://host.docker.internal:7687
 NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=your-password
 
-MODEL_OLLAMA_API_BASE=http://host.docker.internal:11434/v1
-MODEL_OLLAMA_API_KEY=
-EMBEDDING_OLLAMA_API_BASE=http://host.docker.internal:11434/v1
-EMBEDDING_OLLAMA_API_KEY=
 ~~~
 
-只使用 OpenAI 或 Voyage 時，保留 `.env.example` 中對應的官方 API Base URL，並填入自己的 API key。不要將 `.env` 提交至 Git。
+保留 `.env.example` 中 OpenAI API Base URL，並填入自己的 API key。不要將 `.env` 提交至 Git。
 
 ### 4. 使用 Dockerfile 建置映像
 
@@ -190,7 +184,7 @@ docker run -d --name pdf-graphrag --restart unless-stopped -p 8080:8080 --add-ho
 
 - `-p 8080:8080`：將主機的 8080 port 對應到 Gradio。
 - `--restart unless-stopped`：Docker 服務重新啟動後自動恢復容器。
-- `--add-host=host.docker.internal:host-gateway`：讓 Linux 容器能連到主機上的 Ollama／Neo4j。
+- `--add-host=host.docker.internal:host-gateway`：讓 Linux 容器能連到主機上的 Neo4j。
 - 三個 `-v`：把設定與專案資料保存在主機，不隨容器刪除。
 
 ### 6. 驗證環境
@@ -208,7 +202,7 @@ docker inspect --format '{{.State.Health.Status}}' pdf-graphrag
 
 狀態成為 `healthy` 後，開啟 <http://localhost:8080>。若主機 8080 已被占用，可把啟動參數改成 `-p 8081:8080`，再開啟 <http://localhost:8081>。
 
-進入介面後，在「1. 連線設定」測試 Neo4j、模型與 Embedding 服務。Ollama 請取得模型清單並勾選需要的模型；OpenAI／Voyage 則填入 API key 後測試連線。介面更新的連線資料與模型選擇會寫回已掛載的 `.env` 和 `config/model_settings.yaml`。
+進入介面後，在「0-1 連線設定」或「1-1 成員專案連線測試」可診斷 Neo4j 與 OpenAI 連線。設定和 OpenAI 模型選擇會寫回已掛載的 `.env` 和 `config/model_settings.yaml`；未先測試連線仍可進行其他操作，請求執行時才會驗證連線。
 
 ## 部署後如何啟動
 
