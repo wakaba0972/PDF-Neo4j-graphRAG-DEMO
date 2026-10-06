@@ -117,8 +117,7 @@ def test_model_fields_only_offer_initially_checked_models() -> None:
         for display, value in field["props"]["choices"]:
             assert display in {
                 f"OpenAI｜{value}", f"Ollama｜{value}",
-                f"OpenAI｜{value}（尚未測試連線）",
-                f"Ollama｜{value}（尚未測試連線）",
+                f"Voyage｜{value}",
                 f"OpenAI｜{value}（目前不可用）" if value == "gpt-6-luna" else "",
             }
 
@@ -379,7 +378,7 @@ def test_single_project_pages_stay_locked_but_experiment_pages_are_enabled() -> 
     assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("", False, llm, embedding))
     llm["profiles"]["OpenAI"]["connected"] = True
     embedding["profiles"]["OpenAI"]["connected"] = True
-    assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("project", False, llm, embedding))
+    assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", False, llm, embedding))
     assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", True, llm, embedding))
     page_labels = {
         component.get("props", {}).get("label") for component in app.config["components"]
@@ -399,24 +398,21 @@ def test_single_project_pages_stay_locked_but_experiment_pages_are_enabled() -> 
 
 
 
-def test_workflow_gate_requires_project_neo4j_llm_and_embedding() -> None:
+def test_workflow_gate_requires_project_but_not_connection_tests() -> None:
     llm = settings.load_service_settings("llm")
     embedding = settings.load_service_settings("embedding")
     assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("", False, llm, embedding))
-    assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("project", False, llm, embedding))
-    llm["profiles"]["OpenAI"]["connected"] = True
-    assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("project", True, llm, embedding))
-    embedding["profiles"]["OpenAI"]["connected"] = True
+    assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", False, llm, embedding))
     assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", True, llm, embedding))
 
 
-def test_ollama_models_require_current_successful_fetch(tmp_path, monkeypatch) -> None:
+def test_ollama_saved_models_are_selectable_without_current_connection_test(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     state = settings.load_service_settings("llm")
     profile = state["profiles"]["Ollama"]
     state["active"] = "Ollama"
     profile["rows"] = [[True, "local-model"]]
-    assert settings.service_choices(state) == []
+    assert "local-model" in settings.service_choices(state)
     monkeypatch.setattr(ui, "list_models", lambda *args: ["local-model"])
     fetched = ui.service_action_for_ui(
         "fetch", "Ollama", state, profile["base_url"], profile["api_key"],
@@ -424,13 +420,13 @@ def test_ollama_models_require_current_successful_fetch(tmp_path, monkeypatch) -
     )
     assert len(fetched) == 13
     assert len(fetched[7:]) == 6
-    assert settings.service_choices(fetched[0]) == ["local-model"]
+    assert settings.service_choices(fetched[0]) == settings.openai_models("llm") + ["local-model"]
     monkeypatch.setattr(ui, "list_models", lambda *args: (_ for _ in ()).throw(ValueError("offline")))
     failed = ui.service_action_for_ui(
         "fetch", "Ollama", fetched[0], fetched[1], fetched[2], fetched[3]["value"],
         *[field["value"] for field in fetched[7:]],
     )
-    assert settings.service_choices(failed[0]) == []
+    assert settings.service_choices(failed[0]) == settings.openai_models("llm") + ["local-model"]
 
 def test_delete_project_refreshes_list_after_server_delete(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
@@ -1827,7 +1823,7 @@ def test_experiment_default_concurrency_is_ten(tmp_path, monkeypatch) -> None:
     assert restored[4] == 10
     judge_index = 8 + ui.EXPERIMENT_GROUP_LIMIT * 8
     assert restored[judge_index]["value"] == "gpt-6-luna"
-    assert ("OpenAI｜gpt-6-luna（目前不可用）", "gpt-6-luna") in restored[judge_index]["choices"]
+    assert ("OpenAI｜gpt-6-luna", "gpt-6-luna") in restored[judge_index]["choices"]
     app = build_app()
     components = app.config["components"]
     values = [component.get("props", {}).get("value") for component in components]
@@ -2845,6 +2841,8 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
 
     monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]] * 2)
     monkeypatch.setattr(ui, "import_extraction", fake_import)
+    provisioned = []
+    monkeypatch.setattr(ui, "ensure_project_database", lambda *args: provisioned.append(args))
 
     status, state = ui.import_graph_for_ui(
         "http://models/v1", "key", "bolt://db", "neo4j", "user", "password",
@@ -2856,11 +2854,13 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
     assert state["embedding_model"] == "embed"
     assert state["embedding_dimensions"] == 1
     assert state["vector_index_name"] == "graph_evidence_embedding_1"
+    assert provisioned == [("bolt://db", "neo4j", "user", "password")]
     assert captured["args"][4] == "run-1"
 
 
 def test_import_graph_for_ui_keeps_state_when_import_fails(monkeypatch) -> None:
     monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]] * 2)
+    monkeypatch.setattr(ui, "ensure_project_database", lambda *args: None)
     monkeypatch.setattr(
         ui,
         "import_extraction",

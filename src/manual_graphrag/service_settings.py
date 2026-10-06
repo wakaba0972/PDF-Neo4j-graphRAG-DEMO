@@ -161,7 +161,7 @@ def load_service_settings(kind: str, env: dict[str, str] | None = None) -> dict[
             if not isinstance(rows, list) or any(not isinstance(row, list) or len(row) != 2 or not isinstance(row[0], bool) or not isinstance(row[1], str) for row in rows):
                 raise ValueError()
             base_url, api_key = _credentials(env, kind, provider)
-            profiles[provider] = {"base_url": base_url, "api_key": api_key, "rows": deepcopy(rows), "models": deepcopy(models), "connected": False, "status": "請先測試連線。"}
+            profiles[provider] = {"base_url": base_url, "api_key": api_key, "rows": deepcopy(rows), "models": deepcopy(models), "connected": False, "status": "尚未測試連線；此測試僅供診斷，不影響後續操作。"}
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"模型設定檔無效：{MODEL_SETTINGS_PATH}（services.{kind}）") from exc
     profiles["OpenAI"]["rows"] = []
@@ -172,11 +172,12 @@ def load_service_settings(kind: str, env: dict[str, str] | None = None) -> dict[
 
 def provider_models(state: dict[str, Any], provider: str) -> list[str]:
     profile = state["profiles"][provider]
-    if not profile["connected"]:
-        return []
     if provider in {"OpenAI", "Voyage"}:
         kind = "llm" if state["kind"] == "experiment_llm" else state["kind"]
-        return configured_models(kind, provider)
+        try:
+            return configured_models(kind, provider)
+        except ValueError:
+            return []
     return list(dict.fromkeys(row[1] for row in profile["rows"] if row[0]))
 
 
@@ -193,7 +194,7 @@ def resolve_model_service(state: dict[str, Any], model: str | None) -> tuple[str
         raise ValueError("請先選擇模型")
     providers = [provider for provider in PROVIDERS_BY_KIND[state["kind"]] if model in provider_models(state, provider)]
     if not providers:
-        raise ValueError(f"模型「{model}」目前不可用，請先完成服務連線或勾選模型")
+        raise ValueError(f"模型「{model}」未列入此服務的可用模型或尚未勾選")
     provider = state["active"] if state["active"] in providers else providers[0]
     profile = state["profiles"][provider]
     return profile["base_url"], profile["api_key"], model
@@ -231,12 +232,12 @@ def capture_service_settings(state: dict[str, Any], base_url: str, api_key: str,
     changed = (profile["base_url"], profile["api_key"]) != (base_url, api_key)
     profile.update(base_url=base_url, api_key=api_key)
     if changed:
-        profile.update(connected=False, rows=[], models=[None] * MODEL_COUNTS[state["kind"]], status="設定已變更，請重新測試連線或取得模型清單。")
+        profile.update(connected=False, status="設定已變更；連線測試可用於診斷，執行請求時會驗證連線。")
     else:
         if state["active"] == "Ollama":
             checked = {row[1] for row in rows if len(row) == 2 and row[0] is True}
             profile["rows"] = [[model in checked, model] for _, model in profile["rows"]]
-        if state["active"] == "Ollama" or profile["connected"]:
+        if state["active"] == "Ollama" or models:
             allowed = service_choices(state) if state["active"] == "Ollama" else models
             profile["models"] = [model if model in allowed else None for model in models]
     return state
@@ -248,7 +249,7 @@ def restore_service_settings(state: dict[str, Any], base_url: str, api_key: str,
     state["active"] = provider
     profile = state["profiles"][provider]
     if (profile["base_url"], profile["api_key"]) != (base_url, api_key):
-        profile.update(base_url=base_url, api_key=api_key, connected=False, rows=[], status="請先測試連線或取得模型清單。")
+        profile.update(base_url=base_url, api_key=api_key, connected=False, status="設定已變更；連線測試可用於診斷，執行請求時會驗證連線。")
     for index, model in models.items():
         profile["models"][index] = model
     return state

@@ -467,7 +467,7 @@ def reload_env_with_services_for_ui() -> tuple[Any, ...]:
         env["NEO4J_URI"], env["NEO4J_USERNAME"], env["NEO4J_PASSWORD"],
         llm_state["active"], *render_service_for_ui(llm_state),
         embedding_state["active"], *render_service_for_ui(embedding_state),
-        "✅ 已重新讀取 .env；OpenAI 請重新測試連線。",
+        "✅ 已重新讀取 .env；可用 0-1 的連線測試診斷服務，無須先測試即可操作。",
     )
 
 
@@ -512,17 +512,9 @@ def workflow_tabs_for_ui(
     llm_state: dict[str, Any],
     embedding_state: dict[str, Any],
 ) -> tuple[dict[str, Any], ...]:
-    def has_available_service(state: dict[str, Any]) -> bool:
-        try:
-            return any(provider_models(state, provider) for provider in state["profiles"])
-        except ValueError:
-            return False
-
-    enabled = bool(
-        project_id and neo4j_connected
-        and has_available_service(llm_state)
-        and has_available_service(embedding_state)
-    )
+    # Connection checks are diagnostic only. Workflow tabs require a selected
+    # project; each service reports connection errors when an operation runs.
+    enabled = bool(project_id)
     return tuple(gr.update(interactive=enabled) for _ in range(5))
 
 
@@ -1951,8 +1943,7 @@ def _configured_service_choice_items(state: dict[str, Any]) -> list[tuple[str, s
                 models = configured_models("llm" if kind == "experiment_llm" else kind, provider)
             except ValueError:
                 models = []
-        suffix = "" if profile.get("connected") else "（尚未測試連線）"
-        choices.extend((f"{provider}｜{model}{suffix}", model) for model in models)
+        choices.extend((f"{provider}｜{model}", model) for model in models)
     return choices
 
 
@@ -4423,6 +4414,11 @@ def import_graph_for_ui(
     updated_state = dict(graph_state)
     updated_state["embedding_model"] = embedding_model.strip()
     try:
+        # Provision the project database as part of the real import operation;
+        # the connection-test page is diagnostic and must not be a prerequisite.
+        ensure_project_database(
+            neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
+        )
         evidence = _build_graph_evidence(
             updated_state["entities"],
             updated_state["relationships"],
@@ -4653,7 +4649,7 @@ def build_app() -> gr.Blocks:
                 with gr.Column():
                     gr.Markdown("### Neo4j")
                     neo4j_uri = gr.Textbox(label="URI", value=env["NEO4J_URI"])
-                    neo4j_database = gr.Textbox(label="專案專屬 Neo4j Database（測試連線時自動建立）", value="", interactive=False)
+                    neo4j_database = gr.Textbox(label="專案專屬 Neo4j Database（匯入圖譜時自動建立）", value="", interactive=False)
                     neo4j_username = gr.Textbox(label="Username", value=env["NEO4J_USERNAME"])
                     neo4j_password = gr.Textbox(label="Password", value=env["NEO4J_PASSWORD"], type="password")
                     neo4j_test_button = gr.Button("測試 Neo4j 連線", variant="primary")

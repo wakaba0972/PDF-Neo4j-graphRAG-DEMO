@@ -63,28 +63,31 @@ def test_custom_openai_model_allowlist_is_not_overwritten(tmp_path, monkeypatch)
     ("llm", ["gpt-4.1-mini", "gpt-4o-mini", "gpt-6-luna"]),
     ("embedding", ["text-embedding-3-small", "text-embedding-3-large"]),
 ])
-def test_openai_requires_connection_then_only_offers_json_allowlist(monkeypatch, kind, expected):
+def test_openai_models_are_selectable_before_connection_test(monkeypatch, kind, expected):
     calls = []
     monkeypatch.setattr(ui, "check_model_connection", lambda base, key: calls.append((base, key)))
     monkeypatch.setattr(ui, "list_models", lambda *args: pytest.fail("OpenAI must not fetch the model catalog"))
     state = service(kind)
     initial = ui.render_service_for_ui(state)
-    assert all(u["choices"] == [] for u in initial[7:])
+    expected_choices = choices("OpenAI", expected)
+    if kind == "embedding":
+        expected_choices += choices("Voyage", settings.configured_models("embedding", "Voyage"))
+    assert all(u["choices"] == expected_choices for u in initial[7:])
     tested = act(state, "test", key="test-key")
     assert calls == [("https://api.openai.com/v1", "test-key")]
     assert tested[4]["visible"] is True
     assert tested[5]["visible"] is False
     assert tested[3]["visible"] is False
-    assert all(u["choices"] == choices("OpenAI", expected) for u in tested[7:])
+    assert all(u["choices"] == expected_choices for u in tested[7:])
     assert tested[6].startswith("✅")
     # Neither a forged table nor the hidden fetch action may add extra OpenAI models.
     edited = act(tested[0], "edit", rows=[[True, "expensive-model"]], models=["expensive-model"] * settings.MODEL_COUNTS[kind])
-    assert all(u["choices"] == choices("OpenAI", expected) and u["value"] == expected[0] for u in edited[7:])
+    assert all(u["choices"] == expected_choices and u["value"] == expected[0] for u in edited[7:])
     fetched = act(tested[0], "fetch")
-    assert all(u["choices"] == choices("OpenAI", expected) for u in fetched[7:])
+    assert all(u["choices"] == expected_choices for u in fetched[7:])
 
 
-def test_default_model_credentials_refresh_after_service_connection(monkeypatch):
+def test_default_model_credentials_refresh_before_service_connection(monkeypatch):
     monkeypatch.setattr(ui, "check_model_connection", lambda *_: None)
     monkeypatch.setattr(ui, "check_embedding_connection", lambda *_: None)
     llm = act(service("llm"), "test", key="llm-key")[0]
@@ -144,15 +147,21 @@ def test_switch_preserves_both_profiles_credentials_checks_and_models(monkeypatc
     again = act(back[0], "switch", provider="Ollama")
     assert again[1:3] == ("http://ollama-server:11434/v1", "local-secret")
     assert again[3]["value"] == rows
-    assert all(u["choices"] == choices("OpenAI", settings.openai_models(kind)) + choices("Ollama", [chosen]) and u["value"] == chosen for u in again[7:])
+    expected_choices = choices("OpenAI", settings.openai_models(kind)) + choices("Ollama", [chosen])
+    if kind == "embedding":
+        expected_choices += choices("Voyage", settings.configured_models("embedding", "Voyage"))
+    assert all(u["choices"] == expected_choices and u["value"] == chosen for u in again[7:])
     reloaded = settings.load_service_settings(kind)
     assert reloaded["active"] == "Ollama"
     assert reloaded["profiles"]["OpenAI"]["api_key"] == "openai-secret"
     assert reloaded["profiles"]["OpenAI"]["connected"] is False
-    assert settings.service_choices(reloaded) == []
+    expected_models = settings.openai_models(kind) + [chosen]
+    if kind == "embedding":
+        expected_models += settings.configured_models("embedding", "Voyage")
+    assert settings.service_choices(reloaded) == expected_models
     assert reloaded["profiles"]["Ollama"]["models"] == [chosen] * count
     revalidated = act(reloaded, "fetch")
-    assert settings.service_choices(revalidated[0]) == [chosen]
+    assert settings.service_choices(revalidated[0]) == expected_models
 
 
 def test_llm_and_embedding_ollama_catalogs_have_independent_checks(monkeypatch):
@@ -161,21 +170,24 @@ def test_llm_and_embedding_ollama_catalogs_have_independent_checks(monkeypatch):
         switched = act(service(kind), "switch", provider="Ollama")
         fetched = act(switched[0], "fetch")
         act(fetched[0], "edit", rows=[[chosen == name, name] for name in ["chat", "embed"]])
-    assert settings.service_choices(settings.load_service_settings("llm")) == []
-    assert settings.service_choices(settings.load_service_settings("embedding")) == []
+    assert settings.service_choices(settings.load_service_settings("llm")) == settings.openai_models("llm") + ["chat"]
+    assert settings.service_choices(settings.load_service_settings("embedding")) == (
+        settings.openai_models("embedding") + ["embed"]
+        + settings.configured_models("embedding", "Voyage")
+    )
 
 
-def test_connection_failure_and_credential_edit_revoke_openai_models(monkeypatch):
+def test_connection_failure_and_credential_edit_do_not_revoke_openai_models(monkeypatch):
     monkeypatch.setattr(ui, "check_model_connection", lambda *args: None)
     connected = act(service(), "test", key="key")
     edited = act(connected[0], "edit", key="different")
-    assert all(u["choices"] == [] for u in edited[7:])
+    assert all(u["choices"] for u in edited[7:])
     def fail(*args):
         raise ValueError("連線失敗")
     monkeypatch.setattr(ui, "check_model_connection", fail)
     failed = act(connected[0], "test")
     assert failed[6] == "❌ 連線失敗"
-    assert all(u["choices"] == [] for u in failed[7:])
+    assert all(u["choices"] for u in failed[7:])
 
 
 def test_failed_ollama_fetch_preserves_checked_catalog(monkeypatch):
@@ -187,7 +199,7 @@ def test_failed_ollama_fetch_preserves_checked_catalog(monkeypatch):
     monkeypatch.setattr(ui, "list_models", fail)
     failed = act(selected[0], "fetch")
     assert failed[3]["value"] == [[True, "chat"], [False, "embed"]]
-    assert all(u["choices"] == [] for u in failed[7:])
+    assert all(u["choices"] for u in failed[7:])
     assert failed[0]["profiles"]["Ollama"]["rows"] == [[True, "chat"], [False, "embed"]]
     assert failed[0]["profiles"]["Ollama"]["connected"] is False
     assert failed[6] == "❌ offline"
@@ -226,8 +238,8 @@ def test_voyage_embedding_uses_configured_models_and_embeddings_connection(monke
     assert switched[5]["visible"] is False
     tested = act(switched[0], "test", key="voyage-key")
     assert calls == [("https://api.voyageai.com/v1", "voyage-key", "voyage-4-large")]
-    assert tested[7]["choices"][0] == ("Voyage｜voyage-4-large", "voyage-4-large")
-    assert tested[7]["value"] == "voyage-4-large"
+    assert ("Voyage｜voyage-4-large", "voyage-4-large") in tested[7]["choices"]
+    assert tested[7]["value"] == "voyage-4"
 
 def test_saved_project_cannot_bypass_openai_allowlist_or_connection(monkeypatch):
     monkeypatch.setattr(ui, "check_model_connection", lambda *args: None)
@@ -238,7 +250,7 @@ def test_saved_project_cannot_bypass_openai_allowlist_or_connection(monkeypatch)
         "answer_model": "gpt-expensive", "graph_embedding_model": "other-embed",
     }})
     before = ui.load_project_with_services_for_ui(project["project_id"], service(), service("embedding"))
-    assert before[8]["choices"] == []
+    assert before[8]["choices"]
     llm = act(service(), "test")[0]
     embed = act(service("embedding"), "test")[0]
     loaded = ui.load_project_with_services_for_ui(project["project_id"], llm, embed)
@@ -246,7 +258,10 @@ def test_saved_project_cannot_bypass_openai_allowlist_or_connection(monkeypatch)
     assert loaded[16]["value"] == "gpt-4o-mini"
     assert loaded[9]["value"] == "text-embedding-3-small"
     assert loaded[8]["choices"] == choices("OpenAI", settings.openai_models("llm"))
-    assert loaded[9]["choices"] == choices("OpenAI", settings.openai_models("embedding"))
+    assert loaded[9]["choices"] == (
+        choices("OpenAI", settings.openai_models("embedding"))
+        + choices("Voyage", settings.configured_models("embedding", "Voyage"))
+    )
 
 
 def test_new_project_load_defaults_llms_to_luna_and_parallelism_to_ten(tmp_path, monkeypatch):
@@ -354,7 +369,7 @@ def test_gradio_events_switch_connect_filter_and_restore(monkeypatch):
         assert loaded[16]["value"] == "gpt-4.1-mini"
         reload = event(button("重新讀取 .env")["id"], "click")
         reloaded = (await app.process_api(reload["id"], [], state=session))["data"]
-        assert reloaded[12]["choices"] == []
+        assert reloaded[12]["choices"]
     asyncio.run(run())
 
 
@@ -367,8 +382,8 @@ def test_reload_restores_both_profiles_and_revokes_openai_connection(monkeypatch
     assert loaded[6] == "llm-key"
     assert loaded[17] == "OpenAI"
     assert loaded[20] == "embedding-key"
-    assert loaded[11]["choices"] == []
-    assert loaded[25]["choices"] == []
+    assert loaded[11]["choices"]
+    assert loaded[25]["choices"]
 
 
 def test_invalid_yaml_after_successful_connection_revokes_models(tmp_path, monkeypatch):
@@ -389,7 +404,7 @@ def test_invalid_yaml_after_successful_connection_revokes_models(tmp_path, monke
 def test_preferred_llm_model_uses_openai_before_ollama(monkeypatch):
     state = service("llm")
     state["profiles"]["Ollama"].update(connected=True, rows=[[True, "local-chat"]])
-    assert settings.preferred_service_model(state) == "local-chat"
+    assert settings.preferred_service_model(state) == settings.openai_models("llm")[0]
     state["profiles"]["OpenAI"]["connected"] = True
     assert settings.preferred_service_model(state) == "gpt-4.1-mini"
 
@@ -437,5 +452,5 @@ def test_duplicate_model_name_uses_active_provider_credentials(monkeypatch):
 
 
 def test_unavailable_model_cannot_be_routed():
-    with pytest.raises(ValueError, match="目前不可用"):
+    with pytest.raises(ValueError, match="未列入此服務"):
         settings.resolve_model_service(service(), "unknown")
