@@ -723,6 +723,17 @@ def test_global_api_credentials_exist_only_on_page_zero() -> None:
             "2-0 實驗專案", "2-3 自動實驗測試"} <= set(labels)
 
 
+def test_answer_display_is_plain_text_not_markdown() -> None:
+    app = build_app()
+    answer = next(
+        component for component in app.config["components"]
+        if component.get("props", {}).get("elem_classes") == ["answer-content"]
+    )
+
+    assert answer["type"] == "textbox"
+    assert answer["props"]["interactive"] is False
+
+
 def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     _, created, status = ui.create_project_for_ui("手冊專案")

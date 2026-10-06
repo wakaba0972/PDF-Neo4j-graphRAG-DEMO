@@ -4836,8 +4836,7 @@ def build_app() -> gr.Blocks:
                     background: var(--background-fill-secondary);
                 }
                 .answer-content,
-                .answer-content p,
-                .answer-content li {
+                .answer-content textarea {
                     font-size: 20px !important;
                     line-height: 1.75 !important;
                 }
@@ -4847,7 +4846,10 @@ def build_app() -> gr.Blocks:
             )
             with gr.Group(elem_classes="answer-panel"):
                 gr.Markdown("### 回答")
-                answer = gr.Markdown(elem_classes="answer-content")
+                answer = gr.Textbox(
+                    show_label=False, lines=8, max_lines=24, interactive=False,
+                    elem_classes="answer-content",
+                )
             gr.Markdown("### 檢索來源")
             answer_sources = gr.Dataframe(
                 headers=[

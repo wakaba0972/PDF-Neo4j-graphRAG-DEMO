@@ -31,6 +31,8 @@ def test_answer_graph_question_omits_max_tokens(monkeypatch) -> None:
     assert "目前專案" in captured["payload"]["messages"][0]["content"]
     assert "只允許使用以下文件" not in captured["payload"]["messages"][0]["content"]
     assert "每個編號項目前都要空一行" in captured["payload"]["messages"][0]["content"]
+    assert "一般純文字，不要使用 Markdown 格式" in captured["payload"]["messages"][0]["content"]
+    assert "粗體或斜體標記、項目符號、表格或程式碼區塊" in captured["payload"]["messages"][0]["content"]
 
 
 def test_luna_answer_uses_low_reasoning_without_temperature(monkeypatch) -> None:
