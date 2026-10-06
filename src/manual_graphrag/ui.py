@@ -4331,20 +4331,9 @@ def answer_question_for_ui(
         ]
         for item in result["evidence"]
     ]
-    record = {
-        "run_id": graph_state.get("run_id"),
-        "document": graph_state.get("document", ""),
-        "answer_model": answer_model,
-        "embedding_model": graph_state.get("embedding_model", ""),
-        "question": question.strip(),
-        "retrieval_config": retrieval_config.to_dict(),
-        "answer": result["answer"],
-        "evidence": result["evidence"],
-    }
-    output = write_json(Path("data/qa") / f"{uuid4()}.json", record)
     status = (
         f"✅ {strategy_label(retrieval_config.strategy_id)} 已使用 {len(rows)} 筆證據完成回答；"
-        f"文件：{graph_state.get('document', '未知')}；紀錄：{output}。"
+        f"文件：{graph_state.get('document', '未知')}。"
     )
     return status, result["answer"], rows
 

@@ -900,7 +900,7 @@ def test_load_project_ignores_legacy_model_credentials(tmp_path, monkeypatch) ->
     assert "api_key" not in migrated["settings"]
 
 
-def test_project_answer_appends_history(monkeypatch) -> None:
+def test_project_answer_appends_project_history_without_separate_archive(monkeypatch) -> None:
     monkeypatch.setattr(ui, "answer_question_for_ui", lambda *args: ("✅ 完成", "答案", [["來源"]]))
     monkeypatch.setattr(ui, "load_project", lambda project_id: {"graph_state": {"document": "manual.pdf"}})
     captured = {}
@@ -2920,6 +2920,7 @@ def test_answer_question_for_ui_can_disable_reranker(tmp_path, monkeypatch) -> N
         "原文", "E01 排除方式", "official-hybrid",
         "0.0300", "3", "2", "",
     ]]
+    assert not (tmp_path / "data" / "qa").exists()
 
 
 def test_answer_question_for_ui_keeps_expanded_evidence_without_reranker(tmp_path, monkeypatch) -> None:
