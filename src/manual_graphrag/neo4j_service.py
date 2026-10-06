@@ -1,15 +1,70 @@
 from __future__ import annotations
 
+import atexit
 import json
 import re
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
+from threading import RLock
 from typing import Any
 
 from neo4j import GraphDatabase
-from neo4j.exceptions import DriverError, Neo4jError
+from neo4j.exceptions import (
+    DriverError, Neo4jError, ServiceUnavailable, SessionExpired,
+)
 from neo4j_graphrag.exceptions import Neo4jGraphRagError
 from neo4j_graphrag.retrievers import HybridCypherRetriever, VectorCypherRetriever
 from neo4j_graphrag.types import RetrieverResultItem
+
+
+_DRIVER_LOCK = RLock()
+_DRIVER_CACHE: dict[tuple[Any, ...], Any] = {}
+
+
+def _driver_for(uri: str, username: str, password: str) -> Any:
+    """Reuse thread-safe Neo4j drivers; sessions remain short-lived per query."""
+    factory = GraphDatabase.driver
+    factory_key = (getattr(factory, "__self__", None), getattr(factory, "__func__", factory))
+    key = (*factory_key, uri.strip(), username.strip(), password)
+    with _DRIVER_LOCK:
+        driver = _DRIVER_CACHE.get(key)
+        if driver is None:
+            driver = factory(uri.strip(), auth=(username.strip(), password))
+            _DRIVER_CACHE[key] = driver
+        return driver
+
+
+@contextmanager
+def _shared_driver(uri: str, username: str, password: str):
+    """Borrow a cached driver without closing it when this operation ends."""
+    yield _driver_for(uri, username, password)
+
+
+def _retry_read(operation, attempts: int = 3):
+    """Retry reads briefly when a Neo4j cluster is refreshing its READ routes."""
+    for attempt in range(attempts):
+        try:
+            return operation()
+        except (ServiceUnavailable, SessionExpired):
+            if attempt + 1 >= attempts:
+                raise
+            time.sleep(0.2 * (2 ** attempt))
+    raise RuntimeError("Neo4j read retry ended unexpectedly")
+
+
+def _close_cached_drivers() -> None:
+    with _DRIVER_LOCK:
+        drivers = list(_DRIVER_CACHE.values())
+        _DRIVER_CACHE.clear()
+    for driver in drivers:
+        try:
+            driver.close()
+        except Exception:
+            pass
+
+
+atexit.register(_close_cached_drivers)
 
 
 @dataclass(frozen=True)
@@ -88,7 +143,7 @@ def check_neo4j_connection(
     if not password:
         raise ValueError("請先填寫 Neo4j Password")
     try:
-        with GraphDatabase.driver(uri.strip(), auth=(username.strip(), password)) as driver:
+        with _shared_driver(uri, username, password) as driver:
             driver.verify_connectivity()
             with driver.session(database=database.strip()) as session:
                 session.run("RETURN 1 AS value").consume()
@@ -103,7 +158,7 @@ def ensure_project_database(uri: str, database: str, username: str, password: st
     if not re.fullmatch(r"[a-z][a-z0-9.-]*", database.strip()):
         raise ValueError("專案 Neo4j Database 名稱格式無效")
     try:
-        with GraphDatabase.driver(uri.strip(), auth=(username.strip(), password)) as driver:
+        with _shared_driver(uri, username, password) as driver:
             driver.verify_connectivity()
             with driver.session(database="system") as session:
                 session.run(
@@ -149,10 +204,12 @@ def load_latest_graph(
            }) AS relationships
     """
     try:
-        with GraphDatabase.driver(uri.strip(), auth=(username.strip(), password)) as driver:
-            driver.verify_connectivity()
-            with driver.session(database=database.strip()) as session:
-                record = session.run(query).single()
+        with _shared_driver(uri, username, password) as driver:
+            def fetch_latest_graph_record():
+                with driver.session(database=database.strip()) as session:
+                    return session.run(query).single()
+
+            record = _retry_read(fetch_latest_graph_record)
     except (DriverError, Neo4jError, OSError, ValueError) as exc:
         if isinstance(exc, ValueError) and str(exc).startswith("請先填寫"):
             raise
@@ -206,7 +263,7 @@ def search_graph_evidence(
     } AS evidence, score
     """
     try:
-        with GraphDatabase.driver(uri.strip(), auth=(username.strip(), password)) as driver:
+        with _shared_driver(uri, username, password) as driver:
             query_params = {"run_id": run_id}
             if retrieval_mode in {"基本向量檢索", "基本檢索", "向量 RAG"}:
                 retriever = VectorCypherRetriever(
@@ -216,12 +273,12 @@ def search_graph_evidence(
                     result_formatter=_format_vector_record,
                     neo4j_database=database.strip(),
                 )
-                result = retriever.search(
+                result = _retry_read(lambda: retriever.search(
                     query_vector=embedding,
                     top_k=retrieval_top_k,
                     effective_search_ratio=3,
                     query_params=query_params,
-                )
+                ))
             else:
                 retriever = HybridCypherRetriever(
                     driver=driver,
@@ -231,14 +288,14 @@ def search_graph_evidence(
                     result_formatter=_format_hybrid_record,
                     neo4j_database=database.strip(),
                 )
-                result = retriever.search(
+                result = _retry_read(lambda: retriever.search(
                     query_text=_escape_fulltext_query(question),
                     query_vector=embedding,
                     top_k=retrieval_top_k,
                     effective_search_ratio=3,
                     query_params=query_params,
                     ranker="naive",
-                )
+                ))
             selected = [
                 dict(item.content) for item in result.items
                 if isinstance(item.content, dict)
@@ -441,7 +498,7 @@ def import_extraction(
     if not evidence or not evidence[0].get("embedding"):
         raise ValueError("沒有可寫入 Neo4j Vector Index 的向量證據")
     try:
-        with GraphDatabase.driver(uri.strip(), auth=(username.strip(), password)) as driver:
+        with _shared_driver(uri, username, password) as driver:
             driver.verify_connectivity()
             with driver.session(database=database.strip()) as session:
                 dimensions = len(evidence[0]["embedding"])

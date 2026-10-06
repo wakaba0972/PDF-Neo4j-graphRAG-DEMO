@@ -1,8 +1,52 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
 import pytest
+from neo4j.exceptions import SessionExpired
 
 from manual_graphrag import neo4j_service
+
+
+def test_driver_for_reuses_driver_under_concurrent_reads(monkeypatch) -> None:
+    neo4j_service._close_cached_drivers()
+    factory_calls = []
+    factory_lock = Lock()
+    driver = object()
+
+    def fake_driver(uri, auth):
+        with factory_lock:
+            factory_calls.append((uri, auth))
+        return driver
+
+    monkeypatch.setattr(neo4j_service.GraphDatabase, "driver", fake_driver)
+    try:
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            drivers = list(pool.map(
+                lambda _index: neo4j_service._driver_for(
+                    "bolt://db", "user", "password"
+                ),
+                range(40),
+            ))
+
+        assert all(item is driver for item in drivers)
+        assert factory_calls == [("bolt://db", ("user", "password"))]
+    finally:
+        neo4j_service._close_cached_drivers()
+
+
+def test_retry_read_retries_transient_read_route_failure(monkeypatch) -> None:
+    attempts = []
+    monkeypatch.setattr(neo4j_service.time, "sleep", lambda _delay: None)
+
+    def flaky_read():
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise SessionExpired("no READ server available")
+        return "read result"
+
+    assert neo4j_service._retry_read(flaky_read) == "read result"
+    assert len(attempts) == 2
 
 
 class FakeResult:
