@@ -476,9 +476,10 @@ def reload_env_settings() -> tuple[str, ...]:
 
 def persist_global_api_settings_for_ui(
     action: str,
-    llm_endpoint: str, llm_key: str, embedding_endpoint: str, embedding_key: str,
     llm_state: dict[str, Any], embedding_state: dict[str, Any],
-    experiment_llm_state: dict[str, Any], *models: str | None,
+    experiment_llm_state: dict[str, Any],
+    llm_endpoint: str, llm_key: str, embedding_endpoint: str, embedding_key: str,
+    *models: str | None,
 ) -> tuple[Any, ...]:
     """Persist the only visible OpenAI credentials form and refresh service states."""
     llm = service_action_for_ui(

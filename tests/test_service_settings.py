@@ -131,9 +131,9 @@ def test_global_api_settings_persist_once_and_are_shared(tmp_path, monkeypatch):
     experiment = service("experiment_llm")
 
     outputs = ui.persist_global_api_settings_for_ui(
-        "edit", "https://llm.example/v1", "llm-key",
+        "edit", llm, embedding, experiment,
+        "https://llm.example/v1", "llm-key",
         "https://embedding.example/v1", "embedding-key",
-        llm, embedding, experiment,
         *(["gpt-6-luna"] * 6), "text-embedding-3-small",
     )
 
