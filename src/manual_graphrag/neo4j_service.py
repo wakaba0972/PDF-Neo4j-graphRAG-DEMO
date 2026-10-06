@@ -17,6 +17,10 @@ from neo4j_graphrag.exceptions import Neo4jGraphRagError
 from neo4j_graphrag.retrievers import HybridCypherRetriever, VectorCypherRetriever
 from neo4j_graphrag.types import RetrieverResultItem
 
+from .retrieval import (
+    RetrievalConfig, RetrievalContext, RetrievalStrategyRegistry,
+)
+
 
 _DRIVER_LOCK = RLock()
 _DRIVER_CACHE: dict[tuple[Any, ...], Any] = {}
@@ -108,6 +112,64 @@ def _format_vector_record(record: Any) -> RetrieverResultItem:
         "matched_by": ["official-vector"],
     })
     return RetrieverResultItem(content=evidence, metadata={"score": score})
+
+
+class VectorRetrievalStrategy:
+    strategy_id = "vector"
+
+    def retrieve(
+        self, context: RetrievalContext, config: RetrievalConfig,
+    ) -> list[dict[str, Any]]:
+        retriever = VectorCypherRetriever(
+            driver=context.driver,
+            index_name=context.vector_index_name,
+            retrieval_query=context.retrieval_query,
+            result_formatter=context.result_formatter,
+            neo4j_database=context.database,
+        )
+        result = context.retry(lambda: retriever.search(
+            query_vector=context.embedding,
+            top_k=config.params.get("candidate_top_k", config.top_k),
+            effective_search_ratio=config.params.get("effective_search_ratio", 3),
+            query_params={"run_id": context.run_id},
+        ))
+        return [
+            dict(item.content) for item in result.items
+            if isinstance(item.content, dict)
+        ]
+
+
+class HybridRetrievalStrategy:
+    strategy_id = "hybrid"
+
+    def retrieve(
+        self, context: RetrievalContext, config: RetrievalConfig,
+    ) -> list[dict[str, Any]]:
+        retriever = HybridCypherRetriever(
+            driver=context.driver,
+            vector_index_name=context.vector_index_name,
+            fulltext_index_name=context.fulltext_index_name,
+            retrieval_query=context.retrieval_query,
+            result_formatter=context.result_formatter,
+            neo4j_database=context.database,
+        )
+        result = context.retry(lambda: retriever.search(
+            query_text=_escape_fulltext_query(context.question),
+            query_vector=context.embedding,
+            top_k=config.params.get("candidate_top_k", config.top_k),
+            effective_search_ratio=config.params.get("effective_search_ratio", 3),
+            query_params={"run_id": context.run_id},
+            ranker=config.params.get("ranker", "naive"),
+        ))
+        return [
+            dict(item.content) for item in result.items
+            if isinstance(item.content, dict)
+        ]
+
+
+RETRIEVAL_STRATEGIES = RetrievalStrategyRegistry()
+RETRIEVAL_STRATEGIES.register(VectorRetrievalStrategy())
+RETRIEVAL_STRATEGIES.register(HybridRetrievalStrategy())
 
 
 def _expanded_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
@@ -239,21 +301,12 @@ def search_graph_evidence(
     run_id: str,
     question: str,
     embedding: list[float],
-    retrieval_mode: str,
-    top_k: int,
-    candidate_top_k: int | None = None,
-    expand_evidence: bool = True,
-    graph_hops: int = 4,
-    expansion_mode: str = "證據擴展 V2",
+    config: RetrievalConfig,
 ) -> list[dict[str, Any]]:
-    try:
-        graph_hops = int(graph_hops)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("圖譜擴展 hop 數必須介於 1 到 6") from exc
-    if not 1 <= graph_hops <= 6:
-        raise ValueError("圖譜擴展 hop 數必須介於 1 到 6")
+    config.validated()
+    graph_hops = config.expansion.get("params", {}).get("hops", 4)
     target_vector_index = vector_index_name(len(embedding))
-    retrieval_top_k = max(int(candidate_top_k or top_k), int(top_k))
+    retrieval_top_k = config.params.get("candidate_top_k", config.top_k)
     retrieval_query = """
     WITH node, score
     WHERE node.run_id = $run_id
@@ -264,44 +317,24 @@ def search_graph_evidence(
     """
     try:
         with _shared_driver(uri, username, password) as driver:
-            query_params = {"run_id": run_id}
-            if retrieval_mode in {"基本向量檢索", "基本檢索", "向量 RAG"}:
-                retriever = VectorCypherRetriever(
-                    driver=driver,
-                    index_name=target_vector_index,
-                    retrieval_query=retrieval_query,
-                    result_formatter=_format_vector_record,
-                    neo4j_database=database.strip(),
-                )
-                result = _retry_read(lambda: retriever.search(
-                    query_vector=embedding,
-                    top_k=retrieval_top_k,
-                    effective_search_ratio=3,
-                    query_params=query_params,
-                ))
-            else:
-                retriever = HybridCypherRetriever(
-                    driver=driver,
-                    vector_index_name=target_vector_index,
-                    fulltext_index_name="graph_evidence_fulltext",
-                    retrieval_query=retrieval_query,
-                    result_formatter=_format_hybrid_record,
-                    neo4j_database=database.strip(),
-                )
-                result = _retry_read(lambda: retriever.search(
-                    query_text=_escape_fulltext_query(question),
-                    query_vector=embedding,
-                    top_k=retrieval_top_k,
-                    effective_search_ratio=3,
-                    query_params=query_params,
-                    ranker="naive",
-                ))
-            selected = [
-                dict(item.content) for item in result.items
-                if isinstance(item.content, dict)
-            ][:retrieval_top_k]
+            context = RetrievalContext(
+                driver=driver, database=database.strip(), run_id=run_id,
+                question=question, embedding=embedding,
+                vector_index_name=target_vector_index,
+                fulltext_index_name="graph_evidence_fulltext",
+                retrieval_query=retrieval_query,
+                result_formatter=(
+                    _format_vector_record if config.strategy_id == "vector"
+                    else _format_hybrid_record
+                ),
+                retry=_retry_read,
+            )
+            selected = RETRIEVAL_STRATEGIES.get(config.strategy_id).retrieve(
+                context, config,
+            )[:retrieval_top_k]
 
-            if expand_evidence and retrieval_mode in {"混合檢索", "關聯擴展檢索", "GraphRAG"} and selected:
+            expansion_id = config.expansion["id"]
+            if expansion_id != "disabled" and selected:
                 with driver.session(database=database.strip()) as session:
                     seed_ids = list(dict.fromkeys(
                         item.get("evidence_id", "") for item in selected
@@ -346,7 +379,7 @@ def search_graph_evidence(
                         ))
                         return chunks[:retrieval_top_k]
 
-                    if expansion_mode == "證據擴展":
+                    if expansion_id == "legacy_name_chunk":
                         # Legacy behavior: one lookup by entity name / shared
                         # chunk numbers, followed by source-chunk recovery.
                         chunk_numbers = sorted({

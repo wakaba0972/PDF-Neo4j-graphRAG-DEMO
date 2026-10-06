@@ -6,6 +6,25 @@ import pytest
 from neo4j.exceptions import SessionExpired
 
 from manual_graphrag import neo4j_service
+from manual_graphrag.retrieval import RetrievalConfig
+
+
+def _retrieval_config(
+    strategy_id="hybrid", top_k=3, candidate_top_k=None,
+    expansion_id="disabled", hops=4,
+):
+    params = {
+        "candidate_top_k": candidate_top_k or top_k,
+        "effective_search_ratio": 3,
+    }
+    if strategy_id == "hybrid":
+        params["ranker"] = "naive"
+    expansion_params = {"hops": hops} if expansion_id == "graph_v2" else {}
+    return RetrievalConfig(
+        strategy_id, top_k, params,
+        {"id": "disabled", "params": {}},
+        {"id": expansion_id, "params": expansion_params},
+    ).validated()
 
 
 def test_driver_for_reuses_driver_under_concurrent_reads(monkeypatch) -> None:
@@ -412,7 +431,7 @@ def test_missing_dimension_index_replaces_upstream_attribute_error(monkeypatch) 
     with pytest.raises(ValueError) as error:
         neo4j_service.search_graph_evidence(
             "bolt://db", "neo4j", "user", "password", "run-1",
-            "question", [0.1] * 1536, "混合檢索", 3,
+            "question", [0.1] * 1536, _retrieval_config(),
         )
 
     message = str(error.value)
@@ -444,7 +463,7 @@ def test_search_dimension_error_instructs_user_to_reimport(monkeypatch) -> None:
     with pytest.raises(ValueError, match="重新執行.*Embedding 並匯入 Neo4j"):
         neo4j_service.search_graph_evidence(
             "bolt://db", "neo4j", "user", "password", "run-1",
-            "question", [0.1] * 1536, "混合檢索", 3,
+            "question", [0.1] * 1536, _retrieval_config(),
         )
 
 
@@ -461,9 +480,7 @@ def test_search_graph_evidence_uses_official_hybrid_retriever(monkeypatch) -> No
 
     results = neo4j_service.search_graph_evidence(
         "bolt://db", "neo4j", "user", "password", "run-1",
-        "E01 +(重試)", [0.1], "混合檢索", 3,
-        candidate_top_k=9,
-        expand_evidence=False,
+        "E01 +(重試)", [0.1], _retrieval_config(candidate_top_k=9),
     )
 
     assert [item["evidence_id"] for item in results] == [
@@ -503,7 +520,7 @@ def test_basic_vector_retrieval_uses_vector_cypher_retriever(monkeypatch) -> Non
 
     results = neo4j_service.search_graph_evidence(
         "bolt://db", "neo4j", "user", "password", "run-1",
-        "E01 如何處理", [0.1], "基本向量檢索", 3,
+        "E01 如何處理", [0.1], _retrieval_config("vector"),
     )
 
     assert [item["evidence_id"] for item in results] == ["vector-hit"]
@@ -627,8 +644,7 @@ def test_graph_expansion_fetches_new_source_chunks_once(monkeypatch) -> None:
         "run-1",
         "P0301 怎麼處理",
         [0.1],
-        "GraphRAG",
-        5,
+        _retrieval_config(top_k=5, expansion_id="graph_v2"),
     )
 
     assert [item["evidence_id"] for item in results] == [
@@ -665,8 +681,7 @@ def test_graph_expansion_can_be_disabled(monkeypatch) -> None:
 
     results = neo4j_service.search_graph_evidence(
         "bolt://db", "neo4j", "user", "password", "run-1",
-        "P0301 怎麼處理", [0.1], "GraphRAG", 5,
-        expand_evidence=False,
+        "P0301 怎麼處理", [0.1], _retrieval_config(top_k=5),
     )
 
     assert [item["evidence_id"] for item in results] == ["entity-p0301"]
@@ -687,8 +702,8 @@ def test_legacy_graph_expansion_uses_name_and_chunk_matching(monkeypatch) -> Non
 
     results = neo4j_service.search_graph_evidence(
         "bolt://db", "neo4j", "user", "password", "run-1",
-        "P0301 怎麼處理", [0.1], "GraphRAG", 5,
-        expansion_mode="證據擴展",
+        "P0301 怎麼處理", [0.1],
+        _retrieval_config(top_k=5, expansion_id="legacy_name_chunk"),
     )
 
     assert any(item["evidence_id"] == "legacy-related" for item in results)

@@ -20,7 +20,7 @@ def test_answer_graph_question_omits_max_tokens(monkeypatch) -> None:
         "secret",
         "model-a",
         "問題",
-        "基本檢索",
+        "vector",
         [{"text": "證據"}],
     )
 
@@ -44,7 +44,7 @@ def test_luna_answer_uses_low_reasoning_without_temperature(monkeypatch) -> None
 
     monkeypatch.setattr(qa_service, "_post_json", fake_post)
     qa_service.answer_graph_question(
-        "http://models/v1", "", "gpt-6-luna", "問題", "混合檢索", [{"text": "證據"}],
+        "http://models/v1", "", "gpt-6-luna", "問題", "hybrid", [{"text": "證據"}],
     )
 
     assert captured["payload"]["reasoning_effort"] == "low"
@@ -60,7 +60,7 @@ def test_luna_none_reasoning_keeps_compatible_temperature(monkeypatch) -> None:
 
     monkeypatch.setattr(qa_service, "_post_json", fake_post)
     qa_service.answer_graph_question(
-        "http://models/v1", "", "gpt-6-luna", "問題", "混合檢索", [{"text": "證據"}],
+        "http://models/v1", "", "gpt-6-luna", "問題", "hybrid", [{"text": "證據"}],
         "none",
     )
 
