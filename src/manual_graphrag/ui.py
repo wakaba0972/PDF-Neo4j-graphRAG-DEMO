@@ -2750,7 +2750,6 @@ def run_experiment_groups_for_ui(
     neo4j_database: str,
     neo4j_username: str,
     neo4j_password: str,
-    run_control: RunControl | None = None,
     judge_model: str | None = None,
     judge_reasoning_effort: str | None = None,
     persist: bool = True,
@@ -2769,9 +2768,6 @@ def run_experiment_groups_for_ui(
         return "❌ 測試最大並行請求數必須是整數。", [], [], []
     if concurrency < 1:
         return "❌ 測試最大並行請求數必須大於 0。", [], [], []
-
-    run_control = run_control or RunControl()
-    run_control.reset()
 
     project = load_project(project_id)
     previous = project.get("experiment") or {}
@@ -2808,13 +2804,9 @@ def run_experiment_groups_for_ui(
         for group_index in range(len(groups))
         for question_index in range(len(questions))
     ]
-    results: list[dict[str, Any] | None] = [None] * len(tasks)
+    results: list[dict[str, Any]] = [{} for _ in tasks]
 
-    def evaluate(task_index: int) -> dict[str, Any] | None:
-        try:
-            run_control.check()
-        except RunCancelled:
-            return None
+    def evaluate(task_index: int) -> dict[str, Any]:
         group_index, question_index = tasks[task_index]
         group = groups[group_index]
         item = questions[question_index]
@@ -2890,21 +2882,15 @@ def run_experiment_groups_for_ui(
                     continue
                 result = future.result()
                 results[futures[future]] = result
-                if result is not None:
-                    completed += 1
-                try:
-                    run_control.check()
-                except RunCancelled:
-                    for pending in futures:
-                        pending.cancel()
+                completed += 1
                 progress(
                     completed / len(tasks),
-                    desc=f"{'停止中｜' if _run_control_stopped(run_control) else ''}已完成 {completed} / {len(tasks)} 個實驗題次",
+                    desc=f"已完成 {completed} / {len(tasks)} 個實驗題次",
                 )
     except (OSError, TypeError, ValueError) as exc:
         return f"❌ 實驗執行失敗：{exc}", [], [], []
 
-    completed_results = [result for result in results if result is not None]
+    completed_results = results
     summary_rows = []
     for group_index, group in enumerate(groups):
         group_results = [
@@ -2928,12 +2914,7 @@ def run_experiment_groups_for_ui(
         item.get("verification_changed"), item["reason"],
         item["retrieval_rank"],
     ] for item in completed_results]
-    stopped = _run_control_stopped(run_control)
-    status = (
-        f"⏹ 實驗已停止；完成 {len(completed_results)} / {len(tasks)} 個題次，部分結果已自動儲存。"
-        if stopped else
-        f"✅ 已完成 {len(groups)} 個實驗組，共 {len(tasks)} 個題次；結果已自動儲存。"
-    )
+    status = f"✅ 已完成 {len(groups)} 個實驗組，共 {len(tasks)} 個題次；結果已自動儲存。"
     if persist:
         try:
             project = load_project(project_id)
@@ -3030,11 +3011,7 @@ def generate_experiment_answers_for_ui(
     answers: list[dict[str, Any] | None] = [None] * len(tasks)
     control.answer_generation_progress = (0, len(tasks))
 
-    def answer(task_index: int) -> dict[str, Any] | None:
-        try:
-            control.check()
-        except RunCancelled:
-            return None
+    def answer(task_index: int) -> dict[str, Any]:
         group_index, question_index = tasks[task_index]
         group, question = groups[group_index], questions[question_index]
         endpoint, key = credentials[group_index]
@@ -3076,11 +3053,6 @@ def generate_experiment_answers_for_ui(
                 if answers[futures[future]] is not None:
                     completed += 1
                 control.answer_generation_progress = (completed, len(tasks))
-                try:
-                    control.check()
-                except RunCancelled:
-                    for pending_future in futures:
-                        pending_future.cancel()
                 progress(completed / len(tasks), desc=f"已生成 {completed} / {len(tasks)} 個實驗題次回答")
         generated = [item for item in answers if item is not None]
         project = load_project(project_id)
@@ -3088,11 +3060,7 @@ def generate_experiment_answers_for_ui(
         saved_groups = [{key: value for key, value in group.items()
                          if key not in {"judge_model", "judge_reasoning_effort"}}
                         for group in groups]
-        status = (
-            f"⏹ 回答生成已停止；已生成 {len(generated)} / {len(tasks)} 個實驗題次回答。"
-            if _run_control_stopped(control) else
-            f"✅ 已生成 {len(generated)} 個實驗題次回答並填入逐題表格；尚未評測。"
-        )
+        status = f"✅ 已生成 {len(generated)} 個實驗題次回答並填入逐題表格；尚未評測。"
         details = _single_experiment_detail_rows(generated)
         _save_experiment_data(project_id, {
             **previous, "questions": questions, "groups": saved_groups,
@@ -3107,7 +3075,7 @@ def generate_experiment_answers_for_ui(
 def evaluate_experiment_answers_for_ui(
     project_id: str, pending_answers: list[dict[str, Any]], groups: list[dict[str, Any]],
     judge_model: str, judge_reasoning_effort: str, max_concurrent_requests: int | float,
-    judge_endpoint: str, judge_key: str, run_control: RunControl | None = None,
+    judge_endpoint: str, judge_key: str,
     verification_enabled: bool = False,
     progress=gr.Progress(),
 ) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]]]:
@@ -3123,9 +3091,6 @@ def evaluate_experiment_answers_for_ui(
             raise ValueError("評測最大並行請求數必須大於 0")
     except (TypeError, ValueError, OverflowError) as exc:
         return f"❌ {exc}", [], [], []
-    control = run_control or RunControl()
-    control.reset()
-
     def judge(item: dict[str, Any]) -> dict[str, Any]:
         if str(item.get("answer_status", "")).startswith("✅"):
             try:
@@ -3161,11 +3126,6 @@ def evaluate_experiment_answers_for_ui(
                     continue
                 evaluated[futures[future]] = future.result()
                 completed += 1
-                try:
-                    control.check()
-                except RunCancelled:
-                    for pending_future in futures:
-                        pending_future.cancel()
                 progress(completed / len(pending_answers), desc=f"已評測 {completed} / {len(pending_answers)} 個實驗題次")
         results = [item for item in evaluated if item is not None]
         project = load_project(project_id)
@@ -3187,7 +3147,7 @@ def evaluate_experiment_answers_for_ui(
 def evaluate_experiment_answers_with_services_for_ui(
     project_id: str, pending_answers: list[dict[str, Any]], groups: list[dict[str, Any]],
     judge_model: str, judge_reasoning_effort: str, max_concurrent_requests: int | float,
-    llm_state: dict[str, Any], run_control: RunControl | None = None,
+    llm_state: dict[str, Any],
     verification_enabled: bool = False,
     progress=gr.Progress(),
 ) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]]]:
@@ -3197,7 +3157,7 @@ def evaluate_experiment_answers_with_services_for_ui(
     return evaluate_experiment_answers_for_ui(
         project_id, pending_answers, groups, judge_model, judge_reasoning_effort,
         max_concurrent_requests, judge_endpoint, judge_key,
-        run_control=run_control, verification_enabled=verification_enabled, progress=progress,
+        verification_enabled=verification_enabled, progress=progress,
     )
 
 
@@ -3563,7 +3523,7 @@ def generate_experiment_project_answers_for_ui(
     project: dict[str, Any] | None, max_concurrent_requests: int | float,
     llm_state: dict[str, Any], embedding_api_base: str, embedding_api_key: str,
     neo4j_uri: str, neo4j_username: str, neo4j_password: str,
-    run_control: RunControl | None = None, progress=gr.Progress(),
+    progress=gr.Progress(),
 ) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]], dict[str, Any]]:
     """Generate all member-project answers, but defer judging and showing rows."""
     if not project:
@@ -3599,16 +3559,9 @@ def generate_experiment_project_answers_for_ui(
             return f"❌ 無法解析實驗組「{group.get('name', '')}」的回答模型服務。", [], [], [], current
         credentials[group["name"]] = (endpoint, key)
     tasks = [(gi, mid, qi) for gi in range(len(groups)) for mid in members for qi in range(len(question_map[mid]))]
-    control = run_control or RunControl()
-    control.reset()
-    control.answer_generation_progress = (0, len(tasks))
     answers: list[dict[str, Any] | None] = [None] * len(tasks)
 
-    def answer(task_index: int) -> dict[str, Any] | None:
-        try:
-            control.check()
-        except RunCancelled:
-            return None
+    def answer(task_index: int) -> dict[str, Any]:
         gi, member_id, qi = tasks[task_index]
         group, question = groups[gi], question_map[member_id][qi]
         member = members_data[member_id]
@@ -3644,17 +3597,11 @@ def generate_experiment_project_answers_for_ui(
                 if future.cancelled():
                     continue
                 answers[futures[future]] = future.result()
-                completed += answers[futures[future]] is not None
-                control.answer_generation_progress = (completed, len(tasks))
-                try:
-                    control.check()
-                except RunCancelled:
-                    for pending in futures:
-                        pending.cancel()
+                completed += 1
                 progress(completed / len(tasks), desc=f"已生成 {completed} / {len(tasks)} 個跨專案實驗題次回答")
         generated = [item for item in answers if item is not None]
         details = _experiment_project_detail_rows(generated)
-        status = f"⏹ 回答生成已停止；完成 {len(generated)} / {len(tasks)} 題次。" if _run_control_stopped(control) else f"✅ 已生成 {len(generated)} 個實驗題次回答並填入逐題表格；尚未評測。"
+        status = f"✅ 已生成 {len(generated)} 個實驗題次回答並填入逐題表格；尚未評測。"
         updated = save_experiment_project(current["experiment_project_id"], {
             "pending_answers": generated, "results": [], "summary_rows": [], "detail_rows": details,
             "max_concurrent_requests": concurrency, "status": status,
@@ -3668,7 +3615,7 @@ def evaluate_experiment_project_answers_for_ui(
     project: dict[str, Any] | None, pending_answers: list[dict[str, Any]] | None,
     judge_model: str | None, judge_reasoning_effort: str | None,
     max_concurrent_requests: int | float, llm_state: dict[str, Any],
-    run_control: RunControl | None = None, verification_enabled: bool = False,
+    verification_enabled: bool = False,
     progress=gr.Progress(),
 ) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]], dict[str, Any]]:
     if not project or not pending_answers:
@@ -3682,8 +3629,6 @@ def evaluate_experiment_project_answers_for_ui(
             raise ValueError("評測最大並行請求數必須大於 0")
     except (TypeError, ValueError, OverflowError) as exc:
         return f"❌ {exc}", [], [], [], project
-    control = run_control or RunControl()
-    control.reset()
     evaluated: list[dict[str, Any] | None] = [None] * len(pending_answers)
 
     def judge(index: int) -> dict[str, Any]:
@@ -3718,11 +3663,6 @@ def evaluate_experiment_project_answers_for_ui(
                     continue
                 evaluated[futures[future]] = future.result()
                 completed += 1
-                try:
-                    control.check()
-                except RunCancelled:
-                    for pending in futures:
-                        pending.cancel()
                 progress(completed / len(pending_answers), desc=f"已評測 {completed} / {len(pending_answers)} 個跨專案實驗題次")
         results = [item for item in evaluated if item is not None]
         groups = (project or {}).get("groups") or []
@@ -3788,7 +3728,7 @@ def run_experiment_project_for_ui(
     llm_state: dict[str, Any], embedding_api_base: str, embedding_api_key: str,
     neo4j_uri: str, neo4j_username: str, neo4j_password: str,
     judge_model: str | None, judge_reasoning_effort: str | None,
-    run_control: RunControl | None = None, progress=gr.Progress(),
+    progress=gr.Progress(),
 ) -> tuple[str, list[list[Any]], list[list[Any]], dict[str, Any]]:
     if not project:
         return "❌ 請先載入實驗專案。", [], [], {}
@@ -3809,8 +3749,6 @@ def run_experiment_project_for_ui(
         return f"❌ 尚未為 {len(missing)} 個成員專案準備題目集，請到 2-2 匯入。", [], [], current
     if not judge_model:
         return "❌ 請選擇全域評測模型。", [], [], current
-    control = run_control or RunControl()
-    control.reset()
     all_results: list[dict[str, Any]] = []
     member_names: dict[str, str] = {}
     for member_id in members:
@@ -3821,13 +3759,11 @@ def run_experiment_project_for_ui(
         if not (member.get("graph_state") or {}).get("neo4j_imported"):
             return f"❌ 專案「{member['name']}」尚未完成建圖匯入。", [], [], current
         member_names[member_id] = member.get("name", member_id)
-        if _run_control_stopped(control):
-            break
         status, _summary, _details, results = run_experiment_groups_for_ui(
             member_id, question_map[member_id], groups, max_concurrent_requests,
             llm_state, embedding_api_base, embedding_api_key,
             neo4j_uri, member.get("neo4j_database") or project_database_name(member_id),
-            neo4j_username, neo4j_password, control, judge_model,
+            neo4j_username, neo4j_password, judge_model,
             judge_reasoning_effort, False, progress,
         )
         if status.startswith("❌"):
@@ -3858,11 +3794,7 @@ def run_experiment_project_for_ui(
         "✅ 通過" if item.get("passed") else "❌ 未通過", item.get("reason", ""),
         item.get("retrieval_rank"),
     ] for item in all_results]
-    status = (
-        f"⏹ 實驗已停止；共完成 {len(all_results)} 個專案題次。"
-        if _run_control_stopped(control) else
-        f"✅ 已完成 {len(groups)} 個實驗組，涵蓋 {len(members)} 個專案、{len(all_results)} 個題次。"
-    )
+    status = f"✅ 已完成 {len(groups)} 個實驗組，涵蓋 {len(members)} 個專案、{len(all_results)} 個題次。"
     try:
         updated = save_experiment_project(project_id, {
             "results": all_results, "summary_rows": summary_rows,
@@ -4292,14 +4224,6 @@ def request_stop_for_ui(run_control: RunControl) -> str:
     return "⏹ 已送出停止要求，正在等待目前批次結束…"
 
 
-def _run_control_stopped(run_control: RunControl) -> bool:
-    try:
-        run_control.check()
-    except RunCancelled:
-        return True
-    return False
-
-
 def toggle_pause_for_ui(run_control: RunControl) -> tuple[str, dict[str, Any]]:
     paused = run_control.toggle_pause()
     if paused:
@@ -4601,7 +4525,6 @@ def build_app() -> gr.Blocks:
         experiment_workspace_mode = gr.State("experiment")
         experiment_project_state = gr.State({})
         experiment_project_connection_state = gr.State({})
-        experiment_project_run_control_state = gr.State(RunControl())
         experiment_project_pending_answers_state = gr.State([])
         experiment_project_results_state = gr.State([])
         # Internal service states are shared by workflows; credentials are editable only on 0-0.
@@ -5158,7 +5081,6 @@ def build_app() -> gr.Blocks:
                 </style>""",
                 padding=False,
             )
-            stop_experiments_button = gr.Button("停止實驗", variant="stop")
             experiment_status = gr.Markdown()
             gr.Markdown("#### 實驗組摘要")
             experiment_summary_table = gr.Dataframe(
@@ -5299,7 +5221,6 @@ def build_app() -> gr.Blocks:
             run_experiment_project_button = gr.Button("檢索並生成回答", variant="primary")
             experiment_project_answer_progress = gr.HTML(value="", visible=False, padding=False)
             experiment_project_answers_status = gr.Markdown("尚未生成實驗回答；請先按「檢索並生成回答」。")
-            stop_experiment_project_button = gr.Button("停止實驗", variant="stop")
             gr.Markdown("#### 評測模型設定")
             with gr.Row():
                 experiment_project_global_judge_model = gr.Dropdown(
@@ -5575,7 +5496,7 @@ def build_app() -> gr.Blocks:
                 project_selector, experiment_pending_answers_state, experiment_groups_state,
                 experiment_judge_model, experiment_judge_effort,
                 experiment_judge_max_concurrent_requests, llm_service_state,
-                experiment_run_control_state, experiment_verify_judgment,
+                experiment_verify_judgment,
             ],
             outputs=[
                 experiment_status, experiment_results_state,
@@ -5595,11 +5516,6 @@ def build_app() -> gr.Blocks:
             inputs=experiment_manual_edit_enabled,
             outputs=experiment_details_table,
             show_progress="hidden",
-        )
-        stop_experiments_button.click(
-            request_stop_for_ui,
-            inputs=[experiment_run_control_state], outputs=experiment_status,
-            queue=False,
         )
         export_experiment_results_button.click(
             export_experiment_results_for_ui,
@@ -5820,7 +5736,6 @@ def build_app() -> gr.Blocks:
                 experiment_project_state, experiment_project_max_concurrency,
                 experiment_llm_service_state, selected_embedding_endpoint, selected_embedding_key,
                 neo4j_uri, neo4j_username, neo4j_password,
-                experiment_project_run_control_state,
             ],
             outputs=[
                 experiment_project_answers_status, experiment_project_pending_answers_state,
@@ -5839,7 +5754,7 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_project_state, experiment_project_pending_answers_state,
                     experiment_project_global_judge_model, experiment_project_judge_effort,
                     experiment_project_judge_concurrency, experiment_llm_service_state,
-                    experiment_project_run_control_state, experiment_project_verify_judgment],
+                    experiment_project_verify_judgment],
             outputs=[experiment_project_test_status, experiment_project_results_state,
                      experiment_project_summary_table, experiment_project_details_table,
                      experiment_project_state],
@@ -5858,12 +5773,6 @@ def build_app() -> gr.Blocks:
                      experiment_project_details_table, experiment_project_state],
             show_progress="hidden",
         )
-        stop_experiment_project_button.click(
-            request_stop_for_ui,
-            inputs=[experiment_project_run_control_state],
-            outputs=experiment_project_test_status, queue=False,
-        )
-
         project_setting_inputs = [
             project_selector, documents_state, chunk_state, graph_state,
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
