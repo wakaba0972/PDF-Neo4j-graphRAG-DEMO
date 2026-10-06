@@ -2937,7 +2937,15 @@ def _single_experiment_detail_rows(results: list[dict[str, Any]]) -> list[list[o
     return [[
         item["group_name"], item["number"], item.get("document", ""), item["question"],
         item["expected_answer"], item.get("actual_answer", ""),
-        bool(item.get("passed")), item.get("reason", ""),
+        item.get("passed"), item.get("reason", ""),
+    ] for item in results]
+
+
+def _experiment_project_detail_rows(results: list[dict[str, Any]]) -> list[list[object]]:
+    return [[
+        item["group_name"], item["source_project_name"], item["number"],
+        item.get("document", ""), item["question"], item["expected_answer"],
+        item.get("actual_answer", ""), item.get("passed"), item.get("reason", ""),
     ] for item in results]
 
 
@@ -3041,16 +3049,17 @@ def generate_experiment_answers_for_ui(
         status = (
             f"⏹ 回答生成已停止；已生成 {len(generated)} / {len(tasks)} 個實驗題次回答。"
             if _run_control_stopped(control) else
-            f"✅ 已生成 {len(generated)} 個實驗題次回答；尚未顯示，請按「進行評測」。"
+            f"✅ 已生成 {len(generated)} 個實驗題次回答並填入逐題表格；尚未評測。"
         )
+        details = _single_experiment_detail_rows(generated)
         _save_experiment_data(project_id, {
             **previous, "questions": questions, "groups": saved_groups,
             "max_concurrent_requests": concurrency, "pending_answers": generated,
-            "results": [], "summary_rows": [], "detail_rows": [], "status": status,
+            "results": [], "summary_rows": [], "detail_rows": details, "status": status,
         })
     except (OSError, TypeError, ValueError) as exc:
         return f"❌ 回答生成或保存失敗：{exc}", [], [], [], []
-    return status, generated, [], [], []
+    return status, generated, [], [], details
 
 
 def evaluate_experiment_answers_for_ui(
@@ -3590,14 +3599,15 @@ def generate_experiment_project_answers_for_ui(
                         pending.cancel()
                 progress(completed / len(tasks), desc=f"已生成 {completed} / {len(tasks)} 個跨專案實驗題次回答")
         generated = [item for item in answers if item is not None]
-        status = f"⏹ 回答生成已停止；完成 {len(generated)} / {len(tasks)} 題次。" if _run_control_stopped(control) else f"✅ 已生成 {len(generated)} 個實驗題次回答；尚未評測。"
+        details = _experiment_project_detail_rows(generated)
+        status = f"⏹ 回答生成已停止；完成 {len(generated)} / {len(tasks)} 題次。" if _run_control_stopped(control) else f"✅ 已生成 {len(generated)} 個實驗題次回答並填入逐題表格；尚未評測。"
         updated = save_experiment_project(current["experiment_project_id"], {
-            "pending_answers": generated, "results": [], "summary_rows": [], "detail_rows": [],
+            "pending_answers": generated, "results": [], "summary_rows": [], "detail_rows": details,
             "max_concurrent_requests": concurrency, "status": status,
         })
     except (OSError, TypeError, ValueError) as exc:
         return f"❌ 回答生成或保存失敗：{exc}", [], [], [], current
-    return status, generated, [], [], updated
+    return status, generated, [], details, updated
 
 
 def evaluate_experiment_project_answers_for_ui(
@@ -3655,7 +3665,7 @@ def evaluate_experiment_project_answers_for_ui(
         results = [item for item in evaluated if item is not None]
         groups = (project or {}).get("groups") or []
         summary = _single_experiment_summary_rows(groups, results, judge_model)
-        details = [[item["group_name"], item["source_project_name"], item["number"], item.get("document", ""), item["question"], item["expected_answer"], item.get("actual_answer", ""), bool(item.get("passed")), item.get("reason", "")] for item in results]
+        details = _experiment_project_detail_rows(results)
         correct = sum(bool(item.get("passed")) for item in results)
         status = f"✅ 評測完成｜答對 {correct} / {len(results)} 個跨專案實驗題次。"
         updated = save_experiment_project(project["experiment_project_id"], {
@@ -3700,7 +3710,7 @@ def update_manual_experiment_project_result_for_ui(
         groups = project.get("groups") or []
         judge_model = project.get("judge_model") or str(current[0].get("judge_model", ""))
         summary = _single_experiment_summary_rows(groups, current, judge_model)
-        details = [[item["group_name"], item["source_project_name"], item["number"], item.get("document", ""), item["question"], item["expected_answer"], item.get("actual_answer", ""), bool(item.get("passed")), item.get("reason", "")] for item in current]
+        details = _experiment_project_detail_rows(current)
         updated = save_experiment_project(project["experiment_project_id"], {
             "results": current, "summary_rows": summary, "detail_rows": details,
             "status": f"✅ 評測完成｜答對 {sum(bool(item.get('passed')) for item in current)} / {len(current)} 個跨專案實驗題次。",

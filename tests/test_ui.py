@@ -1829,7 +1829,7 @@ def test_experiment_answer_progress_updates_the_inline_status_panel() -> None:
     assert "回答生成進度：3 / 8" in update["value"]
 
 
-def test_generate_experiment_answers_does_not_judge_or_display(monkeypatch) -> None:
+def test_generate_experiment_answers_populates_table_without_judging(monkeypatch) -> None:
     captured = {}
     monkeypatch.setattr(ui, "resolve_model_credentials_for_ui", lambda *_: ("answer-endpoint", "key"))
     monkeypatch.setattr(ui, "answer_question_for_ui", lambda *_args, **_kwargs: ("✅ 完成", "隱藏答案", []))
@@ -1846,11 +1846,13 @@ def test_generate_experiment_answers_does_not_judge_or_display(monkeypatch) -> N
         "project", questions, groups, 2, {}, "embed", "key", "bolt", "database", "user", "pass",
     )
 
-    assert status.startswith("✅ 已生成 1 個實驗題次回答")
+    assert status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
     assert pending[0]["actual_answer"] == "隱藏答案"
-    assert results == summaries == details == []
+    assert results == summaries == []
+    assert details == [["G", 1, "", "Q", "A", "隱藏答案", None, ""]]
     assert captured["experiment"]["pending_answers"] == pending
     assert captured["experiment"]["results"] == []
+    assert captured["experiment"]["detail_rows"] == details
 
 
 def test_evaluate_experiment_answers_and_manual_edit_recompute_summary(monkeypatch) -> None:
@@ -3380,10 +3382,12 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     generated_status, pending, summaries, details, saved = ui.generate_experiment_project_answers_for_ui(
         experiment, 2, {}, "embed", "key", "bolt", "user", "password",
     )
-    assert generated_status.startswith("✅ 已生成")
+    assert generated_status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
     assert len(pending) == 1 and pending[0]["actual_answer"] == "A"
-    assert summaries == details == []
+    assert summaries == []
+    assert details == [["G", "跨專案成員", 1, "manual.pdf", "Q", "A", "A", None, ""]]
     assert saved["pending_answers"] == pending
+    assert saved["detail_rows"] == details
 
     monkeypatch.setattr(ui, "judge_evaluation_answer", lambda *args, **kwargs: {"passed": True, "reason": "符合"})
     evaluated_status, results, summaries, details, saved = ui.evaluate_experiment_project_answers_for_ui(
