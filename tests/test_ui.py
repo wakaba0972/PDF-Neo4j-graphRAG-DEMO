@@ -227,16 +227,19 @@ def test_project_page_uses_automatic_refresh_and_save() -> None:
         and any(trigger[1] == "input" for trigger in dependency.get("targets", []))
         for dependency in app.config["dependencies"]
     )
-    one_click_button = next(
+    assert not any(
+        component.get("props", {}).get("value") == "一鍵測試"
+        for component in app.config["components"]
+    )
+    neo4j_test_button = next(
         component for component in app.config["components"]
-        if component.get("props", {}).get("value") == "一鍵測試"
+        if component.get("props", {}).get("value") == "測試 Neo4j 連線"
     )
-    one_click_dependency = next(
-        dependency for dependency in app.config["dependencies"]
-        if str(dependency.get("api_name", "")).startswith("test_all_connections_for_ui")
+    assert any(
+        (neo4j_test_button["id"], "click") in dependency["targets"]
+        and dependency.get("api_name") == "check_neo4j_for_ui"
+        for dependency in app.config["dependencies"]
     )
-    assert any(target[0] == one_click_button["id"] for target in one_click_dependency["targets"])
-    assert len(one_click_dependency["outputs"]) == 24
 
 
 def test_project_selector_defaults_to_first_available_project(tmp_path, monkeypatch) -> None:
@@ -638,42 +641,6 @@ def test_connection_summary_does_not_expose_secrets() -> None:
     assert status.startswith("✅")
     assert "password" not in settings
     assert "api_key" not in settings
-
-
-def test_one_click_connection_test_runs_neo4j_llm_and_embedding(monkeypatch, tmp_path) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = ui.create_project("connection-tests")
-    neo4j_calls = []
-    service_calls = []
-    monkeypatch.setattr(
-        ui, "check_neo4j_for_ui",
-        lambda *args: (neo4j_calls.append(args) or "✅ Neo4j", True),
-    )
-
-    def fake_service_action(action, provider, state, endpoint, api_key, rows, *models):
-        service_calls.append((action, provider, endpoint, api_key, rows, models, state["active"]))
-        return [f"{action}:{provider}"] * (13 if state["kind"] == "llm" else 8)
-
-    monkeypatch.setattr(ui, "service_action_for_ui", fake_service_action)
-    llm_state = {"kind": "llm", "active": "OpenAI", "profiles": {"OpenAI": {}}}
-    embedding_state = {"kind": "embedding", "active": "OpenAI", "profiles": {"OpenAI": {}}}
-
-    result = ui.test_all_connections_for_ui(
-        project["project_id"], "bolt://neo4j", "", "user", "password",
-        "OpenAI", llm_state, "https://api.openai.com/v1", "llm-key", [],
-        "OpenAI", embedding_state, "https://api.openai.com/v1", "embedding-key", [],
-        "model-1", "model-2", "model-3", "model-4", "model-5", "model-6", "text-embedding-3-small",
-    )
-
-    assert result[0]["value"] == project["neo4j_database"]
-    assert result[1:3] == ("✅ Neo4j", True)
-    assert len(neo4j_calls) == 1
-    assert neo4j_calls[0] == ("bolt://neo4j", project["neo4j_database"], "user", "password")
-    assert [(call[0], call[1], call[-1]) for call in service_calls] == [
-        ("test", "OpenAI", "OpenAI"), ("test", "OpenAI", "OpenAI"),
-    ]
-    assert result[3:16] == ("test:OpenAI",) * 13
-    assert result[16:] == ("test:OpenAI",) * 8
 
 
 def test_persist_env_settings_writes_all_fields(tmp_path, monkeypatch) -> None:

@@ -237,54 +237,6 @@ def check_embedding_service_for_ui(base_url: str, api_key: str, model: str) -> s
     return "✅ Embedding 服務連線成功。"
 
 
-def test_all_connections_for_ui(
-    project_id: str,
-    neo4j_uri: str,
-    neo4j_database: str,
-    neo4j_username: str,
-    neo4j_password: str,
-    llm_provider: str,
-    llm_state: dict[str, Any],
-    model_endpoint: str,
-    api_key: str,
-    llm_rows: list[list[Any]],
-    embedding_provider: str,
-    embedding_state: dict[str, Any],
-    embedding_api_base: str,
-    embedding_api_key: str,
-    embedding_rows: list[list[Any]],
-    *models: str | None,
-) -> tuple[Any, ...]:
-    database = neo4j_database
-    if project_id:
-        try:
-            project = load_project(project_id)
-            database = project.get("neo4j_database") or project_database_name(project_id)
-            neo4j_status, neo4j_connected = check_neo4j_for_ui(
-                neo4j_uri, database, neo4j_username, neo4j_password,
-            )
-        except (OSError, ValueError) as exc:
-            neo4j_status, neo4j_connected = f"❌ {exc}", False
-    else:
-        neo4j_status = "❌ 請先選擇專案以測試專案專屬 Neo4j Database。"
-        neo4j_connected = False
-
-    llm_models = list(models[:6])
-    embedding_models = list(models[6:7])
-    llm_outputs = service_action_for_ui(
-        "test", "OpenAI", llm_state, model_endpoint, api_key,
-        llm_rows, *llm_models,
-    )
-    embedding_outputs = service_action_for_ui(
-        "test", "OpenAI", embedding_state,
-        embedding_api_base, embedding_api_key, embedding_rows, *embedding_models,
-    )
-    return (
-        gr.update(value=database), neo4j_status, neo4j_connected,
-        *llm_outputs, *embedding_outputs,
-    )
-
-
 def resolve_model_credentials_for_ui(
     state: dict[str, Any], model: str | None,
 ) -> tuple[str, str]:
@@ -4655,7 +4607,6 @@ def build_app() -> gr.Blocks:
             gr.Markdown("⚠️ 專案設定保存在本機 `data/projects/`，其中 Neo4j Password 為明文；模型 API Key 僅保存在 `.env`。")
 
         with gr.Tab("1-1 連線設定"):
-            one_click_connection_test_button = gr.Button("一鍵測試", variant="primary")
             with gr.Row():
                 with gr.Column():
                     gr.Markdown("### Neo4j")
@@ -4665,9 +4616,7 @@ def build_app() -> gr.Blocks:
                     neo4j_password = gr.Textbox(label="Password", value=env["NEO4J_PASSWORD"], type="password")
                     neo4j_test_button = gr.Button("測試 Neo4j 連線", variant="primary")
                     neo4j_connection_status = gr.Markdown()
-                with gr.Column():
-                    gr.Markdown("模型與 Embedding API 設定統一由 0-0 管理。")
-            gr.Markdown("Neo4j 連線設定保存在此頁。模型與 Embedding API 請至 0 API 金鑰設定管理。")
+            gr.Markdown("Neo4j 連線設定保存在此頁。模型與 Embedding API 請至 0-0 API Key 設定管理。")
             env_status = gr.Markdown("Neo4j 設定欄位修改後會自動儲存。")
 
         with gr.Tab("1-2 PDF 與參數", interactive=False) as pdf_tab:
@@ -6046,39 +5995,6 @@ def build_app() -> gr.Blocks:
                 inputs=credential_refresh_inputs, outputs=credential_refresh_outputs,
                 show_progress="hidden",
             )
-        all_connection_test_event = one_click_connection_test_button.click(
-            test_all_connections_for_ui,
-            inputs=[
-                project_selector, neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
-                llm_provider, llm_service_state, model_endpoint, api_key, llm_models_table,
-                embedding_provider, embedding_service_state,
-                embedding_api_base, embedding_api_key, embedding_models_table,
-                *llm_model_fields, graph_embedding_model,
-            ],
-            outputs=[
-                neo4j_database, neo4j_connection_status, neo4j_connected_state,
-                *llm_service_outputs, *embedding_service_outputs,
-            ],
-            concurrency_id="service-settings",
-        )
-        all_connection_test_event.then(
-            workflow_tabs_for_ui, inputs=access_inputs, outputs=protected_tabs,
-            show_progress="hidden",
-        ).then(
-            refresh_experiment_model_choices_for_ui,
-            inputs=[llm_service_state, evaluation_judge_model,
-                    experiment_judge_model,
-                    *[row[1] for row in experiment_group_rows]],
-            outputs=[evaluation_judge_model,
-                     experiment_judge_model,
-                     *[row[1] for row in experiment_group_rows]],
-            show_progress="hidden",
-        ).then(
-            refresh_model_credentials_for_ui,
-            inputs=credential_refresh_inputs,
-            outputs=credential_refresh_outputs,
-            show_progress="hidden",
-        )
         for field, endpoint_state, key_state in [
             (graph_llm_model, schema_model_endpoint, schema_model_key),
             (extraction_llm_model, extraction_model_endpoint, extraction_model_key),
