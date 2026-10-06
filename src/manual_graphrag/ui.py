@@ -5111,8 +5111,11 @@ def build_app() -> gr.Blocks:
         with gr.Tab("2-0 實驗專案", interactive=True) as experiment_project_tab:
             gr.Markdown("建立實驗專案，並加入多個已完成建圖的 1 系列專案。各成員專案的 Neo4j Database 仍彼此獨立。")
             with gr.Row():
+                available_experiment_projects = experiment_project_choices_for_ui()
                 experiment_project_selector = gr.Dropdown(
-                    choices=experiment_project_choices_for_ui(), value=None,
+                    choices=available_experiment_projects,
+                    value=(available_experiment_projects[0][1]
+                           if available_experiment_projects else None),
                     label="現有實驗專案",
                 )
                 load_experiment_project_button = gr.Button(

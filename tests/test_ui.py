@@ -16,6 +16,20 @@ def test_build_app_returns_blocks() -> None:
     assert isinstance(build_app(), gr.Blocks)
 
 
+def test_experiment_project_selector_defaults_to_first_existing_project(monkeypatch) -> None:
+    choices = [("實驗 A", "exp-a"), ("實驗 B", "exp-b")]
+    monkeypatch.setattr(ui, "experiment_project_choices_for_ui", lambda: choices)
+
+    app = build_app()
+
+    selector = next(
+        component for component in app.config["components"]
+        if component.get("props", {}).get("label") == "現有實驗專案"
+    )
+    assert selector["props"]["choices"] == choices
+    assert selector["props"]["value"] == "exp-a"
+
+
 def test_current_project_banner_reflects_project_name() -> None:
     assert ui._current_project_banner({}) == "### 📁 目前專案：尚未選擇"
     assert ui._current_project_banner({"name": "手冊專案"}) == "### 📁 目前專案：手冊專案"
