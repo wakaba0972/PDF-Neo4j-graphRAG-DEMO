@@ -457,11 +457,19 @@ def workflow_tabs_for_ui(
     llm_state: dict[str, Any],
     embedding_state: dict[str, Any],
     workspace_mode: str = "single",
+    project: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], ...]:
     # Connection checks are diagnostic only. Only one project workspace is
-    # active at a time, so loading an experiment workspace locks 1-2 through 1-6.
+    # active at a time; loading an experiment workspace locks the single-project tabs.
     enabled = bool(project_id) and workspace_mode == "single"
-    return tuple(gr.update(interactive=enabled) for _ in range(5))
+    loaded_project_id = (project or {}).get("project_id")
+    connection_enabled = enabled and (
+        loaded_project_id == project_id if project is not None else True
+    )
+    return (
+        gr.update(interactive=connection_enabled),
+        *(gr.update(interactive=enabled) for _ in range(5)),
+    )
 
 
 def experiment_workflow_tabs_for_ui(
@@ -475,7 +483,15 @@ def experiment_workflow_tabs_for_ui(
         workspace_mode == "experiment" and bool(members)
         and all(statuses.get(member_id) is True for member_id in members)
     )
-    return tuple(gr.update(interactive=enabled) for _ in range(2))
+    connection_enabled = (
+        workspace_mode == "experiment"
+        and bool((project or {}).get("experiment_project_id"))
+    )
+    return (
+        gr.update(interactive=connection_enabled),
+        gr.update(interactive=enabled),
+        gr.update(interactive=enabled),
+    )
 
 
 def activate_workspace_for_ui(
@@ -499,14 +515,17 @@ def activate_workspace_for_ui(
 
 
 def reset_experiment_project_connection_for_ui(
-    _project: dict[str, Any] | None,
-) -> tuple[dict[str, bool], dict[str, Any], dict[str, Any]]:
+    project: dict[str, Any] | None,
+) -> tuple[dict[str, bool], dict[str, Any], dict[str, Any], dict[str, Any]]:
     disabled = gr.update(interactive=False)
-    return {}, disabled, disabled
+    connection_enabled = gr.update(
+        interactive=bool((project or {}).get("experiment_project_id")),
+    )
+    return {}, connection_enabled, disabled, disabled
 
 
 def lock_project_tabs_for_ui(project_id: str) -> tuple[dict[str, Any], ...]:
-    return tuple(gr.update(interactive=False) for _ in range(5))
+    return tuple(gr.update(interactive=False) for _ in range(6))
 
 
 def delete_project_for_ui(
@@ -4581,7 +4600,7 @@ def build_app() -> gr.Blocks:
             project_status = gr.Markdown("尚未選擇專案；載入後，設定與處理結果都會自動保存。")
             gr.Markdown("⚠️ 專案設定保存在本機 `data/projects/`，其中 Neo4j Password 為明文；模型 API Key 僅保存在 `.env`。")
 
-        with gr.Tab("1-1 連線設定"):
+        with gr.Tab("1-1 連線設定", interactive=False) as connection_tab:
             with gr.Row():
                 with gr.Column():
                     gr.Markdown("### Neo4j")
@@ -5141,7 +5160,7 @@ def build_app() -> gr.Blocks:
                 datatype=["str", "str", "str"], interactive=False, wrap=True,
             )
 
-        with gr.Tab("2-1 成員專案連線測試", interactive=True) as experiment_connection_tab:
+        with gr.Tab("2-1 成員專案連線測試", interactive=False) as experiment_connection_tab:
             gr.Markdown("使用 1-1 的 Neo4j URI／帳密，逐一測試實驗專案內各成員專案自己的 Database；回答與 Embedding 模型共用 0-0 的 OpenAI 設定。")
             test_experiment_connections_button = gr.Button("測試所有成員專案連線", variant="primary")
             experiment_connection_status = gr.Markdown("請先在 2-0 載入實驗專案。")
@@ -5276,10 +5295,10 @@ def build_app() -> gr.Blocks:
         answer_model_key = gr.State(initial_llm_credentials[4][1])
         selected_embedding_endpoint = gr.State(initial_embedding_credentials[0])
         selected_embedding_key = gr.State(initial_embedding_credentials[1])
-        protected_tabs = [pdf_tab, graph_tab, qa_tab, evaluation_tab, experiment_tab]
-        experiment_workflow_tabs = [experiment_questions_tab, experiment_project_test_tab]
+        protected_tabs = [connection_tab, pdf_tab, graph_tab, qa_tab, evaluation_tab, experiment_tab]
+        experiment_workflow_tabs = [experiment_connection_tab, experiment_questions_tab, experiment_project_test_tab]
         access_inputs = [project_selector, neo4j_connected_state, llm_service_state,
-                         embedding_service_state, workspace_mode_state]
+                         embedding_service_state, workspace_mode_state, project_state]
 
         evaluation_tab.select(
             load_evaluation_with_services_for_ui, inputs=[project_selector, llm_service_state],
@@ -5554,7 +5573,7 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
             outputs=[workspace_mode_state, experiment_project_connection_state,
-                     experiment_questions_tab, experiment_project_test_tab],
+                     *experiment_workflow_tabs],
         ).then(
             experiment_project_banner_for_ui,
             inputs=experiment_project_state, outputs=current_project_banner,
@@ -5567,11 +5586,11 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
             outputs=[workspace_mode_state, experiment_project_connection_state,
-                     experiment_questions_tab, experiment_project_test_tab],
+                     *experiment_workflow_tabs],
         ).then(
             workflow_tabs_for_ui, inputs=[project_selector, neo4j_connected_state,
                                           llm_service_state, embedding_service_state,
-                                          workspace_mode_state], outputs=protected_tabs,
+                                          workspace_mode_state, project_state], outputs=protected_tabs,
         ).then(experiment_project_banner_for_ui, inputs=experiment_project_state, outputs=current_project_banner)
         experiment_project_selector.change(
             load_experiment_project_for_ui,
@@ -5582,11 +5601,11 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
             outputs=[workspace_mode_state, experiment_project_connection_state,
-                     experiment_questions_tab, experiment_project_test_tab], show_progress="hidden",
+                     *experiment_workflow_tabs], show_progress="hidden",
         ).then(
             workflow_tabs_for_ui, inputs=[project_selector, neo4j_connected_state,
                                           llm_service_state, embedding_service_state,
-                                          workspace_mode_state], outputs=protected_tabs,
+                                          workspace_mode_state, project_state], outputs=protected_tabs,
             show_progress="hidden",
         ).then(experiment_project_banner_for_ui, inputs=experiment_project_state, outputs=current_project_banner, show_progress="hidden")
         experiment_project_tab.select(
@@ -5597,11 +5616,11 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
             outputs=[workspace_mode_state, experiment_project_connection_state,
-                     experiment_questions_tab, experiment_project_test_tab],
+                     *experiment_workflow_tabs],
         ).then(
             workflow_tabs_for_ui, inputs=[project_selector, neo4j_connected_state,
                                           llm_service_state, embedding_service_state,
-                                          workspace_mode_state], outputs=protected_tabs,
+                                          workspace_mode_state, project_state], outputs=protected_tabs,
         ).then(experiment_project_banner_for_ui, inputs=experiment_project_state, outputs=current_project_banner)
         create_experiment_project_button.click(
             create_experiment_project_for_ui,
@@ -5615,11 +5634,11 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
             outputs=[workspace_mode_state, experiment_project_connection_state,
-                     experiment_questions_tab, experiment_project_test_tab],
+                     *experiment_workflow_tabs],
         ).then(
             workflow_tabs_for_ui, inputs=[project_selector, neo4j_connected_state,
                                           llm_service_state, embedding_service_state,
-                                          workspace_mode_state], outputs=protected_tabs,
+                                          workspace_mode_state, project_state], outputs=protected_tabs,
         ).then(
             experiment_project_banner_for_ui, inputs=experiment_project_state, outputs=current_project_banner,
         )
@@ -5631,7 +5650,7 @@ def build_app() -> gr.Blocks:
             reset_experiment_project_connection_for_ui,
             inputs=[experiment_project_state],
             outputs=[experiment_project_connection_state,
-                     experiment_questions_tab, experiment_project_test_tab],
+                     *experiment_workflow_tabs],
         )
         test_experiment_connections_button.click(
             test_experiment_project_connections_for_ui,
@@ -5640,7 +5659,7 @@ def build_app() -> gr.Blocks:
         ).then(
             experiment_workflow_tabs_for_ui,
             inputs=[workspace_mode_state, experiment_project_state, experiment_project_connection_state],
-            outputs=[experiment_questions_tab, experiment_project_test_tab],
+            outputs=experiment_workflow_tabs,
         )
         experiment_questions_tab.select(
             refresh_experiment_project_questions_for_ui,
@@ -5886,7 +5905,7 @@ def build_app() -> gr.Blocks:
             delete_project_for_ui,
             inputs=project_selector,
             outputs=[project_selector, project_state, project_status,
-                     pdf_tab, graph_tab, qa_tab, evaluation_tab, experiment_tab,
+                     connection_tab, pdf_tab, graph_tab, qa_tab, evaluation_tab, experiment_tab,
                      delete_project_completed],
             js="""(projectId) => {
                 if (!window.confirm('確定要刪除此專案嗎？專案設定、PDF、圖譜、題庫與紀錄都會永久刪除。')) {

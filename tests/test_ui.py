@@ -380,7 +380,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     }
     assert experiment_tab_states == {
         "2-0 實驗專案": True,
-        "2-1 成員專案連線測試": True,
+        "2-1 成員專案連線測試": False,
         "2-2 問題集準備": False,
         "2-3 自動實驗測試": False,
     }
@@ -392,7 +392,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
         component for component in app.config["components"]
         if component.get("props", {}).get("label") == "1-1 連線設定"
     )
-    assert connection_tab["props"].get("interactive", True) is True
+    assert connection_tab["props"].get("interactive", True) is False
     assert all(tab["props"]["interactive"] is False for tab in tabs)
     llm = settings.load_service_settings("llm")
     embedding = settings.load_service_settings("embedding")
@@ -401,34 +401,34 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     embedding["profiles"]["OpenAI"]["connected"] = True
     assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", False, llm, embedding, "single"))
     assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", True, llm, embedding, "single"))
+    assert ui.workflow_tabs_for_ui(
+        "project", False, llm, embedding, "single", {"project_id": "other"},
+    )[0]["interactive"] is False
+    assert ui.workflow_tabs_for_ui(
+        "project", False, llm, embedding, "single", {"project_id": "project"},
+    )[0]["interactive"] is True
     assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("project", False, llm, embedding, "experiment"))
     experiment = {"experiment_project_id": "exp-1", "members": ["p1", "p2"]}
-    assert all(
-        update["interactive"] is False
-        for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {})
-    )
-    assert all(
-        update["interactive"] is False
-        for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {"p1": True, "p2": False})
-    )
-    assert all(
-        update["interactive"] is True
-        for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {"p1": True, "p2": True})
-    )
+    assert [update["interactive"] for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {})] == [True, False, False]
+    assert [update["interactive"] for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {"p1": True, "p2": False})] == [True, False, False]
+    assert [update["interactive"] for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {"p1": True, "p2": True})] == [True, True, True]
     assert all(
         update["interactive"] is False
         for update in ui.experiment_workflow_tabs_for_ui("single", experiment, {"p1": True, "p2": True})
     )
-    mode, statuses, questions_tab, test_tab = ui.activate_workspace_for_ui("experiment", {"name": "試驗"})
+    mode, statuses, connection_tab, questions_tab, test_tab = ui.activate_workspace_for_ui("experiment", {"name": "試驗"})
     assert mode == "experiment" and statuses == {}
+    assert connection_tab["interactive"] is False
     assert questions_tab["interactive"] is False and test_tab["interactive"] is False
-    mode, statuses, questions_tab, test_tab = ui.activate_workspace_for_ui(
+    mode, statuses, connection_tab, questions_tab, test_tab = ui.activate_workspace_for_ui(
         "experiment", experiment, "experiment", {"p1": True, "p2": True},
     )
     assert mode == "experiment" and statuses == {"p1": True, "p2": True}
+    assert connection_tab["interactive"] is True
     assert questions_tab["interactive"] is True and test_tab["interactive"] is True
-    statuses, questions_tab, test_tab = ui.reset_experiment_project_connection_for_ui(experiment)
+    statuses, connection_tab, questions_tab, test_tab = ui.reset_experiment_project_connection_for_ui(experiment)
     assert statuses == {}
+    assert connection_tab["interactive"] is True
     assert questions_tab["interactive"] is False and test_tab["interactive"] is False
     page_labels = {
         component.get("props", {}).get("label") for component in app.config["components"]
@@ -444,13 +444,13 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
         if str(dependency.get("api_name", "")).startswith("workflow_tabs_for_ui")
     ]
     assert len(gate_dependencies) >= 5
-    assert all(len(dependency["outputs"]) == 5 for dependency in gate_dependencies)
+    assert all(len(dependency["outputs"]) == 6 for dependency in gate_dependencies)
     experiment_gate_dependencies = [
         dependency for dependency in app.config["dependencies"]
         if str(dependency.get("api_name", "")).startswith("experiment_workflow_tabs_for_ui")
     ]
     assert len(experiment_gate_dependencies) >= 2
-    assert all(len(dependency["outputs"]) == 2 for dependency in experiment_gate_dependencies)
+    assert all(len(dependency["outputs"]) == 3 for dependency in experiment_gate_dependencies)
 
 
 
