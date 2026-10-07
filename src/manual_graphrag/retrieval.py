@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from importlib import import_module
+from importlib import import_module, util
+from pathlib import Path
+import sys
 from typing import Any, Protocol
 
 
@@ -59,6 +61,7 @@ class RetrievalStrategyRegistry:
         self.labels: dict[str, str] = {}
         self.ids_by_label: dict[str, str] = {}
         self._implementations: dict[str, tuple[str, str]] = {}
+        self._implementation_files: dict[str, Path] = {}
         self._loaded: dict[str, Any] = {}
 
     def register(
@@ -75,6 +78,25 @@ class RetrievalStrategyRegistry:
         self.ids_by_label[spec.label] = spec.strategy_id
         self._implementations[spec.strategy_id] = (module_path, class_name)
 
+    def register_file(
+        self, spec: RetrievalStrategySpec, implementation_file: Path, class_name: str,
+    ) -> None:
+        self.register(
+            spec,
+            str(implementation_file),
+            class_name,
+        )
+        self._implementation_files[spec.strategy_id] = implementation_file
+
+    def clear(self) -> None:
+        """Clear registrations while preserving exported mapping references."""
+        self.specs.clear()
+        self.labels.clear()
+        self.ids_by_label.clear()
+        self._implementations.clear()
+        self._implementation_files.clear()
+        self._loaded.clear()
+
     def get_spec(self, strategy_id: str) -> RetrievalStrategySpec:
         try:
             return self.specs[strategy_id]
@@ -88,7 +110,20 @@ class RetrievalStrategyRegistry:
             module_path, class_name = self._implementations[strategy_id]
         except KeyError as exc:
             raise ValueError(f"沒有註冊檢索策略：{strategy_id}") from exc
-        implementation_class = getattr(import_module(module_path), class_name)
+        if strategy_id in self._implementation_files:
+            implementation_file = self._implementation_files[strategy_id]
+            module_name = f"strategies.implementations.{strategy_id}.strategy"
+            module = sys.modules.get(module_name)
+            if module is None:
+                module_spec = util.spec_from_file_location(module_name, implementation_file)
+                if module_spec is None or module_spec.loader is None:
+                    raise ValueError(f"無法載入檢索策略實作：{implementation_file}")
+                module = util.module_from_spec(module_spec)
+                sys.modules[module_name] = module
+                module_spec.loader.exec_module(module)
+        else:
+            module = import_module(module_path)
+        implementation_class = getattr(module, class_name)
         strategy = implementation_class()
         if getattr(strategy, "strategy_id", None) != strategy_id:
             raise ValueError(f"檢索策略實作 ID 與註冊 ID 不符：{strategy_id}")
@@ -287,6 +322,6 @@ class RetrievalStrategy(Protocol):
     ) -> list[dict[str, Any]]: ...
 
 
-from .retrieval_strategies.registry import register_builtin_strategies
+from .retrieval_strategies.registry import load_strategy_specs
 
-register_builtin_strategies()
+load_strategy_specs()

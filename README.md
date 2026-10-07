@@ -36,6 +36,22 @@ Neo4j 專案隔離需使用支援多資料庫的 Neo4j Enterprise，並提供可
 
 ## 實作原理
 
+### 新增檢索策略
+
+檢索策略集中放在專案根目錄的 `strategies/`，啟動 app 時會重新掃描 `specifications/*.yaml`，依每份規格載入 `implementations/` 下指定的 Python class。新增策略時建立一份 YAML 規格及一個實作檔，不必在問答、評測或實驗頁分別登記。
+
+目錄結構：
+
+~~~text
+strategies/
+├── implementations/
+│   └── my_strategy/strategy.py
+└── specifications/
+    └── my_strategy.yaml
+~~~
+
+YAML 至少要宣告穩定 `id`、UI 顯示用 `name`、實作相對路徑與 class 名稱；`parameters` 可描述型別（`string`、`integer`、`number`、`boolean`）、預設值、範圍、選項與 UI 控制型態。`implementation.file` 必須留在 `implementations/` 子目錄內。策略實作 class 要提供與既有策略相同的 `strategy_id` 和 `retrieve(context, config)` 介面。範例可參考 `strategies/specifications/vector.yaml`、`strategies/specifications/hybrid.yaml` 與對應實作。
+
 ### 建圖流程
 
 1. 使用 PyMuPDF 讀取 PDF 文字，並排除每頁頂部與底部約 8% 的常見頁首頁尾區域。

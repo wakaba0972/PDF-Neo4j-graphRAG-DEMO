@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from manual_graphrag.retrieval import (
@@ -14,6 +16,7 @@ from manual_graphrag.retrieval import (
     strategy_id_from_label,
     strategy_label,
 )
+from manual_graphrag.retrieval_strategies.registry import load_strategy_specs
 
 
 def test_retrieval_config_keeps_stable_id_and_strategy_parameters() -> None:
@@ -62,14 +65,63 @@ def test_strategy_labels_are_separate_from_persisted_ids() -> None:
         strategy_label("混合檢索")
 
 
-def test_builtin_strategy_registry_loads_implementations_from_catalog() -> None:
+def test_builtin_strategy_registry_loads_implementations_from_yaml() -> None:
     vector = RETRIEVAL_STRATEGIES.get("vector")
     hybrid = RETRIEVAL_STRATEGIES.get("hybrid")
 
     assert vector.strategy_id == "vector"
     assert hybrid.strategy_id == "hybrid"
-    assert vector.__class__.__module__ == "manual_graphrag.retrieval_strategies.vector"
-    assert hybrid.__class__.__module__ == "manual_graphrag.retrieval_strategies.hybrid"
+    assert vector.__class__.__module__ == "strategies.implementations.vector.strategy"
+    assert hybrid.__class__.__module__ == "strategies.implementations.hybrid.strategy"
+
+
+def test_strategy_specs_load_yaml_and_implementation_from_strategy_directory(tmp_path: Path, request) -> None:
+    root = tmp_path / "strategies"
+    (root / "specifications").mkdir(parents=True)
+    implementation = root / "implementations" / "sample" / "strategy.py"
+    implementation.parent.mkdir(parents=True)
+    implementation.write_text(
+        "class SampleStrategy:\n"
+        "    strategy_id = 'sample'\n"
+        "    def retrieve(self, context, config): return []\n",
+        encoding="utf-8",
+    )
+    (root / "specifications" / "sample.yaml").write_text(
+        "id: sample\n"
+        "name: 測試策略\n"
+        "implementation:\n"
+        "  file: sample/strategy.py\n"
+        "  class: SampleStrategy\n"
+        "parameters:\n"
+        "  beam_width:\n"
+        "    type: integer\n"
+        "    default: 4\n"
+        "    minimum: 1\n"
+        "    maximum: 12\n"
+        "    label: 搜尋寬度\n"
+        "    control: slider\n",
+        encoding="utf-8",
+    )
+    request.addfinalizer(lambda: load_strategy_specs())
+
+    assert load_strategy_specs(root) == ("sample",)
+    spec = RETRIEVAL_STRATEGIES.get_spec("sample")
+    assert spec.label == "測試策略"
+    assert spec.parameters["beam_width"].default == 4
+    assert RETRIEVAL_STRATEGIES.get("sample").strategy_id == "sample"
+
+
+def test_strategy_yaml_cannot_load_implementation_outside_directory(tmp_path: Path) -> None:
+    root = tmp_path / "strategies"
+    (root / "specifications").mkdir(parents=True)
+    (root / "implementations").mkdir()
+    (root / "specifications" / "unsafe.yaml").write_text(
+        "id: unsafe\nname: unsafe\nimplementation:\n  file: ../outside.py\n  class: Unsafe\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="必須位於 implementations"):
+        load_strategy_specs(root)
 
 
 def test_strategy_registry_rejects_duplicate_ids() -> None:
