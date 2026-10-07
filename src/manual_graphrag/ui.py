@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import zipfile
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
@@ -768,11 +769,32 @@ def _document_status(index: int, total: int, doc: dict[str, Any], chunk_count: i
 
 def _retrieval_config_from_controls(
     strategy: str, top_k: int, reranker: str, expansion: str,
+    strategy_params: Any = None,
 ) -> RetrievalConfig:
-    return RetrievalConfig.from_ui(
+    config = RetrievalConfig.from_ui(
         strategy, int(top_k), reranker, expansion,
         rerank_candidates=reranker != "停用",
     )
+    if strategy_params in (None, ""):
+        params = {}
+    elif isinstance(strategy_params, dict):
+        params = strategy_params
+    else:
+        try:
+            params = json.loads(str(strategy_params))
+        except json.JSONDecodeError as exc:
+            raise ValueError("策略參數必須是有效的 JSON 物件") from exc
+    if not isinstance(params, dict):
+        raise ValueError("策略參數必須是 JSON 物件")
+    return replace(config, params={**config.params, **params}).validated()
+
+
+def _strategy_params_json(config: RetrievalConfig) -> str:
+    # Candidate depth follows the visible Top K / reranker controls; keeping it
+    # in the free-form field would make stale JSON override subsequent edits.
+    params = {key: value for key, value in config.params.items()
+              if key != "candidate_top_k"}
+    return json.dumps(params, ensure_ascii=False, sort_keys=True)
 
 
 def _group_retrieval_config(group: dict[str, Any]) -> RetrievalConfig:
@@ -857,6 +879,7 @@ def save_project_for_ui(
     graph_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     extraction_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     answer_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
+    retrieval_strategy_params_json: str = "{}",
 ) -> tuple[dict[str, Any], str]:
     if not project_id:
         return {}, "❌ 請先建立或載入專案。"
@@ -873,6 +896,7 @@ def save_project_for_ui(
         "extraction_max_concurrent_requests": int(extraction_max_concurrent_requests),
         "retrieval_config": _retrieval_config_from_controls(
             retrieval_mode, int(top_k), "停用", "停用",
+            retrieval_strategy_params_json,
         ).to_dict(),
         "schema_text": schema_text or "",
         "graph_reasoning_effort": graph_reasoning_effort or DEFAULT_REASONING_EFFORT,
@@ -974,6 +998,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
             visible=str(get("answer_model", DEFAULT_LLM_MODEL) or "").casefold() == GPT_6_LUNA_MODEL,
             choices=list(GPT_6_LUNA_REASONING_EFFORTS),
         ),
+        _strategy_params_json(project_retrieval),
     )
 
 
@@ -987,6 +1012,7 @@ def answer_question_for_project_ui(project_id: str, *args: Any) -> tuple[Any, ..
             str(args[10]), int(args[11]),
             str(args[12]) if len(args) > 12 else "停用",
             str(args[13]) if len(args) > 13 else "停用",
+            args[15] if len(args) > 15 else None,
         )
         record = {
             "question": str(args[9]).strip(), "answer": answer,
@@ -1337,7 +1363,7 @@ def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
         prefix[4] = message
         suffix = [gr.update() for _ in range(9)]
         suffix[0] = message
-        return (*prefix, *[gr.update() for _ in range(EXPERIMENT_GROUP_LIMIT * 8)], *suffix)
+        return (*prefix, *[gr.update() for _ in range(EXPERIMENT_GROUP_LIMIT * 9)], *suffix)
 
     if not isinstance(project_id, str) or not project_id:
         return unchanged("操作已取消，或尚未選擇實驗專案；沒有刪除任何資料。")
@@ -1652,7 +1678,7 @@ def add_experiment_project_inline_group_for_ui(
     project: dict[str, Any] | None, llm_state: dict[str, Any], *values: Any,
 ) -> tuple[Any, ...]:
     if not project:
-        return (*[gr.update() for _ in range(EXPERIMENT_GROUP_LIMIT * 8)], {},
+        return (*[gr.update() for _ in range(EXPERIMENT_GROUP_LIMIT * 9)], {},
                 "❌ 請先載入實驗專案。")
     try:
         groups = _groups_from_inline_values(values)
@@ -1686,7 +1712,7 @@ def remove_experiment_project_inline_group_for_ui(
     llm_state: dict[str, Any], *values: Any,
 ) -> tuple[Any, ...]:
     if not project:
-        return (*[gr.update() for _ in range(EXPERIMENT_GROUP_LIMIT * 8)], {},
+        return (*[gr.update() for _ in range(EXPERIMENT_GROUP_LIMIT * 9)], {},
                 "❌ 請先載入實驗專案。")
     try:
         groups = _groups_from_inline_values(values)
@@ -1743,7 +1769,7 @@ def _experiment_group_rows(groups: list[dict[str, Any]]) -> list[list[object]]:
 
 
 EXPERIMENT_GROUP_LIMIT = 12
-EXPERIMENT_GROUP_FIELDS = 7
+EXPERIMENT_GROUP_FIELDS = 8
 
 
 def _inline_group_values(groups: list[dict[str, Any]]) -> list[Any]:
@@ -1758,7 +1784,7 @@ def _inline_group_values(groups: list[dict[str, Any]]) -> list[Any]:
         values.extend([
             item.get("name", ""), item.get("answer_model"),
             item.get("answer_reasoning_effort", DEFAULT_REASONING_EFFORT),
-            strategy, top_k, reranker, expansion,
+            strategy, top_k, reranker, expansion, _strategy_params_json(config),
         ])
     return values
 
@@ -1798,6 +1824,7 @@ def _inline_group_updates(
             gr.update(value=top_k, visible=visible),
             gr.update(value=reranker, visible=visible),
             gr.update(value=expansion, visible=visible),
+            gr.update(value=_strategy_params_json(config), visible=visible),
             gr.update(visible=visible),
         ])
     return values
@@ -1809,7 +1836,7 @@ def _groups_from_inline_values(values: tuple[Any, ...]) -> list[dict[str, Any]]:
     for index in range(EXPERIMENT_GROUP_LIMIT):
         offset = index * EXPERIMENT_GROUP_FIELDS
         (name, answer_model, answer_effort, mode, top_k, reranker,
-         expansion) = values[offset:offset + EXPERIMENT_GROUP_FIELDS]
+         expansion, strategy_params) = values[offset:offset + EXPERIMENT_GROUP_FIELDS]
         name = str(name or "").strip()
         if not name:
             if any(str(values[later * EXPERIMENT_GROUP_FIELDS] or "").strip()
@@ -1828,7 +1855,7 @@ def _groups_from_inline_values(values: tuple[Any, ...]) -> list[dict[str, Any]]:
         if not 1 <= top_k <= 50:
             raise ValueError(f"「{name}」的 Top K 必須介於 1 到 50")
         retrieval_config = _retrieval_config_from_controls(
-            mode, top_k, reranker, expansion,
+            mode, top_k, reranker, expansion, strategy_params,
         ).to_dict()
         groups.append({
             "name": name, "answer_model": str(answer_model),
@@ -2448,13 +2475,13 @@ def load_evaluation_for_ui(project_id: str) -> tuple[Any, ...]:
     if not project_id:
         return ({}, [], [], *([gr.update()] * 11),
                 *([gr.update(value=DEFAULT_REASONING_EFFORT, visible=False)] * 3),
-                "請先選擇專案。", gr.update(value=False))
+                "{}", "請先選擇專案。", gr.update(value=False))
     try:
         project = load_project(project_id)
     except (OSError, ValueError) as exc:
         return ({}, [], [], *([gr.update()] * 11),
                 *([gr.update(value=DEFAULT_REASONING_EFFORT, visible=False)] * 3),
-                f"❌ {exc}", gr.update(value=False))
+                "{}", f"❌ {exc}", gr.update(value=False))
     evaluation = dict(project.get("evaluation") or {})
     evaluation.setdefault("dirty", False)
     preferences = evaluation.get("preferences") or {}
@@ -2487,6 +2514,7 @@ def load_evaluation_for_ui(project_id: str) -> tuple[Any, ...]:
         gr.update(value=preferences.get("judge_reasoning_effort", DEFAULT_JUDGE_REASONING_EFFORT),
                   visible=str(judge_model or "").casefold() == GPT_6_LUNA_MODEL,
                   choices=list(GPT_6_LUNA_REASONING_EFFORTS)),
+        _strategy_params_json(retrieval_config),
         (_evaluation_summary(results, loaded=True) if results else
          f"已載入 {len(questions)} 道題目與 0 筆測試結果。"),
         gr.update(value=bool(evaluation.get("verification_enabled", False))),
@@ -2505,6 +2533,7 @@ def save_evaluation_preferences_for_ui(
     test_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     judge_reasoning_effort: str = DEFAULT_JUDGE_REASONING_EFFORT,
     judge_max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
+    strategy_params_json: Any = None,
 ) -> str:
     if not project_id:
         return "⚠️ 請先選擇專案。"
@@ -2519,6 +2548,7 @@ def save_evaluation_preferences_for_ui(
         evaluation = dict(project.get("evaluation") or {})
         retrieval_config = _retrieval_config_from_controls(
             retrieval_mode, int(top_k), use_reranker, expand_evidence,
+            strategy_params_json,
         )
         evaluation["preferences"] = {
             "generation_model": generation_model, "test_model": test_model,
@@ -2546,6 +2576,7 @@ def generate_evaluation_for_ui(
     use_reranker: str = "停用",
     expand_evidence: str = "停用",
     reasoning_effort: str | None = None,
+    strategy_params_json: Any = None,
 ) -> tuple[str, list[list[object]], dict[str, Any], list[list[object]]]:
     if not project_id:
         return "❌ 請先建立或載入專案。", [], {}, []
@@ -2637,6 +2668,7 @@ def generate_evaluation_for_ui(
                 questions.append({**question, "number": len(questions) + 1})
         retrieval_config = _retrieval_config_from_controls(
             retrieval_mode, int(top_k), use_reranker, expand_evidence,
+            strategy_params_json,
         )
         existing_preferences = dict(existing_evaluation.get("preferences") or {})
         evaluation = {
@@ -2667,6 +2699,7 @@ def generate_evaluation_answers_for_ui(
     use_reranker: str = "停用",
     expand_evidence: str = "停用",
     answer_reasoning_effort: str | None = None,
+    strategy_params: Any = None,
     progress=gr.Progress(),
 ) -> tuple[str, dict[str, Any], list[list[object]]]:
     """Generate and persist answers without exposing them in the results table."""
@@ -2682,6 +2715,7 @@ def generate_evaluation_answers_for_ui(
     try:
         retrieval_config = _retrieval_config_from_controls(
             retrieval_mode, int(top_k), use_reranker, expand_evidence,
+            strategy_params,
         )
     except (TypeError, ValueError, OverflowError) as exc:
         return f"❌ {exc}", evaluation, []
@@ -2704,6 +2738,7 @@ def generate_evaluation_answers_for_ui(
             **_reasoning_effort_kwargs(model, answer_reasoning_effort),
             reranker_mode=reranker_mode,
             evidence_expansion_mode=expansion_mode,
+            strategy_params=retrieval_config.params,
         )
         rank = _retrieval_rank(item, evidence_rows, document_ids_by_name)
         return {
@@ -3201,6 +3236,7 @@ def generate_experiment_answers_for_ui(
             group["answer_model"], question["question"], strategy,
             top_k, reranker_mode, expansion_mode,
             **_reasoning_effort_kwargs(group["answer_model"], group.get("answer_reasoning_effort")),
+            strategy_params=_group_retrieval_config(group).params,
         )
         rank = _retrieval_rank(question, evidence_rows, document_ids_by_name)
         return {
@@ -3753,6 +3789,7 @@ def generate_experiment_project_answers_for_ui(
             neo4j_username, neo4j_password, group["answer_model"], question["question"],
             strategy, top_k, reranker_mode, expansion_mode,
             **_reasoning_effort_kwargs(group["answer_model"], group.get("answer_reasoning_effort")),
+            strategy_params=_group_retrieval_config(group).params,
         )
         rank = _retrieval_rank(question, evidence_rows, _project_document_ids(member_id))
         return {
@@ -4566,6 +4603,7 @@ def answer_question_for_ui(
     reasoning_effort: str | None = None,
     reranker_mode: str | None = None,
     evidence_expansion_mode: str | None = None,
+    strategy_params: Any = None,
 ) -> tuple[str, str, list[list[object]]]:
     if not answer_model:
         return "❌ 請先勾選並選擇問答 LLM。", "", []
@@ -4583,7 +4621,7 @@ def answer_question_for_ui(
         effective_expansion_mode = evidence_expansion_mode or _selected_retrieval_mode(expand_evidence)
         retrieval_config = _retrieval_config_from_controls(
             retrieval_mode, int(top_k), effective_reranker_mode,
-            effective_expansion_mode,
+            effective_expansion_mode, strategy_params,
         )
         should_expand = retrieval_config.expansion["id"] != "disabled"
         should_rerank = retrieval_config.reranker["id"] != "disabled"
@@ -4977,6 +5015,10 @@ def build_app() -> gr.Blocks:
                     choices=list(EVIDENCE_EXPANSION_MODES), value="停用", label="證據擴展模式",
                     info="在策略檢索後，透過圖譜關係擴展候選證據。", allow_custom_value=False,
                 )
+            retrieval_strategy_params_json = gr.Textbox(
+                value="{}", label="策略專屬參數（JSON）", lines=2,
+                info="填入目前策略規格宣告的參數；空物件使用策略預設值。",
+            )
             ask_button = gr.Button("送出問題", variant="primary")
             answer_status = gr.Markdown()
             gr.HTML(
@@ -5107,6 +5149,10 @@ def build_app() -> gr.Blocks:
                     evaluation_test_max_concurrent_requests = gr.Number(
                         value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="最大並行請求數",
                     )
+                evaluation_strategy_params_json = gr.Textbox(
+                    value="{}", label="策略專屬參數（JSON）", lines=2,
+                    info="填入目前策略規格宣告的參數；空物件使用策略預設值。",
+                )
                 generate_evaluation_answers_button = gr.Button("檢索並生成回答", variant="primary")
             with gr.Group(elem_classes="evaluation-metrics-box"):
                 evaluation_answers_status = gr.Markdown(
@@ -5237,11 +5283,16 @@ def build_app() -> gr.Blocks:
                         choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
                         label="證據擴展", show_label=False, visible=False, scale=2,
                     )
+                    group_strategy_params = gr.Textbox(
+                        value="{}", label="策略參數 JSON", show_label=False,
+                        placeholder="策略專屬參數 JSON", visible=False, scale=2,
+                    )
                     delete_group_button = gr.Button("移除", size="sm", visible=False, scale=1)
                 experiment_group_rows.append([
                     group_name, group_model, group_answer_effort,
                     group_retrieval, group_top_k,
-                    group_reranker, group_expansion, delete_group_button,
+                    group_reranker, group_expansion, group_strategy_params,
+                    delete_group_button,
                 ])
             experiment_group_fields = [component for row in experiment_group_rows for component in row[:-1]]
             experiment_group_all_components = [component for row in experiment_group_rows for component in row]
@@ -5426,11 +5477,15 @@ def build_app() -> gr.Blocks:
                         choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
                         label="證據擴展", show_label=False, visible=False, scale=2,
                     )
+                    group_strategy_params = gr.Textbox(
+                        value="{}", label="策略參數 JSON", show_label=False,
+                        placeholder="策略專屬參數 JSON", visible=False, scale=2,
+                    )
                     delete_group_button = gr.Button("移除", size="sm", visible=False, scale=1)
                 experiment_project_group_rows.append([
                     group_name, group_model, group_answer_effort,
                     group_retrieval, group_top_k, group_reranker,
-                    group_expansion, delete_group_button,
+                    group_expansion, group_strategy_params, delete_group_button,
                 ])
             experiment_project_group_fields = [
                 component for row in experiment_project_group_rows for component in row[:-1]
@@ -5538,7 +5593,8 @@ def build_app() -> gr.Blocks:
                      evaluation_judge_max_concurrent_requests,
                      evaluation_generation_effort, evaluation_test_effort,
                      evaluation_judge_effort,
-                     evaluation_status, evaluation_verify_judgment,
+                     evaluation_strategy_params_json, evaluation_status,
+                     evaluation_verify_judgment,
                      evaluation_answers_status, run_evaluation_button],
         )
         evaluation_state.change(
@@ -5596,12 +5652,13 @@ def build_app() -> gr.Blocks:
             evaluation_use_reranker,
             evaluation_expand_evidence, evaluation_judge_model,
             evaluation_generation_effort, evaluation_test_effort, evaluation_judge_effort,
-            evaluation_judge_max_concurrent_requests,
+            evaluation_judge_max_concurrent_requests, evaluation_strategy_params_json,
         ]
         for component in [evaluation_generation_model, evaluation_test_model, evaluation_question_count,
                           evaluation_retrieval_mode, evaluation_top_k,
                           evaluation_allow_parallel_generation, evaluation_use_reranker,
                           evaluation_expand_evidence,
+                          evaluation_strategy_params_json,
                           evaluation_test_max_concurrent_requests, evaluation_judge_model,
                           evaluation_judge_max_concurrent_requests,
                           evaluation_generation_effort, evaluation_test_effort,
@@ -5635,7 +5692,7 @@ def build_app() -> gr.Blocks:
                     evaluation_top_k, chunk_state, evaluation_allow_parallel_generation,
                     evaluation_test_max_concurrent_requests,
                     evaluation_use_reranker, evaluation_expand_evidence,
-                    evaluation_generation_effort],
+                    evaluation_generation_effort, evaluation_strategy_params_json],
             outputs=[evaluation_status, evaluation_questions_table,
                      evaluation_state, evaluation_results_table],
         )
@@ -5646,7 +5703,8 @@ def build_app() -> gr.Blocks:
                     neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
                     evaluation_test_model, evaluation_retrieval_mode,
                     evaluation_top_k, evaluation_state, evaluation_test_max_concurrent_requests,
-                    evaluation_use_reranker, evaluation_expand_evidence, evaluation_test_effort],
+                    evaluation_use_reranker, evaluation_expand_evidence,
+                    evaluation_test_effort, evaluation_strategy_params_json],
             outputs=[evaluation_status, evaluation_state, evaluation_results_table],
         )
         run_evaluation_button.click(
@@ -6048,6 +6106,7 @@ def build_app() -> gr.Blocks:
             extraction_max_concurrent_requests, retrieval_mode,
             top_k, schema_editor, graph_reasoning_effort,
             extraction_reasoning_effort, answer_reasoning_effort,
+            retrieval_strategy_params_json,
         ]
         project_load_outputs = [
             project_state, project_status,
@@ -6065,12 +6124,17 @@ def build_app() -> gr.Blocks:
             chunk_table, page_status,
             entity_table, relationship_table, build_status, import_status,
             graph_reasoning_effort, extraction_reasoning_effort,
-            answer_reasoning_effort,
+            answer_reasoning_effort, retrieval_strategy_params_json,
         ]
         for effort_control in [
             graph_reasoning_effort, extraction_reasoning_effort, answer_reasoning_effort,
         ]:
             effort_control.input(
+                save_project_for_ui, inputs=project_setting_inputs,
+                outputs=[project_state, project_status], show_progress="hidden",
+            )
+        for retrieval_control in [retrieval_mode, top_k, retrieval_strategy_params_json]:
+            retrieval_control.input(
                 save_project_for_ui, inputs=project_setting_inputs,
                 outputs=[project_state, project_status], show_progress="hidden",
             )
@@ -6531,6 +6595,7 @@ def build_app() -> gr.Blocks:
                 use_reranker,
                 expand_evidence,
                 answer_reasoning_effort,
+                retrieval_strategy_params_json,
             ],
             outputs=[answer_status, answer, answer_sources],
         )

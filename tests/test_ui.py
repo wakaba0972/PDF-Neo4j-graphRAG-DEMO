@@ -54,7 +54,7 @@ def test_delete_experiment_project_ui_clears_selected_workspace(monkeypatch) -> 
     result = ui.delete_experiment_project_for_ui("a")
 
     assert deleted == ["a"]
-    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * 8 + 9
+    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * 9 + 9
     assert result[0]["choices"] == [("實驗 B", "b")]
     assert result[0]["value"] is None
     assert result[1] == {}
@@ -63,7 +63,7 @@ def test_delete_experiment_project_ui_clears_selected_workspace(monkeypatch) -> 
     assert "實驗專案「實驗 A」" in result[4]
     assert "不受影響" in result[4]
     assert result[5] == [] and result[6] == {}
-    assert result[104] == "實驗組設定會自動儲存。"
+    assert result[116] == "實驗組設定會自動儲存。"
     assert result[-1]["value"] == "開始評測"
     assert result[-1]["interactive"] is False
 
@@ -75,13 +75,13 @@ def test_cancel_experiment_project_deletion_does_not_clear_or_delete(monkeypatch
     result = ui.delete_experiment_project_for_ui(True)
 
     assert deleted == []
-    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * 8 + 9
+    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * 9 + 9
     assert all(
         isinstance(value, dict) and value.get("__type__") == "update"
-        for index, value in enumerate(result) if index not in {4, 104}
+        for index, value in enumerate(result) if index not in {4, 116}
     )
     assert "沒有刪除任何資料" in result[4]
-    assert "沒有刪除任何資料" in result[104]
+    assert "沒有刪除任何資料" in result[116]
 
 
 def test_request_experiment_project_deletion_shows_confirmation() -> None:
@@ -1027,6 +1027,8 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
         "build", "embed", "answer", 1200, 100, 0.2,
         "詳細", 2, "extract", 2,
         "混合檢索", 6, '{"entity_types": []}',
+        ui.DEFAULT_REASONING_EFFORT, ui.DEFAULT_REASONING_EFFORT,
+        ui.DEFAULT_REASONING_EFFORT, '{"effective_search_ratio": 6}',
     ]
     saved, save_status = ui.save_project_for_ui(*values)
     loaded = ui.load_project_for_ui(created["project_id"])
@@ -1035,6 +1037,9 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert loaded[0]["project_id"] == created["project_id"]
     assert loaded[11:13] == (1200, 100)
     assert loaded[22][0].text == "內容"
+    assert json.loads(loaded[-1]) == {
+        "effective_search_ratio": 6, "ranker": "naive",
+    }
     stored_project = ui.load_project(created["project_id"])
     assert "model_endpoint" not in stored_project["settings"]
     assert "api_key" not in stored_project["settings"]
@@ -1986,6 +1991,35 @@ def test_inline_groups_round_trip_reranker_and_expansion_versions() -> None:
     assert restored == [groups[0]]
 
 
+def test_inline_experiment_groups_round_trip_strategy_specific_params() -> None:
+    group = {
+        "name": "調整搜尋範圍", "answer_model": "model-a",
+        "retrieval_config": ui._retrieval_config_from_controls(
+            "混合檢索", 8, "停用", "停用", {"effective_search_ratio": 6},
+        ).to_dict(),
+    }
+
+    values = ui._inline_group_values([group])
+    restored = ui._groups_from_inline_values(tuple(values))
+
+    assert json.loads(values[7]) == {
+        "effective_search_ratio": 6, "ranker": "naive",
+    }
+    assert restored == [group]
+
+
+def test_strategy_specific_params_are_validated_from_json() -> None:
+    config = ui._retrieval_config_from_controls(
+        "混合檢索", 8, "停用", "停用", '{"effective_search_ratio": 6}',
+    )
+
+    assert config.params["effective_search_ratio"] == 6
+    with pytest.raises(ValueError, match="型別錯誤"):
+        ui._retrieval_config_from_controls(
+            "混合檢索", 8, "停用", "停用", '{"effective_search_ratio": "wide"}',
+        )
+
+
 def test_inline_experiment_groups_autosave_and_reload(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     project = ui.create_project("experiment-autosave")
@@ -2033,7 +2067,7 @@ def test_inline_experiment_groups_autosave_and_reload(tmp_path, monkeypatch) -> 
     assert restored[13]["value"] == "停用"
     assert restored[14]["value"] == "證據擴展 V2"
     assert restored[15]["visible"] is True
-    assert restored[8 + ui.EXPERIMENT_GROUP_LIMIT * 8]["value"] == "gpt-6-luna"
+    assert restored[8 + ui.EXPERIMENT_GROUP_LIMIT * 9]["value"] == "gpt-6-luna"
 
 
 def test_luna_reasoning_controls_are_visible_only_for_luna_and_default_low() -> None:
@@ -2095,10 +2129,10 @@ def test_experiment_global_judge_settings_save_and_reload(tmp_path, monkeypatch)
         project["project_id"], settings.load_service_settings("llm"),
     )
 
-    assert loaded[8 + ui.EXPERIMENT_GROUP_LIMIT * 8]["value"] == "gpt-6-luna"
-    assert loaded[9 + ui.EXPERIMENT_GROUP_LIMIT * 8]["value"] == "high"
-    assert loaded[9 + ui.EXPERIMENT_GROUP_LIMIT * 8]["visible"] is True
-    assert loaded[10 + ui.EXPERIMENT_GROUP_LIMIT * 8] == 7
+    assert loaded[8 + ui.EXPERIMENT_GROUP_LIMIT * 9]["value"] == "gpt-6-luna"
+    assert loaded[9 + ui.EXPERIMENT_GROUP_LIMIT * 9]["value"] == "high"
+    assert loaded[9 + ui.EXPERIMENT_GROUP_LIMIT * 9]["visible"] is True
+    assert loaded[10 + ui.EXPERIMENT_GROUP_LIMIT * 9] == 7
     assert ui.load_project(project["project_id"])["experiment"]["groups"] == groups
     assert ui.load_project(project["project_id"])["experiment"]["judge_model"] == "gpt-6-luna"
 
@@ -2155,7 +2189,7 @@ def test_experiment_default_concurrency_is_ten(tmp_path, monkeypatch) -> None:
     restored = ui.load_experiment_for_ui(project["project_id"], settings.load_service_settings("llm"))
 
     assert restored[4] == 10
-    judge_index = 8 + ui.EXPERIMENT_GROUP_LIMIT * 8
+    judge_index = 8 + ui.EXPERIMENT_GROUP_LIMIT * 9
     assert restored[judge_index]["value"] == "gpt-6-luna"
     assert ("OpenAI｜gpt-6-luna", "gpt-6-luna") in restored[judge_index]["choices"]
     app = build_app()
@@ -2321,7 +2355,7 @@ def test_inline_experiment_group_add_and_remove(tmp_path, monkeypatch) -> None:
     assert removed[1]["value"] == "gpt-4o-mini"
     assert removed[1]["choices"] == [("OpenAI｜gpt-4o-mini", "gpt-4o-mini")]
     assert removed[1]["visible"] is True
-    assert removed[8]["visible"] is False
+    assert removed[17]["visible"] is False
     assert ui.load_project(project["project_id"])["experiment"]["groups"] == removed[-3]
 
 
@@ -3652,7 +3686,7 @@ def test_experiment_project_inline_groups_add_edit_and_remove(tmp_path, monkeypa
         project, llm_state, *empty_values,
     )
     project = added[-2]
-    assert len(added) == ui.EXPERIMENT_GROUP_LIMIT * 8 + 2
+    assert len(added) == ui.EXPERIMENT_GROUP_LIMIT * 9 + 2
     assert project["groups"][0]["name"] == "實驗組 1"
     assert project["groups"][0]["answer_model"] == ui.DEFAULT_LLM_MODEL
     assert "已自動儲存" in added[-1]
