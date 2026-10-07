@@ -1037,9 +1037,7 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert loaded[0]["project_id"] == created["project_id"]
     assert loaded[11:13] == (1200, 100)
     assert loaded[22][0].text == "內容"
-    assert json.loads(loaded[-1]) == {
-        "effective_search_ratio": 6, "ranker": "naive",
-    }
+    assert loaded[-1] == 6
     stored_project = ui.load_project(created["project_id"])
     assert "model_endpoint" not in stored_project["settings"]
     assert "api_key" not in stored_project["settings"]
@@ -2002,10 +2000,18 @@ def test_inline_experiment_groups_round_trip_strategy_specific_params() -> None:
     values = ui._inline_group_values([group])
     restored = ui._groups_from_inline_values(tuple(values))
 
-    assert json.loads(values[7]) == {
-        "effective_search_ratio": 6, "ranker": "naive",
-    }
+    assert values[7] == 6
     assert restored == [group]
+
+
+def test_strategy_parameter_controls_are_native_gradio_components() -> None:
+    controls = ui._create_strategy_parameter_controls()
+
+    assert len(controls) == 1
+    assert isinstance(controls[0], ui.gr.Slider)
+    assert controls[0].label == "有效搜尋比例"
+    assert controls[0].minimum == 1
+    assert controls[0].maximum == 10
 
 
 def test_strategy_specific_params_are_validated_from_json() -> None:
@@ -2018,6 +2024,23 @@ def test_strategy_specific_params_are_validated_from_json() -> None:
         ui._retrieval_config_from_controls(
             "混合檢索", 8, "停用", "停用", '{"effective_search_ratio": "wide"}',
         )
+
+
+def test_declared_strategy_parameters_render_as_native_gradio_controls() -> None:
+    controls = ui._create_strategy_parameter_controls()
+
+    assert len(controls) == 1
+    assert isinstance(controls[0], ui.gr.Slider)
+    assert controls[0].label == "有效搜尋比例"
+    assert controls[0].get_config().get("value") == 3
+
+
+def test_native_strategy_parameter_value_is_saved_without_json_encoding() -> None:
+    config = ui._retrieval_config_from_controls(
+        "基本向量檢索", 8, "停用", "停用", 6,
+    )
+
+    assert config.params["effective_search_ratio"] == 6
 
 
 def test_inline_experiment_groups_autosave_and_reload(tmp_path, monkeypatch) -> None:

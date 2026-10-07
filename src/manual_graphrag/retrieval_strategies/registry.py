@@ -10,9 +10,11 @@ from ..retrieval import (
 _COMMON_PARAMETERS = {
     "candidate_top_k": RetrievalParameterSpec(
         int, minimum=1, maximum=50, minimum_is_top_k=True,
+        visible_in_ui=False,
     ),
     "effective_search_ratio": RetrievalParameterSpec(
         int, default=3, minimum=1, maximum=10,
+        label="有效搜尋比例", control="slider",
     ),
 }
 
@@ -28,6 +30,7 @@ STRATEGY_CATALOG = (
                 **_COMMON_PARAMETERS,
                 "ranker": RetrievalParameterSpec(
                     str, default="naive", choices=("naive",),
+                    visible_in_ui=False,
                 ),
             },
         ),

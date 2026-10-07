@@ -79,7 +79,7 @@ from .qa_service import (
     legacy_rerank_evidence,
     rerank_evidence,
 )
-from .retrieval import RetrievalConfig, strategy_choices, strategy_label
+from .retrieval import RETRIEVAL_STRATEGIES, RetrievalConfig, strategy_choices, strategy_label
 from .service_settings import (
     capture_service_settings,
     configured_models,
@@ -779,6 +779,18 @@ def _retrieval_config_from_controls(
         params = {}
     elif isinstance(strategy_params, dict):
         params = strategy_params
+    elif isinstance(strategy_params, (int, float)) and not isinstance(strategy_params, bool):
+        # Single numeric native controls (for example a Gradio Slider) are
+        # accepted directly and mapped to the matching declared parameter.
+        parameter_names = {
+            name
+            for strategy_id in RETRIEVAL_STRATEGIES.ids()
+            for name, spec in RETRIEVAL_STRATEGIES.get_spec(strategy_id).parameters.items()
+            if spec.visible_in_ui and spec.value_type in (int, float)
+        }
+        if len(parameter_names) != 1:
+            raise ValueError("策略參數控制值無法對應到唯一參數")
+        params = {next(iter(parameter_names)): strategy_params}
     else:
         try:
             params = json.loads(str(strategy_params))
@@ -789,12 +801,47 @@ def _retrieval_config_from_controls(
     return replace(config, params={**config.params, **params}).validated()
 
 
-def _strategy_params_json(config: RetrievalConfig) -> str:
-    # Candidate depth follows the visible Top K / reranker controls; keeping it
-    # in the free-form field would make stale JSON override subsequent edits.
-    params = {key: value for key, value in config.params.items()
-              if key != "candidate_top_k"}
-    return json.dumps(params, ensure_ascii=False, sort_keys=True)
+def _visible_strategy_parameters() -> list[tuple[str, Any]]:
+    """Return unique, UI-visible parameters from the declarative strategy catalog."""
+    parameters: dict[str, Any] = {}
+    for strategy_id in RETRIEVAL_STRATEGIES.ids():
+        for name, spec in RETRIEVAL_STRATEGIES.get_spec(strategy_id).parameters.items():
+            if spec.visible_in_ui:
+                parameters.setdefault(name, spec)
+    return list(parameters.items())
+
+
+def _strategy_parameter_value(config: RetrievalConfig, name: str) -> Any:
+    spec = dict(_visible_strategy_parameters())[name]
+    return config.params.get(name, spec.default)
+
+
+def _create_strategy_parameter_controls(*, visible: bool = True, compact: bool = False) -> list[Any]:
+    """Render native Gradio controls directly from the registered parameter specs."""
+    controls = []
+    for name, spec in _visible_strategy_parameters():
+        label = spec.label or name.replace("_", " ").title()
+        common = {"label": label, "visible": visible}
+        if compact:
+            common.update({"show_label": False, "scale": 2})
+        if spec.choices:
+            controls.append(gr.Dropdown(choices=list(spec.choices), value=spec.default, **common))
+        elif spec.value_type is bool:
+            controls.append(gr.Checkbox(value=bool(spec.default), **common))
+        elif spec.control == "slider" and spec.minimum is not None and spec.maximum is not None:
+            controls.append(gr.Slider(
+                minimum=spec.minimum, maximum=spec.maximum,
+                step=1 if spec.value_type is int else 0.1,
+                value=spec.default, **common,
+            ))
+        elif spec.value_type in (int, float):
+            controls.append(gr.Number(
+                value=spec.default, minimum=spec.minimum, maximum=spec.maximum,
+                precision=0 if spec.value_type is int else 3, **common,
+            ))
+        else:
+            controls.append(gr.Textbox(value=spec.default, **common))
+    return controls
 
 
 def _group_retrieval_config(group: dict[str, Any]) -> RetrievalConfig:
@@ -998,7 +1045,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
             visible=str(get("answer_model", DEFAULT_LLM_MODEL) or "").casefold() == GPT_6_LUNA_MODEL,
             choices=list(GPT_6_LUNA_REASONING_EFFORTS),
         ),
-        _strategy_params_json(project_retrieval),
+        _strategy_parameter_value(project_retrieval, "effective_search_ratio"),
     )
 
 
@@ -1784,7 +1831,8 @@ def _inline_group_values(groups: list[dict[str, Any]]) -> list[Any]:
         values.extend([
             item.get("name", ""), item.get("answer_model"),
             item.get("answer_reasoning_effort", DEFAULT_REASONING_EFFORT),
-            strategy, top_k, reranker, expansion, _strategy_params_json(config),
+            strategy, top_k, reranker, expansion,
+            _strategy_parameter_value(config, "effective_search_ratio"),
         ])
     return values
 
@@ -1824,7 +1872,7 @@ def _inline_group_updates(
             gr.update(value=top_k, visible=visible),
             gr.update(value=reranker, visible=visible),
             gr.update(value=expansion, visible=visible),
-            gr.update(value=_strategy_params_json(config), visible=visible),
+            gr.update(value=_strategy_parameter_value(config, "effective_search_ratio"), visible=visible),
             gr.update(visible=visible),
         ])
     return values
@@ -2519,7 +2567,7 @@ def load_evaluation_for_ui(project_id: str) -> tuple[Any, ...]:
         gr.update(value=preferences.get("judge_reasoning_effort", DEFAULT_JUDGE_REASONING_EFFORT),
                   visible=str(judge_model or "").casefold() == GPT_6_LUNA_MODEL,
                   choices=list(GPT_6_LUNA_REASONING_EFFORTS)),
-        _strategy_params_json(retrieval_config),
+        _strategy_parameter_value(retrieval_config, "effective_search_ratio"),
         (_evaluation_summary(results, loaded=True) if results else
          f"已載入 {len(questions)} 道題目與 0 筆測試結果。"),
         gr.update(value=bool(evaluation.get("verification_enabled", False))),
@@ -5018,10 +5066,7 @@ def build_app() -> gr.Blocks:
                     choices=list(EVIDENCE_EXPANSION_MODES), value="停用", label="證據擴展模式",
                     info="在策略檢索後，透過圖譜關係擴展候選證據。", allow_custom_value=False,
                 )
-            retrieval_strategy_params_json = gr.Textbox(
-                value="{}", label="策略專屬參數（JSON）", lines=2,
-                info="填入目前策略規格宣告的參數；空物件使用策略預設值。",
-            )
+            retrieval_strategy_params_json = _create_strategy_parameter_controls()[0]
             ask_button = gr.Button("送出問題", variant="primary")
             answer_status = gr.Markdown()
             gr.HTML(
@@ -5152,10 +5197,7 @@ def build_app() -> gr.Blocks:
                     evaluation_test_max_concurrent_requests = gr.Number(
                         value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="最大並行請求數",
                     )
-                evaluation_strategy_params_json = gr.Textbox(
-                    value="{}", label="策略專屬參數（JSON）", lines=2,
-                    info="填入目前策略規格宣告的參數；空物件使用策略預設值。",
-                )
+                evaluation_strategy_params_json = _create_strategy_parameter_controls()[0]
                 generate_evaluation_answers_button = gr.Button("檢索並生成回答", variant="primary")
             with gr.Group(elem_classes="evaluation-metrics-box"):
                 evaluation_answers_status = gr.Markdown(
@@ -5286,10 +5328,9 @@ def build_app() -> gr.Blocks:
                         choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
                         label="證據擴展", show_label=False, visible=False, scale=2,
                     )
-                    group_strategy_params = gr.Textbox(
-                        value="{}", label="策略參數 JSON", show_label=False,
-                        placeholder="策略專屬參數 JSON", visible=False, scale=2,
-                    )
+                    group_strategy_params = _create_strategy_parameter_controls(
+                        visible=False, compact=True,
+                    )[0]
                     delete_group_button = gr.Button("移除", size="sm", visible=False, scale=1)
                 experiment_group_rows.append([
                     group_name, group_model, group_answer_effort,
@@ -5462,10 +5503,9 @@ def build_app() -> gr.Blocks:
                         choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
                         label="證據擴展", show_label=False, visible=False, scale=2,
                     )
-                    group_strategy_params = gr.Textbox(
-                        value="{}", label="策略參數 JSON", show_label=False,
-                        placeholder="策略專屬參數 JSON", visible=False, scale=2,
-                    )
+                    group_strategy_params = _create_strategy_parameter_controls(
+                        visible=False, compact=True,
+                    )[0]
                     delete_group_button = gr.Button("移除", size="sm", visible=False, scale=1)
                 experiment_project_group_rows.append([
                     group_name, group_model, group_answer_effort,

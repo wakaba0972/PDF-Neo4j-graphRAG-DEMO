@@ -15,6 +15,9 @@ class RetrievalParameterSpec:
     maximum: int | float | None = None
     choices: tuple[Any, ...] = ()
     minimum_is_top_k: bool = False
+    label: str | None = None
+    control: str | None = None
+    visible_in_ui: bool = True
 
     def validate(self, name: str, value: Any, top_k: int) -> None:
         if self.value_type is int:
