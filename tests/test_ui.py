@@ -85,24 +85,26 @@ def test_cancel_experiment_project_deletion_does_not_clear_or_delete(monkeypatch
 
 
 def test_request_experiment_project_deletion_shows_confirmation() -> None:
-    message, row_update, button_update, selector_update = (
+    status_update, confirm_update, cancel_update, selector_update = (
         ui.request_experiment_project_deletion_for_ui("exp-a")
     )
 
-    assert "exp-a" in message
-    assert "不會刪除成員專案" in message
-    assert row_update["visible"] is True
-    assert button_update["interactive"] is True
+    assert "exp-a" in status_update["value"]
+    assert "不會刪除成員專案" in status_update["value"]
+    assert status_update["visible"] is True
+    assert confirm_update["visible"] is True
+    assert cancel_update["visible"] is True
     assert selector_update["interactive"] is False
 
 
 def test_cancel_experiment_project_deletion_hides_confirmation() -> None:
-    row_update, button_update, selector_update = (
+    status_update, confirm_update, cancel_update, selector_update = (
         ui.cancel_experiment_project_deletion_for_ui()
     )
 
-    assert row_update["visible"] is False
-    assert button_update["interactive"] is False
+    assert status_update["visible"] is False
+    assert confirm_update["visible"] is False
+    assert cancel_update["visible"] is False
     assert selector_update["interactive"] is True
 
 
@@ -135,6 +137,11 @@ def test_experiment_project_delete_button_requires_confirmation() -> None:
     parameter_names = [parameter["parameter_name"] for parameter in api_parameters]
     assert "project_id" in parameter_names
     assert all(not name.isdigit() for name in parameter_names)
+    assert len(confirm_dependency["outputs"]) == len(
+        ui.delete_confirmed_experiment_project_for_ui(None)
+    )
+    component_ids = {component["id"] for component in app.config["components"]}
+    assert all(output_id in component_ids for output_id in confirm_dependency["outputs"])
 
 
 def test_build_app_wires_project_state_change_to_banner() -> None:
