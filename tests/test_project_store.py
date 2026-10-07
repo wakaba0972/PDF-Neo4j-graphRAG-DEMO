@@ -34,6 +34,18 @@ def test_project_round_trip_and_listing(tmp_path) -> None:
     assert saved["neo4j_database"].startswith("vehicle-")
 
 
+def test_project_name_can_be_updated_without_changing_base_name(tmp_path) -> None:
+    project = create_project("Zhao | s25", tmp_path)
+
+    saved = save_project(
+        project["project_id"], {"name": "Zhao | s25 | 1500-200-None"}, root=tmp_path
+    )
+
+    assert saved["name"] == "Zhao | s25 | 1500-200-None"
+    assert saved["base_name"] == "Zhao | s25"
+    assert list_projects(tmp_path) == [("Zhao | s25 | 1500-200-None", project["project_id"])]
+
+
 def test_each_project_gets_a_stable_unique_database(tmp_path) -> None:
     first = create_project("Model A", tmp_path)
     second = create_project("Model B", tmp_path)

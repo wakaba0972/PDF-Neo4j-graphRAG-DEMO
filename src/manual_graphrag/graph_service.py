@@ -642,7 +642,7 @@ def extract_graph(
     api_key: str,
     llm_model: str,
     chunks: list[TextChunk],
-    schema: dict[str, Any],
+    schema: dict[str, Any] | None,
     temperature: float = 0,
     max_concurrent_requests: int = 10,
     progress_callback: Callable[[float | None, str], None] | None = None,
@@ -654,13 +654,15 @@ def extract_graph(
     if int(max_concurrent_requests) < 1:
         raise ValueError("最大並行請求數必須至少為 1")
     max_concurrent_requests = int(max_concurrent_requests)
-    schema = validate_schema(schema)
-    allowed_entity_types = {
-        str(item["name"]).casefold() for item in schema["entity_types"]
-    }
-    allowed_relationship_types = {
-        str(item["name"]).casefold() for item in schema["relationship_types"]
-    }
+    schema = validate_schema(schema) if schema is not None else None
+    allowed_entity_types = (
+        {str(item["name"]).casefold() for item in schema["entity_types"]}
+        if schema else None
+    )
+    allowed_relationship_types = (
+        {str(item["name"]).casefold() for item in schema["relationship_types"]}
+        if schema else None
+    )
     entities: dict[tuple[str, str], dict[str, Any]] = {}
     relationships: dict[tuple[str, str, str], dict[str, Any]] = {}
     chunk_lookup = {chunk.number: chunk for chunk in chunks}
@@ -684,18 +686,25 @@ def extract_graph(
                     f"{delay:.1f} 秒後自動重試（第 {attempt} / {RATE_LIMIT_MAX_RETRIES} 次）…",
                 )
 
+        extraction_instructions = (
+            "依照 schema 抽取實體與關係。entity.type 與 relationship.type 必須來自 schema；"
+            f"schema：\n{json.dumps(schema, ensure_ascii=False)}\n\n"
+            if schema else
+            "直接依據文件內容抽取重要實體與明確關係，為每個實體及關係提供簡潔、一致的類型名稱；"
+            "同一概念在不同 chunks 必須使用相同類型。不要為了湊數而抽取，禁止臆測。\n\n"
+        )
         return _chat_json(
             base_url,
             api_key,
             llm_model,
             "你是知識圖譜資訊抽取器。只能依據提供的文件內容抽取，禁止臆測。只輸出 JSON。",
-            "依照 schema 抽取實體與關係。entity.type 與 relationship.type 必須來自 schema；"
-            "source_chunk_numbers 必須引用提供的 CHUNK 編號。關係的 source 與 target 使用實體 name。"
+            extraction_instructions
+            + "source_chunk_numbers 必須引用提供的 CHUNK 編號。關係的 source 與 target 使用實體 name。"
             "輸出格式：{\"entities\":[{\"name\":\"...\",\"type\":\"...\","
             "\"description\":\"...\",\"source_chunk_numbers\":[1]}],"
             "\"relationships\":[{\"source\":\"...\",\"target\":\"...\","
             "\"type\":\"...\",\"description\":\"...\",\"source_chunk_numbers\":[1]}]}。\n\n"
-            f"schema：\n{json.dumps(schema, ensure_ascii=False)}\n\n文件：\n{context}",
+            f"文件：\n{context}",
             temperature,
             on_retry=report_retry,
             control=control,
@@ -740,7 +749,7 @@ def extract_graph(
             if (
                 not name
                 or not entity_type
-                or entity_type.casefold() not in allowed_entity_types
+                or (allowed_entity_types is not None and entity_type.casefold() not in allowed_entity_types)
             ):
                 continue
             numbers = _source_numbers(item, chunk_lookup)
@@ -768,7 +777,7 @@ def extract_graph(
                 not source
                 or not target
                 or not relation_type
-                or relation_type.casefold() not in allowed_relationship_types
+                or (allowed_relationship_types is not None and relation_type.casefold() not in allowed_relationship_types)
             ):
                 continue
             numbers = _source_numbers(item, chunk_lookup)

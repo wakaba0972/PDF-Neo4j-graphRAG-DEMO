@@ -59,6 +59,35 @@ def test_plan_graph_schema_parses_fenced_json_and_uses_chunks(monkeypatch) -> No
     assert "[CHUNK 1; PAGES 2]" in captured["payload"]["messages"][1]["content"]
 
 
+def test_extract_graph_without_schema_keeps_model_assigned_types(monkeypatch) -> None:
+    prompts: list[str] = []
+
+    def fake_chat(*args, **kwargs):
+        prompts.append(args[4])
+        return {
+            "entities": [{
+                "name": "控制器", "type": "電子元件", "description": "控制設備",
+                "source_chunk_numbers": [1],
+            }],
+            "relationships": [{
+                "source": "控制器", "target": "馬達", "type": "驅動",
+                "description": "控制器驅動馬達", "source_chunk_numbers": [1],
+            }],
+        }
+
+    monkeypatch.setattr(graph_service, "_chat_json", fake_chat)
+
+    result = graph_service.extract_graph(
+        "https://api.openai.com/v1", "key", "model",
+        [TextChunk(1, "控制器驅動馬達", (1,))], None,
+    )
+
+    assert result.entities[0]["type"] == "電子元件"
+    assert result.relationships[0]["type"] == "驅動"
+    assert "直接依據文件內容抽取" in prompts[0]
+    assert "依照 schema 抽取" not in prompts[0]
+
+
 def test_schema_planning_analyzes_all_chunks_and_merges_hierarchically(monkeypatch) -> None:
     monkeypatch.setattr(graph_service, "SCHEMA_CONTEXT_LIMIT", 100)
     chunks = [TextChunk(number, "x" * 20, (number,)) for number in range(1, 11)]

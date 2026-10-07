@@ -153,7 +153,7 @@ def test_graph_controls_are_above_schema_and_type_limit_fields_are_removed() -> 
         for component in components
         if isinstance((value := component.get("props", {}).get("value")), str)
     }
-    schema_heading = ids_by_value["#### ① 規劃 Schema"]
+    schema_heading = ids_by_value["#### ①（可選）規劃 Schema"]
     assert ids_by_value["⏸ 暫停"] < schema_heading
     assert ids_by_value["⏹ 停止"] < schema_heading
     labels = {component.get("props", {}).get("label") for component in components}
@@ -2821,6 +2821,51 @@ def test_extract_graph_for_ui_formats_tables_and_state(monkeypatch) -> None:
     assert state["chunks"][0]["text"] == "text"
     assert state["neo4j_imported"] is False
     assert "進行 Embedding 並匯入 Neo4j" in status
+
+
+def test_extract_graph_for_ui_allows_skipping_schema_planning(monkeypatch) -> None:
+    from manual_graphrag.graph_service import GraphExtraction
+
+    captured = {}
+
+    def fake_extract(*args, **kwargs):
+        captured["schema"] = args[4]
+        return GraphExtraction([], [], 1)
+
+    monkeypatch.setattr(ui, "extract_graph", fake_extract)
+
+    status, _, _, state = ui.extract_graph_for_ui(
+        "https://api.openai.com/v1", "key", "model", 0, 2,
+        [TextChunk(1, "manual text", (1,), "manual.pdf")], "", [], ui.RunControl(),
+        1500, 200, "詳細",
+    )
+
+    assert status.startswith("✅")
+    assert captured["schema"] is None
+    assert state["build_config"] == {
+        "chunk_size": 1500,
+        "chunk_overlap": 200,
+        "schema_granularity": None,
+    }
+
+
+def test_project_name_suffix_uses_build_settings_and_planned_granularity() -> None:
+    project = {"name": "Zhao | s25", "base_name": "Zhao | s25"}
+
+    assert ui._project_name_for_build(project, {
+        "build_config": {
+            "chunk_size": 1500,
+            "chunk_overlap": 200,
+            "schema_granularity": None,
+        }
+    }) == "Zhao | s25 | 1500-200-None"
+    assert ui._project_name_for_build(project, {
+        "build_config": {
+            "chunk_size": 1000,
+            "chunk_overlap": 100,
+            "schema_granularity": "粗略",
+        }
+    }) == "Zhao | s25 | 1000-100-粗略"
 
 
 def test_graph_evidence_separates_merged_sources_by_pdf() -> None:

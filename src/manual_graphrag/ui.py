@@ -767,6 +767,23 @@ def _graph_rows(graph: dict[str, Any]) -> tuple[list[list[object]], list[list[ob
     return entities, relationships
 
 
+def _project_name_for_build(
+    project: dict[str, Any], graph_state: dict[str, Any]
+) -> str | None:
+    build_config = graph_state.get("build_config")
+    if not isinstance(build_config, dict):
+        return None
+    try:
+        base_name = str(project.get("base_name") or project.get("name") or "")
+        granularity = build_config.get("schema_granularity") or "None"
+        return (
+            f"{base_name} | {int(build_config['chunk_size'])}-"
+            f"{int(build_config['chunk_overlap'])}-{granularity}"
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def save_project_for_ui(
     project_id: str, documents: list[dict[str, Any]],
     chunks: list[TextChunk], graph_state: dict[str, Any],
@@ -805,10 +822,16 @@ def save_project_for_ui(
         "answer_reasoning_effort": answer_reasoning_effort or DEFAULT_REASONING_EFFORT,
     }
     documents = documents or []
+    graph_state = graph_state or {}
+    try:
+        name = _project_name_for_build(load_project(project_id), graph_state)
+    except (OSError, ValueError):
+        name = None
     try:
         project = save_project(project_id, {
             "settings": settings, "documents_meta": documents,
-            "chunks": _chunk_dicts(chunks or []), "graph_state": graph_state or {},
+            "chunks": _chunk_dicts(chunks or []), "graph_state": graph_state,
+            **({"name": name} if name else {}),
         }, [doc["file_path"] for doc in documents if doc.get("file_path")])
     except (OSError, ValueError) as exc:
         return {}, f"❌ {exc}"
@@ -4056,6 +4079,9 @@ def extract_graph_for_ui(
     schema_text: str,
     documents: list[dict[str, Any]],
     run_control: RunControl,
+    chunk_size: int = 0,
+    chunk_overlap: int = 0,
+    schema_granularity: str = "平衡",
     reasoning_effort: str | None = None,
     progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], list[list[object]], dict[str, Any]]:
@@ -4063,10 +4089,12 @@ def extract_graph_for_ui(
         return "❌ 請先勾選並選擇知識圖譜抽取 LLM。", [], [], {}
     run_control.reset()
     try:
-        raw_schema = json.loads(schema_text)
-        if not isinstance(raw_schema, dict):
-            raise ValueError("schema 必須是 JSON 物件")
-        schema = validate_schema(raw_schema)
+        schema = None
+        if str(schema_text or "").strip():
+            raw_schema = json.loads(schema_text)
+            if not isinstance(raw_schema, dict):
+                raise ValueError("schema 必須是 JSON 物件")
+            schema = validate_schema(raw_schema)
         extraction = extract_graph(
             model_endpoint,
             api_key,
@@ -4114,6 +4142,11 @@ def extract_graph_for_ui(
         "temperature": float(temperature),
         "max_concurrent_requests": int(max_concurrent_requests),
         "schema": schema,
+        "build_config": {
+            "chunk_size": int(chunk_size),
+            "chunk_overlap": int(chunk_overlap),
+            "schema_granularity": schema_granularity if schema is not None else None,
+        },
         "entities": extraction.entities,
         "relationships": extraction.relationships,
         "chunks": [
@@ -4541,12 +4574,12 @@ def build_app() -> gr.Blocks:
                 pause_button = gr.Button("⏸ 暫停")
                 stop_button = gr.Button("⏹ 停止", variant="stop")
             run_control_status = gr.Markdown(
-                "「暫停」「停止」在下方「規劃 Schema」或「確認 Schema 並抽取」"
+                "「暫停」「停止」在下方「規劃 Schema」或「抽取實體與關係」"
                 "執行中都可使用：暫停只會停止送出新批次（已送出的批次仍會跑完）；"
                 "停止會盡快中止整個流程。"
             )
             with gr.Group():
-                gr.Markdown("#### ① 規劃 Schema")
+                gr.Markdown("#### ①（可選）規劃 Schema")
                 gr.Markdown(
                     "選擇 LLM，從上一頁產生的 chunks 規劃實體與關係類型。"
                 )
@@ -4616,9 +4649,10 @@ def build_app() -> gr.Blocks:
                 )
 
             with gr.Group():
-                gr.Markdown("#### ② 確認 Schema 並抽取知識圖譜")
+                gr.Markdown("#### ② 抽取實體與關係")
                 gr.Markdown(
-                    "確認上方 JSON 後執行全部 chunks；檢查抽取結果後，再手動匯入 Neo4j。"
+                    "若已規劃 Schema，可確認上方 JSON 後抽取；若跳過規劃並留白，"
+                    "系統會直接從文件抽取實體與關係。檢查結果後，再手動匯入 Neo4j。"
                 )
                 extraction_llm_model = gr.Dropdown(
                     choices=llm_choices,
@@ -4638,7 +4672,7 @@ def build_app() -> gr.Blocks:
                     label="最大並行請求數",
                 )
                 generate_graph_button = gr.Button(
-                    "確認 Schema 並抽取", variant="primary"
+                    "抽取實體與關係", variant="primary"
                 )
                 build_status = gr.Markdown("尚未執行抽取。")
                 gr.Markdown("##### 抽取結果")
@@ -6100,6 +6134,9 @@ def build_app() -> gr.Blocks:
                 schema_editor,
                 documents_state,
                 run_control_state,
+                chunk_size,
+                chunk_overlap,
+                schema_granularity,
                 extraction_reasoning_effort,
             ],
             outputs=[build_status, entity_table, relationship_table, graph_state],
