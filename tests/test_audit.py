@@ -56,7 +56,24 @@ def test_shared_gradio_callback_only_receives_one_actor_input():
     assert [dependency["inputs"] for dependency in app.config["dependencies"]] == [
         [7, 42], [8, 42],
     ]
-    assert original_function.fn("payload", "Zhao", "Zhao") == ("Zhao", "payload")
+    assert original_function.fn("payload", "Zhao") == ("Zhao", "payload")
+
+
+def test_distinct_callbacks_sharing_input_list_only_append_actor_once():
+    app = _App()
+    first_function = app.fns[0]
+    second_function = _BlockFunction()
+    second_function.inputs = first_function.inputs
+    app.fns[1] = second_function
+    app.config["dependencies"].append({"id": 1, "inputs": [8]})
+    actor_state = _ActorState()
+
+    bind_gradio_callbacks_to_actor(app, actor_state)
+
+    assert len(first_function.inputs) == 2
+    assert first_function.inputs[-1] is actor_state
+    assert first_function.fn("first", "Zhao") == ("Zhao", "first")
+    assert second_function.fn("second", "Zhao") == ("Zhao", "second")
 
 
 def test_partial_gradio_callback_keeps_annotation_module_for_api_schema():
