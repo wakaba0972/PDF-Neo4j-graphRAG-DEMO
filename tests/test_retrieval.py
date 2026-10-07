@@ -2,7 +2,14 @@ import pytest
 
 from manual_graphrag.retrieval import (
     RetrievalConfig,
+    RetrievalParameterSpec,
+    RetrievalStrategySpec,
     RetrievalStrategyRegistry,
+    LABEL_STRATEGY_IDS,
+    STRATEGY_LABELS,
+    STRATEGY_SPECS,
+    register_retrieval_strategy_spec,
+    strategy_choices,
     strategy_id_from_label,
     strategy_label,
 )
@@ -62,3 +69,22 @@ def test_strategy_registry_rejects_duplicate_ids() -> None:
     registry.register(Strategy())
     with pytest.raises(ValueError, match="已註冊"):
         registry.register(Strategy())
+
+
+def test_strategy_spec_drives_parameter_validation_and_ui_choices(request) -> None:
+    spec = RetrievalStrategySpec(
+        "test_beam", "測試 Beam 搜尋",
+        {"beam_width": RetrievalParameterSpec(int, default=4, minimum=1, maximum=12)},
+    )
+    register_retrieval_strategy_spec(spec)
+    request.addfinalizer(lambda: (
+        STRATEGY_SPECS.pop(spec.strategy_id, None),
+        STRATEGY_LABELS.pop(spec.strategy_id, None),
+        LABEL_STRATEGY_IDS.pop(spec.label, None),
+    ))
+    config = RetrievalConfig(strategy_id="test_beam", top_k=5, params={"beam_width": 8})
+    assert config.validated() is config
+    assert "測試 Beam 搜尋" in strategy_choices()
+    assert strategy_id_from_label("測試 Beam 搜尋") == "test_beam"
+    with pytest.raises(ValueError, match="不可大於 12"):
+        RetrievalConfig(strategy_id="test_beam", params={"beam_width": 13}).validated()

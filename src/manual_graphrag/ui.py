@@ -78,7 +78,7 @@ from .qa_service import (
     legacy_rerank_evidence,
     rerank_evidence,
 )
-from .retrieval import RetrievalConfig, strategy_label
+from .retrieval import RetrievalConfig, strategy_choices, strategy_label
 from .service_settings import (
     capture_service_settings,
     configured_models,
@@ -4967,7 +4967,7 @@ def build_app() -> gr.Blocks:
             )
             question = gr.Textbox(label="問題", placeholder="例如：設備出現 E01 時該如何處理？")
             with gr.Row():
-                retrieval_mode = gr.Radio(["基本向量檢索", "混合檢索"], value="混合檢索", label="檢索模式")
+                retrieval_mode = gr.Radio(strategy_choices(), value="混合檢索", label="檢索模式")
                 top_k = gr.Slider(1, 50, value=8, step=1, label="Top K")
                 use_reranker = gr.Dropdown(
                     choices=list(RERANKER_MODES), value="停用", label="Reranker 模式",
@@ -5092,7 +5092,7 @@ def build_app() -> gr.Blocks:
                         visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
                     )
                     evaluation_retrieval_mode = gr.Radio(
-                        ["基本向量檢索", "混合檢索"], value="混合檢索", label="檢索模式",
+                        strategy_choices(), value="混合檢索", label="檢索模式",
                     )
                     evaluation_top_k = gr.Slider(1, 50, value=8, step=1, label="Top K")
                     evaluation_use_reranker = gr.Dropdown(
@@ -5225,7 +5225,7 @@ def build_app() -> gr.Blocks:
                         show_label=False, visible=False, scale=1,
                     )
                     group_retrieval = gr.Dropdown(
-                        choices=["基本向量檢索", "混合檢索"], value="混合檢索",
+                        choices=strategy_choices(), value="混合檢索",
                         label="檢索模式", show_label=False, visible=False, scale=2,
                     )
                     group_top_k = gr.Number(value=8, minimum=1, maximum=50, precision=0, label="Top K", show_label=False, visible=False, scale=1)
@@ -5411,7 +5411,7 @@ def build_app() -> gr.Blocks:
                         show_label=False, visible=False, scale=1,
                     )
                     group_retrieval = gr.Dropdown(
-                        choices=["基本向量檢索", "混合檢索"], value="混合檢索",
+                        choices=strategy_choices(), value="混合檢索",
                         label="檢索策略", show_label=False, visible=False, scale=2,
                     )
                     group_top_k = gr.Number(

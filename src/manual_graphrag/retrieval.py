@@ -4,11 +4,79 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 
-STRATEGY_LABELS = {
-    "vector": "基本向量檢索",
-    "hybrid": "混合檢索",
+@dataclass(frozen=True)
+class RetrievalParameterSpec:
+    """Validation metadata for a strategy-specific configuration parameter."""
+
+    value_type: type
+    default: Any = None
+    minimum: int | float | None = None
+    maximum: int | float | None = None
+    choices: tuple[Any, ...] = ()
+    minimum_is_top_k: bool = False
+
+    def validate(self, name: str, value: Any, top_k: int) -> None:
+        if self.value_type is int:
+            valid_type = isinstance(value, int) and not isinstance(value, bool)
+        else:
+            valid_type = isinstance(value, self.value_type)
+        if not valid_type:
+            raise ValueError(f"檢索參數 {name} 型別錯誤，應為 {self.value_type.__name__}")
+        minimum = top_k if self.minimum_is_top_k else self.minimum
+        if minimum is not None and value < minimum:
+            raise ValueError(f"檢索參數 {name} 不可小於 {minimum}")
+        if self.maximum is not None and value > self.maximum:
+            raise ValueError(f"檢索參數 {name} 不可大於 {self.maximum}")
+        if self.choices and value not in self.choices:
+            raise ValueError(f"檢索參數 {name} 必須是以下選項之一：{', '.join(map(str, self.choices))}")
+
+
+@dataclass(frozen=True)
+class RetrievalStrategySpec:
+    strategy_id: str
+    label: str
+    parameters: dict[str, RetrievalParameterSpec] = field(default_factory=dict)
+
+    def validate_params(self, params: dict[str, Any], top_k: int) -> None:
+        unknown = set(params) - set(self.parameters)
+        if unknown:
+            raise ValueError(
+                f"{self.strategy_id} 不支援的 params：{', '.join(sorted(unknown))}"
+            )
+        for name, value in params.items():
+            self.parameters[name].validate(name, value, top_k)
+
+
+STRATEGY_SPECS: dict[str, RetrievalStrategySpec] = {}
+STRATEGY_LABELS: dict[str, str] = {}
+LABEL_STRATEGY_IDS: dict[str, str] = {}
+
+
+def register_retrieval_strategy_spec(spec: RetrievalStrategySpec) -> None:
+    if not spec.strategy_id or not spec.label:
+        raise ValueError("檢索策略必須設定穩定 ID 與顯示名稱")
+    if spec.strategy_id in STRATEGY_SPECS or spec.label in LABEL_STRATEGY_IDS:
+        raise ValueError(f"檢索策略 ID 或顯示名稱重複：{spec.strategy_id}")
+    STRATEGY_SPECS[spec.strategy_id] = spec
+    STRATEGY_LABELS[spec.strategy_id] = spec.label
+    LABEL_STRATEGY_IDS[spec.label] = spec.strategy_id
+
+
+_COMMON_PARAMETERS = {
+    "candidate_top_k": RetrievalParameterSpec(
+        int, minimum=1, maximum=50, minimum_is_top_k=True,
+    ),
+    "effective_search_ratio": RetrievalParameterSpec(int, default=3, minimum=1, maximum=10),
 }
-LABEL_STRATEGY_IDS = {label: strategy_id for strategy_id, label in STRATEGY_LABELS.items()}
+register_retrieval_strategy_spec(RetrievalStrategySpec(
+    "vector", "基本向量檢索", dict(_COMMON_PARAMETERS),
+))
+register_retrieval_strategy_spec(RetrievalStrategySpec(
+    "hybrid", "混合檢索", {
+        **_COMMON_PARAMETERS,
+        "ranker": RetrievalParameterSpec(str, default="naive", choices=("naive",)),
+    },
+))
 RERANKER_IDS = {"disabled", "lexical", "llm"}
 EXPANSION_IDS = {"disabled", "legacy_name_chunk", "graph_v2"}
 RERANKER_LABEL_IDS = {
@@ -36,6 +104,11 @@ def strategy_label(strategy_id: str) -> str:
         raise ValueError(f"不支援的檢索策略 ID：{strategy_id}") from exc
 
 
+def strategy_choices() -> list[str]:
+    """UI labels in registration order; views should not maintain duplicates."""
+    return [spec.label for spec in STRATEGY_SPECS.values()]
+
+
 @dataclass(frozen=True)
 class RetrievalConfig:
     """Versioned-by-shape retrieval settings shared by UI, persistence and runtime."""
@@ -51,20 +124,16 @@ class RetrievalConfig:
     )
 
     def validated(self) -> RetrievalConfig:
-        strategy_label(self.strategy_id)
+        strategy = STRATEGY_SPECS.get(self.strategy_id)
+        if strategy is None:
+            raise ValueError(f"不支援的檢索策略 ID：{self.strategy_id}")
         if isinstance(self.top_k, bool) or not isinstance(self.top_k, int):
             raise ValueError("Top K 必須是整數")
         if not 1 <= self.top_k <= 50:
             raise ValueError("Top K 必須介於 1 到 50")
         if not isinstance(self.params, dict):
             raise ValueError("檢索策略 params 必須是物件")
-        if self.strategy_id == "vector":
-            allowed_params = {"candidate_top_k", "effective_search_ratio"}
-        else:
-            allowed_params = {"candidate_top_k", "effective_search_ratio", "ranker"}
-        unknown = set(self.params) - allowed_params
-        if unknown:
-            raise ValueError(f"{self.strategy_id} 不支援的 params：{', '.join(sorted(unknown))}")
+        strategy.validate_params(self.params, self.top_k)
         for component_name, component, allowed_ids in (
             ("reranker", self.reranker, RERANKER_IDS),
             ("expansion", self.expansion, EXPANSION_IDS),
@@ -87,22 +156,6 @@ class RetrievalConfig:
                         raise ValueError("graph_v2.hops 必須介於 1 到 6")
                 elif params:
                     raise ValueError(f"{component['id']} 不接受擴展參數")
-        candidate_top_k = self.params.get("candidate_top_k", self.top_k)
-        if (
-            isinstance(candidate_top_k, bool)
-            or not isinstance(candidate_top_k, int)
-            or not self.top_k <= candidate_top_k <= 50
-        ):
-            raise ValueError("candidate_top_k 必須介於 Top K 與 50 之間")
-        search_ratio = self.params.get("effective_search_ratio", 3)
-        if (
-            isinstance(search_ratio, bool)
-            or not isinstance(search_ratio, int)
-            or not 1 <= search_ratio <= 10
-        ):
-            raise ValueError("effective_search_ratio 必須介於 1 到 10")
-        if self.strategy_id == "hybrid" and self.params.get("ranker", "naive") != "naive":
-            raise ValueError("hybrid.ranker 目前僅支援 naive")
         return self
 
     def to_dict(self) -> dict[str, Any]:
@@ -132,13 +185,20 @@ class RetrievalConfig:
         except KeyError as exc:
             raise ValueError(f"檢索設定選項無效：{exc.args[0]}") from exc
         selected_top_k = int(top_k)
-        params: dict[str, Any] = {
-            "candidate_top_k": min(selected_top_k * 3, 50)
-            if rerank_candidates else selected_top_k,
-            "effective_search_ratio": 3,
-        }
-        if strategy_id == "hybrid":
-            params["ranker"] = "naive"
+        strategy = STRATEGY_SPECS[strategy_id]
+        params: dict[str, Any] = {}
+        if "candidate_top_k" in strategy.parameters:
+            params["candidate_top_k"] = (
+                min(selected_top_k * 3, 50) if rerank_candidates else selected_top_k
+            )
+        if "effective_search_ratio" in strategy.parameters:
+            ratio_default = strategy.parameters["effective_search_ratio"].default
+            params["effective_search_ratio"] = ratio_default if ratio_default is not None else 3
+        params.update({
+            name: parameter.default
+            for name, parameter in strategy.parameters.items()
+            if name not in params and parameter.default is not None
+        })
         expansion_params = {"hops": 4} if expansion_id == "graph_v2" else {}
         return cls(
             strategy_id=strategy_id,
@@ -188,6 +248,7 @@ class RetrievalContext:
 
 class RetrievalStrategy(Protocol):
     strategy_id: str
+    result_formatter: Any
 
     def retrieve(
         self, context: RetrievalContext, config: RetrievalConfig,

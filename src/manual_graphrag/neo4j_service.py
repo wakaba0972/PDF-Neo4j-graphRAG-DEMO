@@ -116,6 +116,7 @@ def _format_vector_record(record: Any) -> RetrieverResultItem:
 
 class VectorRetrievalStrategy:
     strategy_id = "vector"
+    result_formatter = staticmethod(_format_vector_record)
 
     def retrieve(
         self, context: RetrievalContext, config: RetrievalConfig,
@@ -141,6 +142,7 @@ class VectorRetrievalStrategy:
 
 class HybridRetrievalStrategy:
     strategy_id = "hybrid"
+    result_formatter = staticmethod(_format_hybrid_record)
 
     def retrieve(
         self, context: RetrievalContext, config: RetrievalConfig,
@@ -317,21 +319,17 @@ def search_graph_evidence(
     """
     try:
         with _shared_driver(uri, username, password) as driver:
+            strategy = RETRIEVAL_STRATEGIES.get(config.strategy_id)
             context = RetrievalContext(
                 driver=driver, database=database.strip(), run_id=run_id,
                 question=question, embedding=embedding,
                 vector_index_name=target_vector_index,
                 fulltext_index_name="graph_evidence_fulltext",
                 retrieval_query=retrieval_query,
-                result_formatter=(
-                    _format_vector_record if config.strategy_id == "vector"
-                    else _format_hybrid_record
-                ),
+                result_formatter=strategy.result_formatter,
                 retry=_retry_read,
             )
-            selected = RETRIEVAL_STRATEGIES.get(config.strategy_id).retrieve(
-                context, config,
-            )[:retrieval_top_k]
+            selected = strategy.retrieve(context, config)[:retrieval_top_k]
 
             expansion_id = config.expansion["id"]
             if expansion_id != "disabled" and selected:
