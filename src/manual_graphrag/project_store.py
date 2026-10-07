@@ -53,6 +53,7 @@ def build_project_summary(project: dict[str, Any]) -> dict[str, Any]:
         "created_by": project.get("created_by") or "未知（舊專案）",
         "document_count": document_count,
         "chunk_count": len(project.get("chunks") or []),
+        "question_count": len((project.get("evaluation") or {}).get("questions") or []),
         "chunk_size": build_config.get("chunk_size", settings.get("chunk_size")),
         "chunk_overlap": build_config.get("chunk_overlap", settings.get("chunk_overlap")),
         "schema_granularity": schema_granularity,

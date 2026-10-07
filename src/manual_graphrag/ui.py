@@ -496,7 +496,7 @@ def workflow_tabs_for_ui(
     )
     return (
         gr.update(interactive=connection_enabled),
-        *(gr.update(interactive=enabled) for _ in range(5)),
+        *(gr.update(interactive=enabled) for _ in range(6)),
     )
 
 
@@ -515,11 +515,7 @@ def experiment_workflow_tabs_for_ui(
         workspace_mode == "experiment"
         and bool((project or {}).get("experiment_project_id"))
     )
-    return (
-        gr.update(interactive=connection_enabled),
-        gr.update(interactive=enabled),
-        gr.update(interactive=enabled),
-    )
+    return gr.update(interactive=connection_enabled), gr.update(interactive=enabled)
 
 
 def activate_workspace_for_ui(
@@ -544,16 +540,16 @@ def activate_workspace_for_ui(
 
 def reset_experiment_project_connection_for_ui(
     project: dict[str, Any] | None,
-) -> tuple[dict[str, bool], dict[str, Any], dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, bool], dict[str, Any], dict[str, Any]]:
     disabled = gr.update(interactive=False)
     connection_enabled = gr.update(
         interactive=bool((project or {}).get("experiment_project_id")),
     )
-    return {}, connection_enabled, disabled, disabled
+    return {}, connection_enabled, disabled
 
 
 def lock_project_tabs_for_ui(project_id: str) -> tuple[dict[str, Any], ...]:
-    return tuple(gr.update(interactive=False) for _ in range(6))
+    return tuple(gr.update(interactive=False) for _ in range(7))
 
 
 def delete_project_for_ui(
@@ -1123,44 +1119,35 @@ def _questions_from_file(file_path: str) -> list[dict[str, Any]]:
     return _questions_from_rows(rows)
 
 
-def import_experiment_questions_for_ui(
-    file_path: str | None,
-    current_questions: list[dict[str, Any]] | None = None,
-    project_id: str = "",
-) -> tuple[str, list[list[object]], list[dict[str, Any]], list[dict[str, Any]], list[list[object]], list[list[object]], str, list[dict[str, Any]]]:
-    current = list(current_questions or [])
+def load_project_question_set_for_ui(project_id: str | None) -> tuple[str, list[list[object]]]:
+    if not project_id:
+        return "請先載入專案。", []
     try:
-        previous = load_project(project_id).get("experiment") or {} if project_id else {}
-    except (OSError, ValueError):
-        previous = {}
+        project = load_project(project_id)
+    except (OSError, ValueError) as exc:
+        return f"❌ 題目集載入失敗：{exc}", []
+    questions = (project.get("evaluation") or {}).get("questions") or []
+    return f"目前專案題目集：{len(questions)} 題。", _evaluation_question_rows(questions)
+
+
+def import_project_question_set_for_ui(
+    project_id: str | None, file_path: str | None,
+) -> tuple[str, list[list[object]], Any]:
+    if not project_id:
+        return "❌ 請先載入專案。", [], gr.update()
     if not file_path:
-        return (
-            "❌ 請選擇 JSON 或 CSV 題目集。", _evaluation_question_rows(current), current,
-            previous.get("results", []), previous.get("summary_rows", []),
-            previous.get("detail_rows", []), previous.get("status", ""),
-            previous.get("pending_answers") or previous.get("results", []),
-        )
+        status, rows = load_project_question_set_for_ui(project_id)
+        return "❌ 請選擇 JSON 或 CSV 題目集。", rows, gr.update()
     try:
+        project = load_project(project_id)
         questions = _questions_from_file(file_path)
         questions = _attach_project_document_ids(questions, project_id)
+        evaluation = dict(project.get("evaluation") or {})
+        evaluation["questions"] = questions
+        save_project(project_id, {"evaluation": evaluation})
     except (OSError, json.JSONDecodeError, ValueError) as exc:
-        return (
-            f"❌ 匯入失敗：{exc}", _evaluation_question_rows(current), current,
-            previous.get("results", []), previous.get("summary_rows", []),
-            previous.get("detail_rows", []), previous.get("status", ""),
-            previous.get("pending_answers") or previous.get("results", []),
-        )
-    status = f"✅ 已匯入 {len(questions)} 道題目。"
-    if project_id:
-        updated = {
-            **previous, "questions": questions, "results": [], "summary_rows": [],
-            "detail_rows": [], "pending_answers": [], "status": status,
-        }
-        try:
-            _save_experiment_data(project_id, updated)
-        except (OSError, ValueError) as exc:
-            status = f"❌ 題目已匯入但自動儲存失敗：{exc}"
-    return status, _evaluation_question_rows(questions), questions, [], [], [], status, []
+        return f"❌ 題目集匯入失敗：{exc}", [], gr.update()
+    return f"✅ 已匯入並保存 {len(questions)} 道題目。", _evaluation_question_rows(questions), gr.update(value=None)
 
 
 def _built_project_choices() -> list[tuple[str, str]]:
@@ -1193,7 +1180,7 @@ def create_experiment_project_for_ui(name: str) -> tuple[Any, dict[str, Any], st
 def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
     """Delete the selected experiment workspace and clear its visible page state."""
     def unchanged(message: str, selector_update: Any = None) -> tuple[Any, ...]:
-        prefix = [gr.update() for _ in range(11)]
+        prefix = [gr.update() for _ in range(8)]
         if selector_update is not None:
             prefix[0] = selector_update
         prefix[4] = message
@@ -1215,7 +1202,6 @@ def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
         gr.update(choices=experiment_project_choices_for_ui(), value=None), {}, [],
         gr.update(choices=_built_project_choices(), value=[]), status,
         [], {}, "請先在 2-0 載入實驗專案。",
-        gr.update(choices=[], value=None), [], "請選擇成員專案。",
         *_inline_group_updates([], _configured_service_choice_items(load_service_settings("experiment_llm"))),
         "實驗組設定會自動儲存。", DEFAULT_MAX_CONCURRENT_REQUESTS,
         [], [], [], [], "實驗專案已刪除。",
@@ -1231,12 +1217,13 @@ def load_experiment_project_for_ui(
         return {}, [], gr.update(choices=_built_project_choices(), value=[]), "請建立或選擇實驗專案。"
     try:
         project = load_experiment_project(project_id)
+        project = _migrate_legacy_experiment_project_questions(project)
         members = []
         for member_id in project.get("members", []):
             try:
                 members.append(_experiment_member_summary_row(member_id))
             except (OSError, ValueError):
-                members.append(["（原專案不存在）", member_id, "未知", 0, 0, "", "", "None", ""])
+                members.append(["（原專案不存在）", member_id, "未知", 0, 0, 0, "", "", "None", ""])
         return (
             project, members,
             gr.update(choices=_built_project_choices(), value=project.get("members", [])),
@@ -1270,12 +1257,8 @@ def save_experiment_project_members_for_ui(
             row = _experiment_member_summary_row(member_id)
             row[0] = known.get(member_id, row[0])
             rows.append(row)
-        preserved_questions = {
-            member_id: questions for member_id, questions in
-            (current.get("questions_by_project") or {}).items() if member_id in selected
-        }
         current = save_experiment_project(project_id, {
-            "members": selected, "questions_by_project": preserved_questions,
+            "members": selected,
         })
         return current, rows, f"✅ 已保存 {len(selected)} 個已建圖專案。"
     except (OSError, ValueError) as exc:
@@ -1291,6 +1274,7 @@ def _experiment_member_summary_row(project_id: str) -> list[Any]:
         summary.get("created_by", "未知"),
         summary.get("document_count", 0),
         summary.get("chunk_count", 0),
+        summary.get("question_count", 0),
         summary.get("chunk_size") if summary.get("chunk_size") is not None else "",
         summary.get("chunk_overlap") if summary.get("chunk_overlap") is not None else "",
         summary.get("schema_granularity") or "None",
@@ -1326,33 +1310,42 @@ def test_experiment_project_connections_for_ui(
     return rows, statuses, status
 
 
-def experiment_member_choices_for_ui(project: dict[str, Any] | None) -> list[tuple[str, str]]:
-    choices = []
-    for member_id in (project or {}).get("members", []):
+def _migrate_legacy_experiment_project_questions(
+    project: dict[str, Any],
+) -> dict[str, Any]:
+    """Move question sets formerly stored on an experiment project onto each member project."""
+    legacy_map = project.get("questions_by_project") or {}
+    if not legacy_map:
+        return project
+    for member_id in project.get("members", []):
+        legacy_questions = legacy_map.get(member_id) or []
+        if not legacy_questions:
+            continue
         try:
             member = load_project(member_id)
         except (OSError, ValueError):
             continue
-        choices.append((member.get("name", member_id), member_id))
-    return choices
+        evaluation = dict(member.get("evaluation") or {})
+        if evaluation.get("questions"):
+            continue
+        evaluation["questions"] = legacy_questions
+        save_project(member_id, {"evaluation": evaluation})
+    return project
 
 
-def load_experiment_project_questions_for_ui(
-    project: dict[str, Any] | None, member_id: str | None,
-) -> tuple[list[list[object]], str]:
-    if not project or not member_id or member_id not in project.get("members", []):
-        return [], "請選擇實驗專案內的專案。"
-    questions = (project.get("questions_by_project") or {}).get(member_id, [])
-    return _evaluation_question_rows(questions), f"已載入 {len(questions)} 題。"
-
-
-def refresh_experiment_project_questions_for_ui(
-    project: dict[str, Any] | None,
-) -> tuple[Any, list[list[object]], str]:
-    choices = experiment_member_choices_for_ui(project)
-    selected = choices[0][1] if choices else None
-    rows, status = load_experiment_project_questions_for_ui(project, selected)
-    return gr.update(choices=choices, value=selected), rows, status
+def _load_experiment_member_question_sets(
+    project: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    project = _migrate_legacy_experiment_project_questions(project)
+    member_projects: dict[str, dict[str, Any]] = {}
+    questions_by_member: dict[str, list[dict[str, Any]]] = {}
+    for member_id in project.get("members", []):
+        member = load_project(member_id)
+        member_projects[member_id] = member
+        questions_by_member[member_id] = list(
+            ((member.get("evaluation") or {}).get("questions") or [])
+        )
+    return member_projects, questions_by_member
 
 
 def load_experiment_project_setup_for_ui(
@@ -1545,27 +1538,6 @@ def save_experiment_project_judge_settings_for_ui(
         return updated, "✅ 全域評測模型與最大並行請求數已自動儲存。"
     except (OSError, TypeError, ValueError, OverflowError) as exc:
         return project, f"❌ 評測設定保存失敗：{exc}"
-
-
-def import_experiment_project_questions_for_ui(
-    file_path: str | None, project: dict[str, Any] | None, member_id: str | None,
-) -> tuple[dict[str, Any], list[list[object]], str, Any]:
-    if not project or not member_id or member_id not in project.get("members", []):
-        return project or {}, [], "❌ 請選擇實驗專案內的專案。", gr.update()
-    if not file_path:
-        return project, [], "❌ 請選擇 JSON 或 CSV 題目集。", gr.update()
-    try:
-        questions = _questions_from_file(file_path)
-        questions = _attach_project_document_ids(questions, member_id)
-        question_map = dict(project.get("questions_by_project") or {})
-        question_map[member_id] = questions
-        updated = save_experiment_project(project["experiment_project_id"], {
-            "questions_by_project": question_map,
-            "results": [], "summary_rows": [], "detail_rows": [],
-        })
-        return updated, _evaluation_question_rows(questions), f"✅ 已為「{load_project(member_id)['name']}」匯入 {len(questions)} 道題目。", gr.update(value=None)
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        return project, [], f"❌ 題目集匯入失敗：{exc}", gr.update()
 
 
 def _group_reranker_mode(group: dict[str, Any]) -> str:
@@ -1819,12 +1791,18 @@ def load_experiment_for_ui(
     try:
         project = load_project(project_id) if project_id else {}
         data = project.get("experiment") or {}
+        evaluation = project.get("evaluation") or {}
     except (OSError, ValueError) as exc:
         data = {}
+        evaluation = {}
         status = f"❌ 實驗資料載入失敗：{exc}"
     else:
-        status = data.get("status", "請匯入題目集並設定實驗組。")
-    questions = data.get("questions", [])
+        status = data.get("status", "請先在 1-6 匯入題目集並設定實驗組。")
+    questions = evaluation.get("questions") or data.get("questions", [])
+    if project and questions and not evaluation.get("questions"):
+        evaluation["questions"] = questions
+        save_project(project_id, {"evaluation": evaluation})
+    status = f"題庫 {len(questions)} 題。{status}"
     groups = data.get("groups") or []
     global_judge_model = data.get("judge_model") or DEFAULT_EVALUATION_MODEL
     global_judge_effort = data.get("judge_reasoning_effort") or DEFAULT_REASONING_EFFORT
@@ -1847,7 +1825,7 @@ def load_experiment_for_ui(
         summary_rows = _single_experiment_summary_rows(groups, results, global_judge_model)
         detail_rows = _single_experiment_detail_rows(results)
     return (
-        questions, _evaluation_question_rows(questions), groups, results,
+        questions, f"目前專案題庫共 {len(questions)} 題。", groups, results,
         data.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS), status,
         summary_rows, detail_rows,
         *_inline_group_updates(groups, service_choice_items(llm_state)),
@@ -2748,7 +2726,7 @@ def run_experiment_groups_for_ui(
     if not project_id:
         return "❌ 請先建立或載入專案。", [], [], []
     if not questions:
-        return "❌ 請先匯入題目集。", [], [], []
+        return "❌ 請先到 1-6 匯入此專案的題目集。", [], [], []
     if not groups:
         return "❌ 請至少加入一個實驗組。", [], [], []
     try:
@@ -2971,7 +2949,7 @@ def generate_experiment_answers_for_ui(
     if not project_id:
         return "❌ 請先建立或載入專案。", [], [], [], []
     if not questions:
-        return "❌ 請先匯入題目集。", [], [], [], []
+        return "❌ 請先到 1-6 匯入此專案的題目集。", [], [], [], []
     if not groups:
         return "❌ 請至少加入一個實驗組。", [], [], [], []
     try:
@@ -3499,21 +3477,19 @@ def generate_experiment_project_answers_for_ui(
         return f"❌ {exc}", [], [], [], project
     members = current.get("members") or []
     groups = current.get("groups") or []
-    question_map = current.get("questions_by_project") or {}
     if not members or not groups:
         return "❌ 請先加入成員專案並設定實驗組。", [], [], [], current
+    try:
+        members_data, question_map = _load_experiment_member_question_sets(current)
+    except (OSError, ValueError) as exc:
+        return f"❌ 成員專案載入失敗：{exc}", [], [], [], current
     missing = [member for member in members if not question_map.get(member)]
     if missing:
-        return f"❌ 尚有 {len(missing)} 個成員專案未匯入題目集。", [], [], [], current
-    members_data: dict[str, dict[str, Any]] = {}
+        return f"❌ 尚有 {len(missing)} 個成員專案沒有題目集，請到各專案的 1-6 匯入。", [], [], [], current
     for member_id in members:
-        try:
-            member = load_project(member_id)
-        except (OSError, ValueError) as exc:
-            return f"❌ 成員專案「{member_id}」無法載入：{exc}", [], [], [], current
+        member = members_data[member_id]
         if not (member.get("graph_state") or {}).get("neo4j_imported"):
             return f"❌ 專案「{member.get('name', member_id)}」尚未完成建圖匯入。", [], [], [], current
-        members_data[member_id] = member
     credentials = {}
     for group in groups:
         endpoint, key = resolve_model_credentials_for_ui(llm_state, group.get("answer_model", ""))
@@ -3700,23 +3676,23 @@ def run_experiment_project_for_ui(
         return f"❌ {exc}", [], [], project
     members = current.get("members") or []
     groups = current.get("groups") or []
-    question_map = current.get("questions_by_project") or {}
     if not members:
         return "❌ 請先在 2-0 加入已建圖專案。", [], [], current
     if not groups:
         return "❌ 請至少新增一個實驗組。", [], [], current
+    try:
+        members_data, question_map = _load_experiment_member_question_sets(current)
+    except (OSError, ValueError) as exc:
+        return f"❌ 成員專案載入失敗：{exc}", [], [], current
     missing = [member_id for member_id in members if not question_map.get(member_id)]
     if missing:
-        return f"❌ 尚未為 {len(missing)} 個成員專案準備題目集，請到 2-2 匯入。", [], [], current
+        return f"❌ 尚有 {len(missing)} 個成員專案沒有題目集，請到各專案的 1-6 匯入。", [], [], current
     if not judge_model:
         return "❌ 請選擇全域評測模型。", [], [], current
     all_results: list[dict[str, Any]] = []
     member_names: dict[str, str] = {}
     for member_id in members:
-        try:
-            member = load_project(member_id)
-        except (OSError, ValueError) as exc:
-            return f"❌ 實驗成員專案「{member_id}」無法載入：{exc}", [], [], current
+        member = members_data[member_id]
         if not (member.get("graph_state") or {}).get("neo4j_imported"):
             return f"❌ 專案「{member['name']}」尚未完成建圖匯入。", [], [], current
         member_names[member_id] = member.get("name", member_id)
@@ -4925,9 +4901,26 @@ def build_app() -> gr.Blocks:
                     "請先載入專案並解析 PDF。", elem_classes="evaluation-metrics"
                 )
 
-        with gr.Tab("1-6 單一專案實驗", interactive=False) as experiment_tab:
+        with gr.Tab("1-6 匯入問題集", interactive=False) as project_question_import_tab:
             gr.Markdown(
-                "匯入同一份題目集，建立多個不同回答／檢索設定的實驗組，"
+                "在目前載入的專案匯入專屬題目集。題目集會儲存在該專案，"
+                "1-7 單一專案實驗與 2-3 跨專案實驗都直接使用這份資料。"
+            )
+            with gr.Row():
+                project_question_file = gr.File(
+                    label="題目集（JSON／CSV）", file_types=[".json", ".csv"], type="filepath",
+                )
+                import_project_questions_button = gr.Button("匯入此專案題目集", variant="primary")
+            project_question_import_status = gr.Markdown("尚未載入題目集。")
+            project_question_table = gr.Dataframe(
+                headers=["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"],
+                datatype=["number", "str", "str", "str", "str"],
+                interactive=False, wrap=True,
+            )
+
+        with gr.Tab("1-7 單一專案實驗", interactive=False) as experiment_tab:
+            gr.Markdown(
+                "使用目前專案在 1-6 匯入的題目集，建立多個不同回答／檢索設定的實驗組，"
                 "先生成各組回答，再獨立評測並比較答案正確率、Recall@5、Recall@10 與 MRR。"
             )
             experiment_questions_state = gr.State([])
@@ -4939,17 +4932,7 @@ def build_app() -> gr.Blocks:
                 choices=llm_choices, value=preferred_llm, allow_custom_value=False,
                 visible=False, label="實驗預設模型",
             )
-            with gr.Row():
-                experiment_question_file = gr.File(
-                    label="題目集（JSON／CSV）", file_types=[".json", ".csv"], type="filepath"
-                )
-                import_experiment_questions_button = gr.Button("匯入實驗題目集")
-                experiment_question_status = gr.Markdown("尚未匯入題目集。")
-            experiment_questions_table = gr.Dataframe(
-                headers=["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"],
-                datatype=["number", "str", "str", "str", "str"],
-                interactive=False, wrap=True,
-            )
+            experiment_question_status = gr.Markdown("尚未載入專案題目集。")
             gr.Markdown("#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）")
             gr.Markdown("實驗組名稱　回答模型／推理強度　檢索模式　Top K　Reranker（停用／舊版／LLM）　證據擴展（停用／舊版／V2）")
             experiment_group_rows: list[list[Any]] = []
@@ -5089,10 +5072,10 @@ def build_app() -> gr.Blocks:
             save_experiment_members_button = gr.Button("保存成員專案")
             experiment_project_members_table = gr.Dataframe(
                 headers=[
-                    "專案", "專案 ID", "建立者", "文件數", "Chunk 數",
+                    "專案", "專案 ID", "建立者", "文件數", "Chunk 數", "問題集題數",
                     "Chunk Size", "Overlap", "Schema 粒度", "Neo4j Database",
                 ],
-                datatype=["str", "str", "str", "number", "number", "number", "number", "str", "str"],
+                datatype=["str", "str", "str", "number", "number", "number", "number", "number", "str", "str"],
                 interactive=False, wrap=True,
             )
 
@@ -5106,22 +5089,8 @@ def build_app() -> gr.Blocks:
             )
             gr.Markdown("回答模型服務共用 0-1 的 OpenAI 設定。")
 
-        with gr.Tab("2-2 問題集準備", interactive=False) as experiment_questions_tab:
-            gr.Markdown("為實驗專案中的每個成員專案分別匯入問題集；題目會在該專案自己的圖譜上檢索與評測。")
-            experiment_questions_member = gr.Dropdown(choices=[], label="成員專案")
-            with gr.Row():
-                experiment_project_question_file = gr.File(
-                    label="題目集（JSON／CSV）", file_types=[".json", ".csv"], type="filepath",
-                )
-                import_experiment_project_questions_button = gr.Button("匯入此專案題目集", variant="primary")
-            experiment_project_questions_status = gr.Markdown("請選擇成員專案。")
-            experiment_project_questions_table = gr.Dataframe(
-                headers=["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"],
-                datatype=["number", "str", "str", "str", "str"], interactive=False, wrap=True,
-            )
-
         with gr.Tab("2-3 自動實驗測試", interactive=False) as experiment_project_test_tab:
-            gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，使用各專案自己的問題集與 Neo4j Database 執行。")
+            gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，直接使用各專案在 1-6 匯入的題目集及自己的 Neo4j Database 執行。")
             gr.Markdown("#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）")
             gr.Markdown("實驗組名稱　回答模型／推理強度　檢索策略　Top K　Reranker　證據擴展")
             experiment_project_group_rows: list[list[Any]] = []
@@ -5204,7 +5173,7 @@ def build_app() -> gr.Blocks:
                 "<style>.evaluation-judge-button button {background:#f59e0b !important;border-color:#f59e0b !important;color:#1f2937 !important;}</style>",
                 padding=False,
             )
-            experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並在 2-2 為每個專案匯入題目集。")
+            experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並在每個成員專案的 1-6 匯入題目集。")
             experiment_project_summary_table = gr.Dataframe(
                 headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "答對數 / 總題數", "答案正確率", "Recall@5", "Recall@10", "MRR"],
                 interactive=False, wrap=True,
@@ -5231,8 +5200,11 @@ def build_app() -> gr.Blocks:
         answer_model_key = gr.State(initial_llm_credentials[4][1])
         selected_embedding_endpoint = gr.State(initial_embedding_credentials[0])
         selected_embedding_key = gr.State(initial_embedding_credentials[1])
-        protected_tabs = [connection_tab, pdf_tab, graph_tab, qa_tab, evaluation_tab, experiment_tab]
-        experiment_workflow_tabs = [experiment_connection_tab, experiment_questions_tab, experiment_project_test_tab]
+        protected_tabs = [
+            connection_tab, pdf_tab, graph_tab, qa_tab, evaluation_tab,
+            project_question_import_tab, experiment_tab,
+        ]
+        experiment_workflow_tabs = [experiment_connection_tab, experiment_project_test_tab]
         access_inputs = [project_selector, neo4j_connected_state, llm_service_state,
                          embedding_service_state, workspace_mode_state, project_state]
 
@@ -5256,11 +5228,22 @@ def build_app() -> gr.Blocks:
             outputs=[evaluation_answers_status, run_evaluation_button],
             show_progress="hidden",
         )
+        project_question_import_tab.select(
+            load_project_question_set_for_ui,
+            inputs=[project_selector],
+            outputs=[project_question_import_status, project_question_table],
+            show_progress="hidden",
+        )
+        import_project_questions_button.click(
+            import_project_question_set_for_ui,
+            inputs=[project_selector, project_question_file],
+            outputs=[project_question_import_status, project_question_table, project_question_file],
+        )
         experiment_tab.select(
             load_experiment_for_ui,
             inputs=[project_selector, llm_service_state],
             outputs=[
-                experiment_questions_state, experiment_questions_table,
+                experiment_questions_state, experiment_question_status,
                 experiment_groups_state, experiment_results_state,
                 experiment_max_concurrent_requests, experiment_status,
                 experiment_summary_table, experiment_details_table,
@@ -5356,20 +5339,6 @@ def build_app() -> gr.Blocks:
             inputs=[project_selector, evaluation_results_table, evaluation_state],
             outputs=[evaluation_status, evaluation_results_table, evaluation_state],
             show_progress="hidden",
-        )
-        import_experiment_questions_button.click(
-            import_experiment_questions_for_ui,
-            inputs=[experiment_question_file, experiment_questions_state, project_selector],
-            outputs=[
-                experiment_question_status,
-                experiment_questions_table,
-                experiment_questions_state,
-                experiment_results_state,
-                experiment_summary_table,
-                experiment_details_table,
-                experiment_status,
-                experiment_pending_answers_state,
-            ],
         )
         add_experiment_group_button.click(
             add_inline_experiment_group_for_ui,
@@ -5494,8 +5463,6 @@ def build_app() -> gr.Blocks:
                 experiment_project_members_table, experiment_project_members,
                 experiment_project_status, experiment_connection_table,
                 experiment_project_connection_state, experiment_connection_status,
-                experiment_questions_member, experiment_project_questions_table,
-                experiment_project_questions_status,
                 *experiment_project_group_all_components,
                 experiment_project_groups_status, experiment_project_max_concurrency,
                 experiment_project_pending_answers_state, experiment_project_results_state,
@@ -5596,22 +5563,6 @@ def build_app() -> gr.Blocks:
             experiment_workflow_tabs_for_ui,
             inputs=[workspace_mode_state, experiment_project_state, experiment_project_connection_state],
             outputs=experiment_workflow_tabs,
-        )
-        experiment_questions_tab.select(
-            refresh_experiment_project_questions_for_ui,
-            inputs=[experiment_project_state],
-            outputs=[experiment_questions_member, experiment_project_questions_table, experiment_project_questions_status],
-        )
-        experiment_questions_member.change(
-            load_experiment_project_questions_for_ui,
-            inputs=[experiment_project_state, experiment_questions_member],
-            outputs=[experiment_project_questions_table, experiment_project_questions_status],
-            show_progress="hidden",
-        )
-        import_experiment_project_questions_button.click(
-            import_experiment_project_questions_for_ui,
-            inputs=[experiment_project_question_file, experiment_project_state, experiment_questions_member],
-            outputs=[experiment_project_state, experiment_project_questions_table, experiment_project_questions_status, experiment_project_question_file],
         )
         experiment_project_test_tab.select(
             load_experiment_project_setup_for_ui,

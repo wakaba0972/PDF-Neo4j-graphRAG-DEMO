@@ -49,7 +49,6 @@ def create_experiment_project(
         "created_at": now,
         "updated_at": now,
         "members": [],
-        "questions_by_project": {},
         "groups": [],
         "results": [],
         "summary_rows": [],
@@ -73,7 +72,6 @@ def load_experiment_project(
         raise ValueError("找不到指定實驗專案")
     data = read_json(path)
     data.setdefault("members", [])
-    data.setdefault("questions_by_project", {})
     data.setdefault("groups", [])
     data.setdefault("results", [])
     return data

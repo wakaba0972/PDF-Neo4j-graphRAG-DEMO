@@ -54,7 +54,7 @@ def test_delete_experiment_project_ui_clears_selected_workspace(monkeypatch) -> 
     result = ui.delete_experiment_project_for_ui("a")
 
     assert deleted == ["a"]
-    assert len(result) == 11 + ui.EXPERIMENT_GROUP_LIMIT * 8 + 9
+    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * 8 + 9
     assert result[0]["choices"] == [("實驗 B", "b")]
     assert result[0]["value"] is None
     assert result[1] == {}
@@ -63,8 +63,7 @@ def test_delete_experiment_project_ui_clears_selected_workspace(monkeypatch) -> 
     assert "實驗專案「實驗 A」" in result[4]
     assert "不受影響" in result[4]
     assert result[5] == [] and result[6] == {}
-    assert result[9] == []
-    assert result[107] == "實驗組設定會自動儲存。"
+    assert result[104] == "實驗組設定會自動儲存。"
     assert result[-1]["value"] == "開始評測"
     assert result[-1]["interactive"] is False
 
@@ -76,13 +75,13 @@ def test_cancel_experiment_project_deletion_does_not_clear_or_delete(monkeypatch
     result = ui.delete_experiment_project_for_ui(True)
 
     assert deleted == []
-    assert len(result) == 11 + ui.EXPERIMENT_GROUP_LIMIT * 8 + 9
+    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * 8 + 9
     assert all(
         isinstance(value, dict) and value.get("__type__") == "update"
-        for index, value in enumerate(result) if index not in {4, 107}
+        for index, value in enumerate(result) if index not in {4, 104}
     )
     assert "沒有刪除任何資料" in result[4]
-    assert "沒有刪除任何資料" in result[107]
+    assert "沒有刪除任何資料" in result[104]
 
 
 def test_experiment_project_delete_button_requires_confirmation() -> None:
@@ -368,7 +367,8 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     app = build_app()
     protected_labels = {
         "1-2 PDF 與參數", "1-3 建圖",
-        "1-4 問答測試", "1-5 自動問答測試", "1-6 單一專案實驗",
+        "1-4 問答測試", "1-5 自動問答測試", "1-6 匯入問題集",
+        "1-7 單一專案實驗",
     }
     tabs = [
         component for component in app.config["components"]
@@ -378,12 +378,12 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
         component for component in app.config["components"]
         if component.get("props", {}).get("label") in {
             "2-0 實驗專案", "2-1 成員專案連線測試",
-            "2-2 問題集準備", "2-3 自動實驗測試",
+            "2-3 自動實驗測試",
         }
     ]
 
-    assert len(tabs) == 5
-    assert len(experiment_tabs) == 4
+    assert len(tabs) == 6
+    assert len(experiment_tabs) == 3
     experiment_tab_states = {
         tab["props"]["label"]: tab["props"]["interactive"]
         for tab in experiment_tabs
@@ -391,7 +391,6 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     assert experiment_tab_states == {
         "2-0 實驗專案": False,
         "2-1 成員專案連線測試": False,
-        "2-2 問題集準備": False,
         "2-3 自動實驗測試": False,
     }
     assert not any(
@@ -419,34 +418,34 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     )[0]["interactive"] is True
     assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("project", False, llm, embedding, "experiment"))
     experiment = {"experiment_project_id": "exp-1", "members": ["p1", "p2"]}
-    assert [update["interactive"] for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {})] == [True, False, False]
-    assert [update["interactive"] for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {"p1": True, "p2": False})] == [True, False, False]
-    assert [update["interactive"] for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {"p1": True, "p2": True})] == [True, True, True]
+    assert [update["interactive"] for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {})] == [True, False]
+    assert [update["interactive"] for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {"p1": True, "p2": False})] == [True, False]
+    assert [update["interactive"] for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {"p1": True, "p2": True})] == [True, True]
     assert all(
         update["interactive"] is False
         for update in ui.experiment_workflow_tabs_for_ui("single", experiment, {"p1": True, "p2": True})
     )
-    mode, statuses, connection_tab, questions_tab, test_tab = ui.activate_workspace_for_ui("experiment", {"name": "試驗"})
+    mode, statuses, connection_tab, test_tab = ui.activate_workspace_for_ui("experiment", {"name": "試驗"})
     assert mode == "experiment" and statuses == {}
     assert connection_tab["interactive"] is False
-    assert questions_tab["interactive"] is False and test_tab["interactive"] is False
-    mode, statuses, connection_tab, questions_tab, test_tab = ui.activate_workspace_for_ui(
+    assert test_tab["interactive"] is False
+    mode, statuses, connection_tab, test_tab = ui.activate_workspace_for_ui(
         "experiment", experiment, "experiment", {"p1": True, "p2": True},
     )
     assert mode == "experiment" and statuses == {"p1": True, "p2": True}
     assert connection_tab["interactive"] is True
-    assert questions_tab["interactive"] is True and test_tab["interactive"] is True
-    statuses, connection_tab, questions_tab, test_tab = ui.reset_experiment_project_connection_for_ui(experiment)
+    assert test_tab["interactive"] is True
+    statuses, connection_tab, test_tab = ui.reset_experiment_project_connection_for_ui(experiment)
     assert statuses == {}
     assert connection_tab["interactive"] is True
-    assert questions_tab["interactive"] is False and test_tab["interactive"] is False
+    assert test_tab["interactive"] is False
     page_labels = {
         component.get("props", {}).get("label") for component in app.config["components"]
     }
     assert {
         "1-0 專案設定", "1-1 連線設定", "1-2 PDF 與參數", "1-3 建圖",
-        "1-4 問答測試", "1-5 自動問答測試", "1-6 單一專案實驗",
-        "2-0 實驗專案", "2-1 成員專案連線測試", "2-2 問題集準備",
+        "1-4 問答測試", "1-5 自動問答測試", "1-6 匯入問題集", "1-7 單一專案實驗",
+        "2-0 實驗專案", "2-1 成員專案連線測試",
         "2-3 自動實驗測試",
     } <= page_labels
     gate_dependencies = [
@@ -454,13 +453,13 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
         if str(dependency.get("api_name", "")).startswith("workflow_tabs_for_ui")
     ]
     assert len(gate_dependencies) >= 5
-    assert all(len(dependency["outputs"]) == 6 for dependency in gate_dependencies)
+    assert all(len(dependency["outputs"]) == 7 for dependency in gate_dependencies)
     experiment_gate_dependencies = [
         dependency for dependency in app.config["dependencies"]
         if str(dependency.get("api_name", "")).startswith("experiment_workflow_tabs_for_ui")
     ]
     assert len(experiment_gate_dependencies) >= 2
-    assert all(len(dependency["outputs"]) == 3 for dependency in experiment_gate_dependencies)
+    assert all(len(dependency["outputs"]) == 2 for dependency in experiment_gate_dependencies)
 
 
 
@@ -629,11 +628,12 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     ]
     assert labels.index("1-0 專案設定") < labels.index("1-1 連線設定")
     assert labels.index("1-4 問答測試") < labels.index("1-5 自動問答測試")
-    assert labels.index("1-5 自動問答測試") < labels.index("1-6 單一專案實驗")
-    assert labels.index("1-6 單一專案實驗") < labels.index("2-0 實驗專案")
+    assert labels.index("1-5 自動問答測試") < labels.index("1-6 匯入問題集")
+    assert labels.index("1-6 匯入問題集") < labels.index("1-7 單一專案實驗")
+    assert labels.index("1-7 單一專案實驗") < labels.index("2-0 實驗專案")
     assert labels.index("2-0 實驗專案") < labels.index("2-1 成員專案連線測試")
-    assert labels.index("2-1 成員專案連線測試") < labels.index("2-2 問題集準備")
-    assert labels.index("2-2 問題集準備") < labels.index("2-3 自動實驗測試")
+    assert "2-2 問題集準備" not in labels
+    assert labels.index("2-1 成員專案連線測試") < labels.index("2-3 自動實驗測試")
     components = app.config["components"]
     question_table_index = next(
         index for index, component in enumerate(components)
@@ -818,7 +818,7 @@ def test_global_api_credentials_exist_only_on_page_zero() -> None:
     assert not any("API Key" in str(label) for label in labels if label not in {
         "0-1 API Key 設定", "OpenAI API Key",
     })
-    assert {"1-0 專案設定", "1-1 連線設定", "1-6 單一專案實驗",
+    assert {"1-0 專案設定", "1-1 連線設定", "1-6 匯入問題集", "1-7 單一專案實驗",
             "2-0 實驗專案", "2-3 自動實驗測試"} <= set(labels)
 
 
@@ -1632,7 +1632,7 @@ def test_import_empty_file_preserves_existing_questions(tmp_path, monkeypatch) -
     assert updated == evaluation
 
 
-def test_import_experiment_questions_supports_question_set_fields(tmp_path, monkeypatch) -> None:
+def test_project_question_import_is_saved_to_project_and_keeps_existing_results(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     project = ui.create_project("experiment-import")
     question_file = tmp_path / "experiment.json"
@@ -1649,21 +1649,19 @@ def test_import_experiment_questions_supports_question_set_fields(tmp_path, monk
         "groups": [{"name": "existing"}], "results": [{"passed": True}],
         "summary_rows": [["existing", 1]], "detail_rows": [["existing", 1]],
     }})
-    status, rows, questions, results, summaries, details, experiment_status, pending = ui.import_experiment_questions_for_ui(
-        str(question_file), project_id=project["project_id"]
+    status, rows, file_update = ui.import_project_question_set_for_ui(
+        project["project_id"], str(question_file),
     )
 
-    assert status.startswith("✅ 已匯入 1 道")
+    assert status.startswith("✅ 已匯入並保存 1 道")
     assert rows == [[3, "問題？", "答案", "manual.pdf：1, 2", "manual.pdf：3, 4"]]
+    assert file_update == {"value": None, "__type__": "update"}
+    persisted = ui.load_project(project["project_id"])
+    questions = persisted["evaluation"]["questions"]
     assert questions[0]["answer_source_pages"] == [3, 4]
-    assert results == summaries == details == []
-    assert experiment_status == status
-    persisted = ui.load_project(project["project_id"])["experiment"]
-    assert persisted["questions"] == questions
-    assert persisted["groups"] == [{"name": "existing"}]
-    assert persisted["results"] == []
-    assert persisted["pending_answers"] == []
-    assert pending == []
+    assert persisted["experiment"]["groups"] == [{"name": "existing"}]
+    assert persisted["experiment"]["results"] == [{"passed": True}]
+    assert ui.load_project_summary(project["project_id"])["question_count"] == 1
 
 
 def test_import_and_roundtrip_cross_document_provenance(tmp_path) -> None:
@@ -1714,20 +1712,20 @@ def test_import_and_roundtrip_cross_document_provenance(tmp_path) -> None:
     assert ui._questions_from_file(str(csv_file))[0]["answer_sources"] == [sources[1]]
 
 
-def test_experiment_import_without_file_preserves_current_question_set() -> None:
+def test_load_project_question_set_shows_existing_project_questions(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("project-question-set")
     current = [{
         "number": 1, "question": "保留題目", "expected_answer": "答案",
         "question_source_pages": [1], "answer_source_pages": [2],
         "document": "manual.pdf",
     }]
 
-    status, rows, questions, results, summaries, details, _experiment_status, pending = ui.import_experiment_questions_for_ui(None, current)
+    ui.save_project(project["project_id"], {"evaluation": {"questions": current}})
+    status, rows = ui.load_project_question_set_for_ui(project["project_id"])
 
-    assert status == "❌ 請選擇 JSON 或 CSV 題目集。"
+    assert status == "目前專案題目集：1 題。"
     assert rows == [[1, "保留題目", "答案", "manual.pdf：1", "manual.pdf：2"]]
-    assert questions == current
-    assert results == summaries == details == []
-    assert pending == []
 
 
 def test_add_experiment_group_for_ui_stores_selected_settings() -> None:
@@ -2121,7 +2119,8 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         item for item in components
         if item.get("props", {}).get("value") == "#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）"
     )
-    import_button = next(item for item in components if item.get("props", {}).get("value") == "匯入實驗題目集")
+    assert not any(item.get("props", {}).get("value") == "匯入實驗題目集" for item in components)
+    import_button = next(item for item in components if item.get("props", {}).get("value") == "匯入此專案題目集")
     question_table = next(
         item for item in components
         if item.get("props", {}).get("headers")
@@ -2136,6 +2135,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     summary_heading = next(
         item for item in components if item.get("props", {}).get("value") == "#### 實驗組摘要"
     )
+    assert import_button["id"] < question_table["id"]
     assert question_table["id"] < answer_heading["id"] < judge_heading["id"] < summary_heading["id"]
     evaluate_button = next(item for item in components if item.get("props", {}).get("value") == "開始評測")
     assert evaluate_button["props"]["interactive"] is False
@@ -3323,14 +3323,14 @@ def test_experiment_project_members_require_existing_built_graphs(tmp_path, monk
     assert status.startswith("✅")
     assert state["members"] == [built["project_id"]]
     assert rows == [[
-        "已建圖車型", built["project_id"], "未知", 1, 1, 1500, 200, "粗略",
+        "已建圖車型", built["project_id"], "未知", 1, 1, 0, 1500, 200, "粗略",
         built["neo4j_database"],
     ]]
     summary_file = tmp_path / "data" / "projects" / built["project_id"] / "summary.json"
     assert summary_file.is_file()
 
 
-def test_import_experiment_project_questions_saves_per_member(tmp_path, monkeypatch):
+def test_legacy_experiment_question_sets_move_to_each_member_project(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     member = ui.create_project("車型 A")
     ui.save_project(member["project_id"], {"graph_state": {"neo4j_imported": True}})
@@ -3338,22 +3338,23 @@ def test_import_experiment_project_questions_saves_per_member(tmp_path, monkeypa
     experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
         "members": [member["project_id"]],
     })
-    question_file = tmp_path / "questions.json"
-    question_file.write_text(json.dumps([{
+    question = {
         "number": 1, "question": "Q", "expected_answer": "A",
         "question_sources": [{"document": "guide.pdf", "pages": [1, 2]}],
         "answer_sources": [{"document": "guide.pdf", "pages": [3]}],
-    }]), encoding="utf-8")
+    }
+    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
+        "questions_by_project": {member["project_id"]: [question]},
+    })
 
-    updated, rows, status, file_update = ui.import_experiment_project_questions_for_ui(
-        str(question_file), experiment, member["project_id"],
+    loaded, rows, _choices, status = ui.load_experiment_project_for_ui(
+        experiment["experiment_project_id"],
     )
 
     assert status.startswith("✅")
     assert len(rows) == 1
-    assert len(updated["questions_by_project"][member["project_id"]]) == 1
-    assert file_update == {"value": None, "__type__": "update"}
-    assert not ui.load_project(member["project_id"]).get("experiment")
+    assert ui.load_project(member["project_id"])["evaluation"]["questions"] == [question]
+    assert rows[0][5] == 1
 
 
 def test_experiment_project_banner_uses_experiment_name():
@@ -3457,14 +3458,21 @@ def test_experiment_project_page_uses_inline_group_layout_and_start_evaluation_b
 def test_multi_project_experiment_runs_each_projects_own_database(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     members = [ui.create_project("Model A"), ui.create_project("Model B")]
-    for member in members:
-        ui.save_project(member["project_id"], {"graph_state": {"neo4j_imported": True}})
+    own_questions = {}
+    for index, member in enumerate(members, start=1):
+        own_questions[member["project_id"]] = [{
+            "number": 1, "question": f"OWN Q {index}", "expected_answer": "A",
+        }]
+        ui.save_project(member["project_id"], {
+            "graph_state": {"neo4j_imported": True},
+            "evaluation": {"questions": own_questions[member["project_id"]]},
+        })
     experiment = ui.create_experiment_project("cross-model")
     experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
         "members": [member["project_id"] for member in members],
         "questions_by_project": {
             member["project_id"]: [{
-                "number": 1, "question": f"Q {index}", "expected_answer": "A",
+                "number": 1, "question": f"STALE Q {index}", "expected_answer": "A",
             }]
             for index, member in enumerate(members, start=1)
         },
@@ -3496,6 +3504,7 @@ def test_multi_project_experiment_runs_each_projects_own_database(tmp_path, monk
 
     assert status.startswith("✅ 已完成 1 個實驗組")
     assert [call[0] for call in calls] == [member["project_id"] for member in members]
+    assert [call[1] for call in calls] == [own_questions[member["project_id"]] for member in members]
     assert [call[2] for call in calls] == [member["neo4j_database"] for member in members]
     assert all(call[3] is False for call in calls)
     assert summaries[0][5:8] == [2, "1 / 2", "50.0%"]

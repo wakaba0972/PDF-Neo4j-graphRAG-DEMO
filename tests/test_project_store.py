@@ -51,6 +51,7 @@ def test_project_summary_file_tracks_creator_documents_and_build_settings(tmp_pa
     project = create_project("Zhao | s25", tmp_path, actor="Zhao")
     save_project(project["project_id"], {
         "settings": {"chunk_size": 1500, "chunk_overlap": 200, "schema_granularity": "詳細"},
+        "evaluation": {"questions": [{"number": 1}, {"number": 2}]},
         "documents_meta": [{"file_name": "guide.pdf"}, {"file_name": "parts.pdf"}],
         "chunks": [{"number": 1}, {"number": 2}, {"number": 3}],
         "graph_state": {
@@ -71,6 +72,7 @@ def test_project_summary_file_tracks_creator_documents_and_build_settings(tmp_pa
     assert summary["created_by"] == "Zhao"
     assert summary["document_count"] == 2
     assert summary["chunk_count"] == 3
+    assert summary["question_count"] == 2
     assert summary["chunk_size"] == 1500
     assert summary["chunk_overlap"] == 200
     assert summary["schema_granularity"] == "詳細"
