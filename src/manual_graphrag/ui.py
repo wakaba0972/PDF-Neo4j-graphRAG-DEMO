@@ -864,7 +864,7 @@ def _create_experiment_strategy_parameter_controls() -> list[Any]:
     controls = []
     for _strategy_id, name, spec in _strategy_parameter_entries():
         label = spec.label or name.replace("_", " ").title()
-        common = {"label": label, "show_label": False, "visible": False, "scale": 2}
+        common = {"label": label, "show_label": True, "visible": False, "scale": 2}
         if spec.choices:
             control = gr.Dropdown(choices=list(spec.choices), value=spec.default, **common)
         elif spec.value_type is bool:
@@ -5386,32 +5386,31 @@ def build_app() -> gr.Blocks:
             )
             experiment_question_status = gr.Markdown("尚未載入專案題目集。")
             gr.Markdown("#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）")
-            gr.Markdown("實驗組名稱　回答模型／推理強度　檢索模式　Top K　Reranker（停用／舊版／LLM）　證據擴展（停用／舊版／V2）")
             experiment_group_rows: list[list[Any]] = []
             for row_index in range(EXPERIMENT_GROUP_LIMIT):
                 with gr.Row():
-                    group_name = gr.Textbox(label="實驗組", show_label=False, placeholder=f"實驗組 {row_index + 1}", visible=False, scale=2)
+                    group_name = gr.Textbox(label="實驗組名稱", placeholder=f"實驗組 {row_index + 1}", visible=False, scale=2)
                     group_model = gr.Dropdown(
                         choices=llm_choices, value=None, allow_custom_value=False,
-                        label="回答模型", show_label=False, visible=False, scale=2,
+                        label="回答模型", visible=False, scale=2,
                     )
                     group_answer_effort = gr.Dropdown(
                         choices=list(GPT_6_LUNA_REASONING_EFFORTS),
                         value=DEFAULT_REASONING_EFFORT, label="回答推理強度",
-                        show_label=False, visible=False, scale=1,
+                        visible=False, scale=1,
                     )
                     group_retrieval = gr.Dropdown(
                         choices=strategy_choices(), value="混合檢索",
-                        label="檢索模式", show_label=False, visible=False, scale=2,
+                        label="檢索策略", visible=False, scale=2,
                     )
-                    group_top_k = gr.Number(value=8, minimum=1, maximum=50, precision=0, label="Top K", show_label=False, visible=False, scale=1)
+                    group_top_k = gr.Number(value=8, minimum=1, maximum=50, precision=0, label="Top K", visible=False, scale=1)
                     group_reranker = gr.Dropdown(
                         choices=list(RERANKER_MODES), value="停用", label="Reranker",
-                        show_label=False, visible=False, scale=2,
+                        visible=False, scale=2,
                     )
                     group_expansion = gr.Dropdown(
                         choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
-                        label="證據擴展", show_label=False, visible=False, scale=2,
+                        label="證據擴展", visible=False, scale=2,
                     )
                     group_strategy_params = gr.State({})
                     group_strategy_parameter_controls = _create_experiment_strategy_parameter_controls()
@@ -5558,38 +5557,37 @@ def build_app() -> gr.Blocks:
         with gr.Tab("2-3 自動實驗測試", interactive=False) as experiment_project_test_tab:
             gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，直接使用各專案在 1-6 匯入的題目集及自己的 Neo4j Database 執行。")
             gr.Markdown("#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）")
-            gr.Markdown("實驗組名稱　回答模型／推理強度　檢索策略　Top K　Reranker　證據擴展")
             experiment_project_group_rows: list[list[Any]] = []
             for row_index in range(EXPERIMENT_GROUP_LIMIT):
                 with gr.Row():
                     group_name = gr.Textbox(
-                        label="實驗組", show_label=False,
+                        label="實驗組名稱",
                         placeholder=f"實驗組 {row_index + 1}", visible=False, scale=2,
                     )
                     group_model = gr.Dropdown(
                         choices=experiment_llm_choices, value=None, allow_custom_value=False,
-                        label="回答模型", show_label=False, visible=False, scale=2,
+                        label="回答模型", visible=False, scale=2,
                     )
                     group_answer_effort = gr.Dropdown(
                         choices=list(GPT_6_LUNA_REASONING_EFFORTS),
                         value=DEFAULT_REASONING_EFFORT, label="回答推理強度",
-                        show_label=False, visible=False, scale=1,
+                        visible=False, scale=1,
                     )
                     group_retrieval = gr.Dropdown(
                         choices=strategy_choices(), value="混合檢索",
-                        label="檢索策略", show_label=False, visible=False, scale=2,
+                        label="檢索策略", visible=False, scale=2,
                     )
                     group_top_k = gr.Number(
                         value=8, minimum=1, maximum=50, precision=0, label="Top K",
-                        show_label=False, visible=False, scale=1,
+                        visible=False, scale=1,
                     )
                     group_reranker = gr.Dropdown(
                         choices=list(RERANKER_MODES), value="停用", label="Reranker",
-                        show_label=False, visible=False, scale=2,
+                        visible=False, scale=2,
                     )
                     group_expansion = gr.Dropdown(
                         choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
-                        label="證據擴展", show_label=False, visible=False, scale=2,
+                        label="證據擴展", visible=False, scale=2,
                     )
                     group_strategy_params = gr.State({})
                     group_strategy_parameter_controls = _create_experiment_strategy_parameter_controls()

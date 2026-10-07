@@ -3805,6 +3805,19 @@ def test_experiment_project_page_uses_inline_group_layout_and_start_evaluation_b
         == "#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）"
     ]
     assert len(headings) == 2
+    visible_component_labels = {
+        item.get("props", {}).get("label")
+        for item in components
+        if item.get("props", {}).get("show_label") is True
+    }
+    assert {
+        "實驗組名稱", "回答模型", "回答推理強度", "檢索策略", "Top K",
+        "Reranker", "證據擴展", "有效搜尋比例",
+    } <= visible_component_labels
+    assert not any(
+        str(item.get("props", {}).get("value", "")).startswith("實驗組名稱　")
+        for item in components
+    )
     buttons = [
         item for item in components
         if item.get("props", {}).get("value") == "開始評測"
