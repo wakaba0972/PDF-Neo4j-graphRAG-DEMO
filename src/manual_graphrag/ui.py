@@ -2862,6 +2862,16 @@ def generate_evaluation_answers_for_ui(
     except (TypeError, ValueError, OverflowError) as exc:
         return f"❌ {exc}", evaluation, []
     _, _, reranker_mode, expansion_mode = retrieval_config.ui_values()
+    # Recall@10 requires fetching at least ten candidates, even when the
+    # selected answer Top K is lower. Keep the internal candidate budget in
+    # sync with that effective value before passing explicit strategy params;
+    # otherwise the downstream config validator rejects candidate_top_k < 10.
+    answer_top_k = max(int(top_k), 10)
+    answer_strategy_params = dict(retrieval_config.params)
+    if "candidate_top_k" in answer_strategy_params:
+        answer_strategy_params["candidate_top_k"] = max(
+            answer_strategy_params["candidate_top_k"], answer_top_k,
+        )
     try:
         concurrency = int(max_concurrent_requests)
         if concurrency < 1:
@@ -2875,12 +2885,12 @@ def generate_evaluation_answers_for_ui(
         status, actual, evidence_rows = answer_question_for_ui(
             model_endpoint, api_key, embedding_api_base, embedding_api_key,
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
-            model, item["question"], retrieval_mode, max(int(top_k), 10),
+            model, item["question"], retrieval_mode, answer_top_k,
             reranker_mode, expansion_mode,
             **_reasoning_effort_kwargs(model, answer_reasoning_effort),
             reranker_mode=reranker_mode,
             evidence_expansion_mode=expansion_mode,
-            strategy_params=retrieval_config.params,
+            strategy_params=answer_strategy_params,
         )
         rank = _retrieval_rank(item, evidence_rows, document_ids_by_name)
         return {

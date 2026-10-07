@@ -1451,6 +1451,8 @@ def test_generate_answers_defers_display_and_evaluation(monkeypatch) -> None:
     assert pending["results"] == []
     assert pending["pending_answers"][0]["actual_answer"] == "隱藏的回答"
     assert len(answer_calls) == 1
+    assert answer_calls[0][0][11] == 10
+    assert answer_calls[0][1]["strategy_params"]["candidate_top_k"] == 10
     assert captured["evaluation"] == pending
 
 
