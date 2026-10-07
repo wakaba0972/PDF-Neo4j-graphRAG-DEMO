@@ -7,6 +7,11 @@ from neo4j.exceptions import SessionExpired
 
 from manual_graphrag import neo4j_service
 from manual_graphrag.retrieval import RetrievalConfig
+from manual_graphrag.retrieval_strategies.hybrid import (
+    _escape_fulltext_query,
+    _format_hybrid_record,
+)
+from manual_graphrag.retrieval_strategies import hybrid, vector
 
 
 def _retrieval_config(
@@ -322,13 +327,13 @@ def test_vector_index_name_uses_embedding_dimensions() -> None:
 
 
 def test_escape_fulltext_query_escapes_lucene_syntax() -> None:
-    assert neo4j_service._escape_fulltext_query("E01 +(重試):A/B") == (
+    assert _escape_fulltext_query("E01 +(重試):A/B") == (
         r"E01 \+\(重試\)\:A\/B"
     )
 
 
 def test_format_hybrid_record_preserves_evidence_and_official_score() -> None:
-    item = neo4j_service._format_hybrid_record({
+    item = _format_hybrid_record({
         "evidence": _evidence("both", 0.0),
         "score": 0.85,
     })
@@ -425,7 +430,7 @@ def test_missing_dimension_index_replaces_upstream_attribute_error(monkeypatch) 
             raise AttributeError("'HybridCypherRetriever' object has no attribute 'index_name'")
 
     monkeypatch.setattr(
-        neo4j_service, "HybridCypherRetriever", MissingIndexRetriever
+        hybrid, "HybridCypherRetriever", MissingIndexRetriever
     )
 
     with pytest.raises(ValueError) as error:
@@ -458,7 +463,7 @@ def test_search_dimension_error_instructs_user_to_reimport(monkeypatch) -> None:
                 "but the provided vector has dimension 1536"
             )
 
-    monkeypatch.setattr(neo4j_service, "HybridCypherRetriever", BrokenRetriever)
+    monkeypatch.setattr(hybrid, "HybridCypherRetriever", BrokenRetriever)
 
     with pytest.raises(ValueError, match="重新執行.*Embedding 並匯入 Neo4j"):
         neo4j_service.search_graph_evidence(
@@ -475,7 +480,7 @@ def test_search_graph_evidence_uses_official_hybrid_retriever(monkeypatch) -> No
         lambda *args, **kwargs: SearchDriver(session),
     )
     monkeypatch.setattr(
-        neo4j_service, "HybridCypherRetriever", FakeOfficialRetriever
+        hybrid, "HybridCypherRetriever", FakeOfficialRetriever
     )
 
     results = neo4j_service.search_graph_evidence(
@@ -511,10 +516,10 @@ def test_basic_vector_retrieval_uses_vector_cypher_retriever(monkeypatch) -> Non
         lambda *args, **kwargs: SearchDriver(session),
     )
     monkeypatch.setattr(
-        neo4j_service, "VectorCypherRetriever", FakeOfficialVectorRetriever
+        vector, "VectorCypherRetriever", FakeOfficialVectorRetriever
     )
     monkeypatch.setattr(
-        neo4j_service, "HybridCypherRetriever",
+        hybrid, "HybridCypherRetriever",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("混合檢索不應執行")),
     )
 
@@ -633,7 +638,7 @@ def test_graph_expansion_fetches_new_source_chunks_once(monkeypatch) -> None:
         lambda *args, **kwargs: SearchDriver(session),
     )
     monkeypatch.setattr(
-        neo4j_service, "HybridCypherRetriever", ExpansionRetriever
+        hybrid, "HybridCypherRetriever", ExpansionRetriever
     )
 
     results = neo4j_service.search_graph_evidence(
@@ -676,7 +681,7 @@ def test_graph_expansion_can_be_disabled(monkeypatch) -> None:
         lambda *args, **kwargs: SearchDriver(session),
     )
     monkeypatch.setattr(
-        neo4j_service, "HybridCypherRetriever", ExpansionRetriever
+        hybrid, "HybridCypherRetriever", ExpansionRetriever
     )
 
     results = neo4j_service.search_graph_evidence(
@@ -698,7 +703,7 @@ def test_legacy_graph_expansion_uses_name_and_chunk_matching(monkeypatch) -> Non
         "driver",
         lambda *args, **kwargs: SearchDriver(session),
     )
-    monkeypatch.setattr(neo4j_service, "HybridCypherRetriever", ExpansionRetriever)
+    monkeypatch.setattr(hybrid, "HybridCypherRetriever", ExpansionRetriever)
 
     results = neo4j_service.search_graph_evidence(
         "bolt://db", "neo4j", "user", "password", "run-1",

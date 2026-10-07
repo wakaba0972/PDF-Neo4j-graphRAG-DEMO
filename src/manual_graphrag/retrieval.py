@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from importlib import import_module
 from typing import Any, Protocol
 
 
@@ -47,36 +48,66 @@ class RetrievalStrategySpec:
             self.parameters[name].validate(name, value, top_k)
 
 
-STRATEGY_SPECS: dict[str, RetrievalStrategySpec] = {}
-STRATEGY_LABELS: dict[str, str] = {}
-LABEL_STRATEGY_IDS: dict[str, str] = {}
+class RetrievalStrategyRegistry:
+    """Single registry for strategy metadata and its lazily-loaded implementation."""
+
+    def __init__(self) -> None:
+        self.specs: dict[str, RetrievalStrategySpec] = {}
+        self.labels: dict[str, str] = {}
+        self.ids_by_label: dict[str, str] = {}
+        self._implementations: dict[str, tuple[str, str]] = {}
+        self._loaded: dict[str, Any] = {}
+
+    def register(
+        self, spec: RetrievalStrategySpec, module_path: str, class_name: str,
+    ) -> None:
+        if not spec.strategy_id or not spec.label:
+            raise ValueError("檢索策略必須設定穩定 ID 與顯示名稱")
+        if spec.strategy_id in self.specs or spec.label in self.ids_by_label:
+            raise ValueError(f"檢索策略 ID 或顯示名稱重複：{spec.strategy_id}")
+        if not module_path or not class_name:
+            raise ValueError("檢索策略必須指定 implementation module 與 class")
+        self.specs[spec.strategy_id] = spec
+        self.labels[spec.strategy_id] = spec.label
+        self.ids_by_label[spec.label] = spec.strategy_id
+        self._implementations[spec.strategy_id] = (module_path, class_name)
+
+    def get_spec(self, strategy_id: str) -> RetrievalStrategySpec:
+        try:
+            return self.specs[strategy_id]
+        except KeyError as exc:
+            raise ValueError(f"不支援的檢索策略 ID：{strategy_id}") from exc
+
+    def get(self, strategy_id: str) -> Any:
+        if strategy_id in self._loaded:
+            return self._loaded[strategy_id]
+        try:
+            module_path, class_name = self._implementations[strategy_id]
+        except KeyError as exc:
+            raise ValueError(f"沒有註冊檢索策略：{strategy_id}") from exc
+        implementation_class = getattr(import_module(module_path), class_name)
+        strategy = implementation_class()
+        if getattr(strategy, "strategy_id", None) != strategy_id:
+            raise ValueError(f"檢索策略實作 ID 與註冊 ID 不符：{strategy_id}")
+        self._loaded[strategy_id] = strategy
+        return strategy
+
+    def ids(self) -> tuple[str, ...]:
+        return tuple(self.specs)
 
 
-def register_retrieval_strategy_spec(spec: RetrievalStrategySpec) -> None:
-    if not spec.strategy_id or not spec.label:
-        raise ValueError("檢索策略必須設定穩定 ID 與顯示名稱")
-    if spec.strategy_id in STRATEGY_SPECS or spec.label in LABEL_STRATEGY_IDS:
-        raise ValueError(f"檢索策略 ID 或顯示名稱重複：{spec.strategy_id}")
-    STRATEGY_SPECS[spec.strategy_id] = spec
-    STRATEGY_LABELS[spec.strategy_id] = spec.label
-    LABEL_STRATEGY_IDS[spec.label] = spec.strategy_id
+RETRIEVAL_STRATEGIES = RetrievalStrategyRegistry()
+STRATEGY_SPECS = RETRIEVAL_STRATEGIES.specs
+STRATEGY_LABELS = RETRIEVAL_STRATEGIES.labels
+LABEL_STRATEGY_IDS = RETRIEVAL_STRATEGIES.ids_by_label
 
 
-_COMMON_PARAMETERS = {
-    "candidate_top_k": RetrievalParameterSpec(
-        int, minimum=1, maximum=50, minimum_is_top_k=True,
-    ),
-    "effective_search_ratio": RetrievalParameterSpec(int, default=3, minimum=1, maximum=10),
-}
-register_retrieval_strategy_spec(RetrievalStrategySpec(
-    "vector", "基本向量檢索", dict(_COMMON_PARAMETERS),
-))
-register_retrieval_strategy_spec(RetrievalStrategySpec(
-    "hybrid", "混合檢索", {
-        **_COMMON_PARAMETERS,
-        "ranker": RetrievalParameterSpec(str, default="naive", choices=("naive",)),
-    },
-))
+def register_retrieval_strategy(
+    spec: RetrievalStrategySpec, module_path: str, class_name: str,
+) -> None:
+    RETRIEVAL_STRATEGIES.register(spec, module_path, class_name)
+
+
 RERANKER_IDS = {"disabled", "lexical", "llm"}
 EXPANSION_IDS = {"disabled", "legacy_name_chunk", "graph_v2"}
 RERANKER_LABEL_IDS = {
@@ -92,21 +123,21 @@ EXPANSION_ID_LABELS = {value: key for key, value in EXPANSION_LABEL_IDS.items()}
 
 def strategy_id_from_label(label: str) -> str:
     try:
-        return LABEL_STRATEGY_IDS[label]
+        return RETRIEVAL_STRATEGIES.ids_by_label[label]
     except KeyError as exc:
         raise ValueError(f"不支援的檢索策略顯示名稱：{label}") from exc
 
 
 def strategy_label(strategy_id: str) -> str:
     try:
-        return STRATEGY_LABELS[strategy_id]
+        return RETRIEVAL_STRATEGIES.labels[strategy_id]
     except KeyError as exc:
         raise ValueError(f"不支援的檢索策略 ID：{strategy_id}") from exc
 
 
 def strategy_choices() -> list[str]:
     """UI labels in registration order; views should not maintain duplicates."""
-    return [spec.label for spec in STRATEGY_SPECS.values()]
+    return [spec.label for spec in RETRIEVAL_STRATEGIES.specs.values()]
 
 
 @dataclass(frozen=True)
@@ -124,9 +155,7 @@ class RetrievalConfig:
     )
 
     def validated(self) -> RetrievalConfig:
-        strategy = STRATEGY_SPECS.get(self.strategy_id)
-        if strategy is None:
-            raise ValueError(f"不支援的檢索策略 ID：{self.strategy_id}")
+        strategy = RETRIEVAL_STRATEGIES.get_spec(self.strategy_id)
         if isinstance(self.top_k, bool) or not isinstance(self.top_k, int):
             raise ValueError("Top K 必須是整數")
         if not 1 <= self.top_k <= 50:
@@ -185,7 +214,7 @@ class RetrievalConfig:
         except KeyError as exc:
             raise ValueError(f"檢索設定選項無效：{exc.args[0]}") from exc
         selected_top_k = int(top_k)
-        strategy = STRATEGY_SPECS[strategy_id]
+        strategy = RETRIEVAL_STRATEGIES.get_spec(strategy_id)
         params: dict[str, Any] = {}
         if "candidate_top_k" in strategy.parameters:
             params["candidate_top_k"] = (
@@ -255,21 +284,6 @@ class RetrievalStrategy(Protocol):
     ) -> list[dict[str, Any]]: ...
 
 
-class RetrievalStrategyRegistry:
-    def __init__(self) -> None:
-        self._strategies: dict[str, RetrievalStrategy] = {}
+from .retrieval_strategies.registry import register_builtin_strategies
 
-    def register(self, strategy: RetrievalStrategy) -> None:
-        strategy_label(strategy.strategy_id)
-        if strategy.strategy_id in self._strategies:
-            raise ValueError(f"檢索策略已註冊：{strategy.strategy_id}")
-        self._strategies[strategy.strategy_id] = strategy
-
-    def get(self, strategy_id: str) -> RetrievalStrategy:
-        try:
-            return self._strategies[strategy_id]
-        except KeyError as exc:
-            raise ValueError(f"沒有註冊檢索策略：{strategy_id}") from exc
-
-    def ids(self) -> tuple[str, ...]:
-        return tuple(self._strategies)
+register_builtin_strategies()

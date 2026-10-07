@@ -8,7 +8,8 @@ from manual_graphrag.retrieval import (
     LABEL_STRATEGY_IDS,
     STRATEGY_LABELS,
     STRATEGY_SPECS,
-    register_retrieval_strategy_spec,
+    RETRIEVAL_STRATEGIES,
+    register_retrieval_strategy,
     strategy_choices,
     strategy_id_from_label,
     strategy_label,
@@ -61,14 +62,25 @@ def test_strategy_labels_are_separate_from_persisted_ids() -> None:
         strategy_label("混合檢索")
 
 
+def test_builtin_strategy_registry_loads_implementations_from_catalog() -> None:
+    vector = RETRIEVAL_STRATEGIES.get("vector")
+    hybrid = RETRIEVAL_STRATEGIES.get("hybrid")
+
+    assert vector.strategy_id == "vector"
+    assert hybrid.strategy_id == "hybrid"
+    assert vector.__class__.__module__ == "manual_graphrag.retrieval_strategies.vector"
+    assert hybrid.__class__.__module__ == "manual_graphrag.retrieval_strategies.hybrid"
+
+
 def test_strategy_registry_rejects_duplicate_ids() -> None:
     class Strategy:
         strategy_id = "vector"
 
     registry = RetrievalStrategyRegistry()
-    registry.register(Strategy())
-    with pytest.raises(ValueError, match="已註冊"):
-        registry.register(Strategy())
+    spec = RetrievalStrategySpec("vector", "向量", {})
+    registry.register(spec, "test.module", "Strategy")
+    with pytest.raises(ValueError, match="重複"):
+        registry.register(spec, "test.module", "Strategy")
 
 
 def test_strategy_spec_drives_parameter_validation_and_ui_choices(request) -> None:
@@ -76,11 +88,12 @@ def test_strategy_spec_drives_parameter_validation_and_ui_choices(request) -> No
         "test_beam", "測試 Beam 搜尋",
         {"beam_width": RetrievalParameterSpec(int, default=4, minimum=1, maximum=12)},
     )
-    register_retrieval_strategy_spec(spec)
+    register_retrieval_strategy(spec, "test.module", "Strategy")
     request.addfinalizer(lambda: (
         STRATEGY_SPECS.pop(spec.strategy_id, None),
         STRATEGY_LABELS.pop(spec.strategy_id, None),
         LABEL_STRATEGY_IDS.pop(spec.label, None),
+        RETRIEVAL_STRATEGIES._implementations.pop(spec.strategy_id, None),
     ))
     config = RetrievalConfig(strategy_id="test_beam", top_k=5, params={"beam_width": 8})
     assert config.validated() is config
