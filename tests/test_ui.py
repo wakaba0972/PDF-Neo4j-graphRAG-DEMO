@@ -1551,6 +1551,50 @@ def test_manual_evaluation_rejects_score_outside_zero_to_two(monkeypatch) -> Non
     assert updated["results"][0]["score"] == 2
 
 
+def test_manual_evaluation_score_dropdown_updates_single_question(monkeypatch) -> None:
+    saved = {}
+    monkeypatch.setattr(ui, "load_project", lambda _project_id: {
+        "evaluation": {"results": [{"score": 2}]},
+    })
+    monkeypatch.setattr(ui, "save_project", lambda _project_id, payload: saved.update(payload))
+    evaluation = {"results": [{
+        "number": 1, "question": "Q", "expected_answer": "A", "passed": True,
+        "score": 2, "reason": "模型判定",
+    }]}
+
+    status, rows, updated = ui.update_manual_evaluation_score_for_ui(
+        "project", 0, 1, evaluation,
+    )
+
+    assert "人工評判變更 1 筆" in status
+    assert rows[0][5] == 1
+    assert updated["results"][0]["score"] == 1
+    assert updated["results"][0]["reason"] == "人工評判"
+    assert saved["evaluation"] == updated
+
+
+def test_experiment_summaries_report_each_question_set_separately() -> None:
+    groups = [{
+        "name": "A", "answer_model": "model",
+        "retrieval_config": _retrieval_config("混合檢索", 5),
+    }]
+    results = [
+        {"group_index": 0, "group_name": "A", "question_set_id": "set-a",
+         "question_set_name": "手冊題", "score": 2, "recall_at_5": True,
+         "recall_at_10": True, "reciprocal_rank": 1.0},
+        {"group_index": 0, "group_name": "A", "question_set_id": "set-b",
+         "question_set_name": "故障題", "score": 0, "recall_at_5": False,
+         "recall_at_10": False, "reciprocal_rank": 0.0},
+    ]
+
+    summaries = ui._single_experiment_summary_rows(groups, results, "judge")
+
+    assert len(summaries) == 2
+    assert [(row[5], row[8], row[-1]) for row in summaries] == [
+        (1, "100.0%", "手冊題"), (1, "0.0%", "故障題"),
+    ]
+
+
 def test_run_evaluation_for_ui_forwards_credentials_to_answer_question_for_ui(monkeypatch) -> None:
     captured = {}
 
@@ -1764,7 +1808,7 @@ def test_import_empty_file_preserves_existing_questions(tmp_path, monkeypatch) -
     assert updated == evaluation
 
 
-def test_project_question_import_is_saved_to_project_and_keeps_existing_results(tmp_path, monkeypatch) -> None:
+def test_project_question_import_adds_separate_sets_without_touching_1_5_questions(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     project = ui.create_project("experiment-import")
     question_file = tmp_path / "experiment.json"
@@ -1781,19 +1825,73 @@ def test_project_question_import_is_saved_to_project_and_keeps_existing_results(
         "groups": [{"name": "existing"}], "results": [{"passed": True}],
         "summary_rows": [["existing", 1]], "detail_rows": [["existing", 1]],
     }})
-    status, rows, file_update = ui.import_project_question_set_for_ui(
+    generated_questions = [{"number": 1, "question": "generated", "expected_answer": "g"}]
+    ui.save_project(project["project_id"], {"evaluation": {
+        "questions": generated_questions,
+        "preferences": {"generation_model": "gpt-6-luna"},
+    }})
+    status, choices, selected, rows, file_update = ui.import_project_question_set_for_ui(
         project["project_id"], str(question_file),
     )
 
-    assert status.startswith("✅ 已匯入並保存 1 道")
+    assert status.startswith("✅ 已匯入並保存獨立題目集")
+    assert choices["choices"][0][0] == "experiment"
+    assert selected == choices["value"]
     assert rows == [[3, "問題？", "答案", "manual.pdf：1, 2", "manual.pdf：3, 4"]]
     assert file_update == {"value": None, "__type__": "update"}
     persisted = ui.load_project(project["project_id"])
-    questions = persisted["evaluation"]["questions"]
+    questions = persisted["question_sets"][0]["questions"]
     assert questions[0]["answer_source_pages"] == [3, 4]
+    assert persisted["evaluation"]["questions"] == generated_questions
     assert persisted["experiment"]["groups"] == [{"name": "existing"}]
     assert persisted["experiment"]["results"] == [{"passed": True}]
     assert ui.load_project_summary(project["project_id"])["question_count"] == 1
+
+
+def test_project_question_import_keeps_multiple_sets_independent(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("multi-set")
+    paths = []
+    for filename, question in [("set-a.json", "A"), ("set-b.json", "B")]:
+        path = tmp_path / filename
+        path.write_text(json.dumps({"questions": [{
+            "number": 1, "question": question, "expected_answer": f"ans-{question}",
+        }]}), encoding="utf-8")
+        paths.append(path)
+    for path in paths:
+        status, _choices, _selected, _rows, _clear = ui.import_project_question_set_for_ui(
+            project["project_id"], str(path),
+        )
+        assert status.startswith("✅")
+
+    persisted = ui.load_project(project["project_id"])
+    assert [item["name"] for item in persisted["question_sets"]] == ["set-a", "set-b"]
+    assert [[q["question"] for q in item["questions"]] for item in persisted["question_sets"]] == [["A"], ["B"]]
+    flattened = ui._flatten_question_sets(ui._project_question_sets(persisted))
+    assert [(item["question_set_name"], item["question"]) for item in flattened] == [
+        ("set-a", "A"), ("set-b", "B"),
+    ]
+    _status, _choices, selected_id, rows = ui.project_question_sets_for_ui(
+        project["project_id"], persisted["question_sets"][1]["question_set_id"],
+    )
+    assert selected_id == persisted["question_sets"][1]["question_set_id"]
+    assert [row[1] for row in rows] == ["B"]
+
+
+def test_generated_1_5_questions_are_not_available_as_1_6_imports(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("generated-only")
+    ui.save_project(project["project_id"], {"evaluation": {
+        "questions": [{"number": 1, "question": "generated", "expected_answer": "answer"}],
+        "preferences": {"generation_model": "gpt-6-luna"},
+    }})
+
+    assert ui._project_question_sets(ui.load_project(project["project_id"])) == []
+    status, choices, selected, rows = ui.project_question_sets_for_ui(project["project_id"])
+    assert status == "目前尚未匯入題目集。"
+    assert choices["choices"] == []
+    assert selected is None
+    assert rows == []
 
 
 def test_import_and_roundtrip_cross_document_provenance(tmp_path) -> None:
@@ -1856,7 +1954,7 @@ def test_load_project_question_set_shows_existing_project_questions(tmp_path, mo
     ui.save_project(project["project_id"], {"evaluation": {"questions": current}})
     status, rows = ui.load_project_question_set_for_ui(project["project_id"])
 
-    assert status == "目前專案題目集：1 題。"
+    assert status == "目前題目集「舊版匯入題目集」：1 題。"
     assert rows == [[1, "保留題目", "答案", "manual.pdf：1", "manual.pdf：2"]]
 
 
@@ -1898,6 +1996,9 @@ def test_inline_experiment_groups_autosave_and_reload(tmp_path, monkeypatch) -> 
         ),
     }]
     questions = [{"number": 1, "question": "Q", "expected_answer": "A"}]
+    ui.save_project(project["project_id"], {"question_sets": [{
+        "question_set_id": "set-a", "name": "匯入題集", "questions": questions,
+    }]})
 
     status, saved_groups, result_status = ui.save_inline_experiment_groups_for_ui(
         project["project_id"], questions, 3, [], *ui._inline_group_values(groups),
@@ -1916,7 +2017,7 @@ def test_inline_experiment_groups_autosave_and_reload(tmp_path, monkeypatch) -> 
     assert saved_groups == expected_groups
     assert stored["groups"] == expected_groups
     assert stored["questions"] == questions
-    assert restored[0] == questions
+    assert restored[0] == [{**questions[0], "question_set_id": "set-a", "question_set_name": "匯入題集"}]
     assert restored[2] == expected_groups
     assert restored[4] == 3
     assert result_status == "實驗組設定已自動儲存。"
@@ -2111,7 +2212,7 @@ def test_generate_experiment_answers_populates_table_without_judging(monkeypatch
     assert status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
     assert pending[0]["actual_answer"] == "隱藏答案"
     assert results == summaries == []
-    assert details == [["G", 1, "", "Q", "A", "隱藏答案", None, None, ""]]
+    assert details == [["G", 1, "", "Q", "A", "隱藏答案", None, None, "", "未分類題目集"]]
     assert captured["experiment"]["pending_answers"] == pending
     assert captured["experiment"]["results"] == []
     assert captured["experiment"]["detail_rows"] == details
@@ -2287,7 +2388,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     assert "評測模型" not in result_table["props"]["headers"]
     assert result_table["props"]["headers"][1:4] == ["題號", "來源文件", "題目"]
     assert "答案來源排名" not in result_table["props"]["headers"]
-    assert len(result_table["props"]["headers"]) == 9
+    assert len(result_table["props"]["headers"]) == 10
     column_widths = [int(str(width).removesuffix("px")) for width in result_table["props"]["column_widths"]]
     assert column_widths[0] < column_widths[4] and column_widths[0] < column_widths[5]
     assert column_widths[1] < column_widths[4] and column_widths[1] < column_widths[5]
@@ -2509,8 +2610,8 @@ def test_run_experiment_groups_outputs_each_group_summary_and_details(monkeypatc
 
     assert status.startswith("✅ 已完成 2 個實驗組")
     assert summaries == [
-        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000"],
-        ["混合擴展", "model-b", "Reranker", "證據擴展 V2", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000"],
+        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000", "", "未分類題目集"],
+        ["混合擴展", "model-b", "Reranker", "證據擴展 V2", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000", "", "未分類題目集"],
     ]
     assert len(details) == len(results) == 4
     assert captured["workers"] == 2
@@ -3494,7 +3595,9 @@ def test_legacy_experiment_question_sets_move_to_each_member_project(tmp_path, m
 
     assert status.startswith("✅")
     assert len(rows) == 1
-    assert ui.load_project(member["project_id"])["evaluation"]["questions"] == [question]
+    stored_member = ui.load_project(member["project_id"])
+    assert stored_member["question_sets"][0]["questions"] == [question]
+    assert "questions" not in stored_member.get("evaluation", {})
     assert rows[0][5] == 1
 
 
@@ -3645,10 +3748,18 @@ def test_multi_project_experiment_runs_each_projects_own_database(tmp_path, monk
 
     assert status.startswith("✅ 已完成 1 個實驗組")
     assert [call[0] for call in calls] == [member["project_id"] for member in members]
-    assert [call[1] for call in calls] == [own_questions[member["project_id"]] for member in members]
+    assert [call[1][0]["question"] for call in calls] == [
+        own_questions[member["project_id"]][0]["question"] for member in members
+    ]
+    assert [call[1][0]["question_set_name"] for call in calls] == [
+        "舊版匯入題目集", "舊版匯入題目集",
+    ]
     assert [call[2] for call in calls] == [member["neo4j_database"] for member in members]
     assert all(call[3] is False for call in calls)
-    assert summaries[0][5:9] == [2, "1 / 2", 0, "50.0%"]
+    assert len(summaries) == 2
+    assert [row[5:9] for row in summaries] == [
+        [1, "1 / 1", 0, "100.0%"], [1, "0 / 1", 0, "0.0%"],
+    ]
     assert {row[1] for row in details} == {member["name"] for member in members}
     assert len(saved["results"]) == 2
 
@@ -3673,7 +3784,7 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     assert generated_status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
     assert len(pending) == 1 and pending[0]["actual_answer"] == "A"
     assert summaries == []
-    assert details == [["G", "跨專案成員", 1, "manual.pdf", "Q", "A", "A", None, None, ""]]
+    assert details == [["G", "跨專案成員", 1, "manual.pdf", "Q", "A", "A", None, None, "", "實驗專案舊版題目集"]]
     assert saved["pending_answers"] == pending
     assert saved["detail_rows"] == details
 

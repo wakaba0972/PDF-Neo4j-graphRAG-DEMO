@@ -1187,28 +1187,118 @@ def load_project_question_set_for_ui(project_id: str | None) -> tuple[str, list[
         project = load_project(project_id)
     except (OSError, ValueError) as exc:
         return f"❌ 題目集載入失敗：{exc}", []
-    questions = (project.get("evaluation") or {}).get("questions") or []
-    return f"目前專案題目集：{len(questions)} 題。", _evaluation_question_rows(questions)
+    question_sets = _project_question_sets(project)
+    if not question_sets:
+        return "目前尚未匯入題目集。", []
+    selected = question_sets[0]
+    return (
+        f"目前題目集「{selected['name']}」：{len(selected['questions'])} 題。",
+        _evaluation_question_rows(selected["questions"]),
+    )
+
+
+def _project_question_sets(project: dict[str, Any]) -> list[dict[str, Any]]:
+    question_sets = project.get("question_sets") or []
+    normalized = [
+        {
+            **item,
+            "question_set_id": str(item.get("question_set_id") or f"legacy-{index}"),
+            "name": str(item.get("name") or f"題目集 {index + 1}"),
+            "questions": list(item.get("questions") or []),
+        }
+        for index, item in enumerate(question_sets)
+        if isinstance(item, dict) and item.get("questions")
+    ]
+    if normalized:
+        return normalized
+
+    # Older 1-6 imports lived in evaluation.questions. Generated 1-5 sets
+    # include generation preferences, so they are deliberately not migrated.
+    evaluation = project.get("evaluation") or {}
+    legacy_questions = evaluation.get("questions") or []
+    preferences = evaluation.get("preferences") or {}
+    if legacy_questions and not preferences.get("generation_model"):
+        return [{
+            "question_set_id": "legacy-imported",
+            "name": "舊版匯入題目集",
+            "questions": list(legacy_questions),
+        }]
+    return []
+
+
+def _flatten_question_sets(question_sets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    flattened = []
+    for question_set in question_sets:
+        for question in question_set.get("questions") or []:
+            flattened.append({
+                **question,
+                "question_set_id": question_set.get("question_set_id"),
+                "question_set_name": question_set.get("name", "題目集"),
+            })
+    return flattened
+
+
+def project_question_sets_for_ui(
+    project_id: str | None, selected_id: str | None = None,
+) -> tuple[str, Any, Any, list[list[object]]]:
+    if not project_id:
+        return "請先載入專案。", gr.update(choices=[], value=None), None, []
+    try:
+        question_sets = _project_question_sets(load_project(project_id))
+    except (OSError, ValueError) as exc:
+        return f"❌ 題目集載入失敗：{exc}", gr.update(choices=[], value=None), None, []
+    choices = [(item["name"], item["question_set_id"]) for item in question_sets]
+    selected = next(
+        (item for item in question_sets if item["question_set_id"] == selected_id),
+        question_sets[0] if question_sets else None,
+    )
+    selected_value = selected.get("question_set_id") if selected else None
+    rows = _evaluation_question_rows(selected.get("questions", [])) if selected else []
+    status = (
+        f"已載入 {len(question_sets)} 份獨立題目集；目前顯示「{selected['name']}」共 {len(rows)} 題。"
+        if selected else "目前尚未匯入題目集。"
+    )
+    return status, gr.update(choices=choices, value=selected_value), selected_value, rows
 
 
 def import_project_question_set_for_ui(
     project_id: str | None, file_path: str | None,
-) -> tuple[str, list[list[object]], Any]:
+) -> tuple[str, Any, Any, list[list[object]], Any]:
     if not project_id:
-        return "❌ 請先載入專案。", [], gr.update()
+        return "❌ 請先載入專案。", gr.update(), gr.update(), [], gr.update()
     if not file_path:
-        status, rows = load_project_question_set_for_ui(project_id)
-        return "❌ 請選擇 JSON 或 CSV 題目集。", rows, gr.update()
+        status, choices_update, selected, rows = project_question_sets_for_ui(project_id)
+        return "❌ 請選擇 JSON 或 CSV 題目集。", choices_update, selected, rows, gr.update()
     try:
         project = load_project(project_id)
         questions = _questions_from_file(file_path)
         questions = _attach_project_document_ids(questions, project_id)
-        evaluation = dict(project.get("evaluation") or {})
-        evaluation["questions"] = questions
-        save_project(project_id, {"evaluation": evaluation})
+        question_sets = _project_question_sets(project)
+        base_name = Path(file_path).stem.strip() or "匯入題目集"
+        existing_names = {item["name"] for item in question_sets}
+        name = base_name
+        suffix = 2
+        while name in existing_names:
+            name = f"{base_name} ({suffix})"
+            suffix += 1
+        question_set = {
+            "question_set_id": uuid4().hex,
+            "name": name,
+            "source_file": Path(file_path).name,
+            "questions": questions,
+        }
+        question_sets.append(question_set)
+        save_project(project_id, {"question_sets": question_sets})
     except (OSError, json.JSONDecodeError, ValueError) as exc:
-        return f"❌ 題目集匯入失敗：{exc}", [], gr.update()
-    return f"✅ 已匯入並保存 {len(questions)} 道題目。", _evaluation_question_rows(questions), gr.update(value=None)
+        status, choices_update, selected, rows = project_question_sets_for_ui(project_id)
+        return f"❌ 題目集匯入失敗：{exc}", choices_update, selected, rows, gr.update()
+    choices = [(item["name"], item["question_set_id"]) for item in question_sets]
+    return (
+        f"✅ 已匯入並保存獨立題目集「{name}」，共 {len(questions)} 道題目。",
+        gr.update(choices=choices, value=question_set["question_set_id"]),
+        question_set["question_set_id"], _evaluation_question_rows(questions),
+        gr.update(value=None),
+    )
 
 
 def _built_project_choices() -> list[tuple[str, str]]:
@@ -1417,11 +1507,13 @@ def _migrate_legacy_experiment_project_questions(
             member = load_project(member_id)
         except (OSError, ValueError):
             continue
-        evaluation = dict(member.get("evaluation") or {})
-        if evaluation.get("questions"):
+        if _project_question_sets(member):
             continue
-        evaluation["questions"] = legacy_questions
-        save_project(member_id, {"evaluation": evaluation})
+        save_project(member_id, {"question_sets": [{
+            "question_set_id": f"legacy-{member_id}",
+            "name": "實驗專案舊版題目集",
+            "questions": legacy_questions,
+        }]})
     return project
 
 
@@ -1434,8 +1526,8 @@ def _load_experiment_member_question_sets(
     for member_id in project.get("members", []):
         member = load_project(member_id)
         member_projects[member_id] = member
-        questions_by_member[member_id] = list(
-            ((member.get("evaluation") or {}).get("questions") or [])
+        questions_by_member[member_id] = _flatten_question_sets(
+            _project_question_sets(member)
         )
     return member_projects, questions_by_member
 
@@ -1890,11 +1982,8 @@ def load_experiment_for_ui(
         status = f"❌ 實驗資料載入失敗：{exc}"
     else:
         status = data.get("status", "請先在 1-6 匯入題目集並設定實驗組。")
-    questions = evaluation.get("questions") or data.get("questions", [])
-    if project and questions and not evaluation.get("questions"):
-        evaluation["questions"] = questions
-        save_project(project_id, {"evaluation": evaluation})
-    status = f"題庫 {len(questions)} 題。{status}"
+    questions = _flatten_question_sets(_project_question_sets(project))
+    status = f"1-6 題目集 {len(_project_question_sets(project))} 份、共 {len(questions)} 題。{status}"
     groups = data.get("groups") or []
     global_judge_model = data.get("judge_model") or DEFAULT_EVALUATION_MODEL
     global_judge_effort = data.get("judge_reasoning_effort") or DEFAULT_JUDGE_REASONING_EFFORT
@@ -2160,6 +2249,23 @@ def update_manual_evaluation_for_ui(
     summary = _evaluation_summary(results)
     return (f"{summary}\n\n✅ 已保存人工評判變更 {changed} 筆。",
             _evaluation_result_rows(results), current)
+
+
+def update_manual_evaluation_score_for_ui(
+    project_id: str, index: int, score: int, evaluation: dict[str, Any],
+) -> tuple[str, list[list[object]], dict[str, Any]]:
+    results = (evaluation or {}).get("results") or []
+    rows = _evaluation_result_rows(results)
+    if index < 0 or index >= len(rows):
+        return "❌ 題目編號無效。", rows, evaluation or {}
+    try:
+        normalized_score = int(score)
+    except (TypeError, ValueError, OverflowError):
+        return "❌ 答案判定只能選 0、1 或 2。", rows, evaluation or {}
+    if normalized_score not in (0, 1, 2):
+        return "❌ 答案判定只能選 0、1 或 2。", rows, evaluation or {}
+    rows[index][5] = normalized_score
+    return update_manual_evaluation_for_ui(project_id, rows, evaluation)
 
 
 def manual_result_editability_for_ui(enabled: bool) -> dict[str, Any]:
@@ -2928,6 +3034,8 @@ def run_experiment_groups_for_ui(
             ),
             "number": item.get("number", question_index + 1),
             "question": item["question"],
+            "question_set_id": item.get("question_set_id", ""),
+            "question_set_name": item.get("question_set_name", "未分類題目集"),
             "expected_answer": item["expected_answer"],
             "document": item.get("document", ""),
             "actual_answer": actual,
@@ -2959,24 +3067,9 @@ def run_experiment_groups_for_ui(
         return f"❌ 實驗執行失敗：{exc}", [], [], []
 
     completed_results = results
-    summary_rows = []
-    for group_index, group in enumerate(groups):
-        group_results = [
-            item for item in completed_results if item["group_index"] == group_index
-        ]
-        total = len(group_results)
-        full = sum(_result_score(item) == 2 for item in group_results)
-        weighted_accuracy = sum(_result_score(item) for item in group_results) / (2 * total) if total else 0
-        summary_rows.append([
-            group["name"], group["answer_model"],
-            _group_reranker_mode(group), _group_expansion_mode(group),
-            effective_judge_model, total, f"{full} / {total}",
-            sum(_result_score(item) == 1 for item in group_results),
-            f"{weighted_accuracy:.1%}" if total else "—",
-            f"{sum(bool(item['recall_at_5']) for item in group_results) / total:.1%}" if total else "—",
-            f"{sum(bool(item['recall_at_10']) for item in group_results) / total:.1%}" if total else "—",
-            f"{sum(float(item['reciprocal_rank']) for item in group_results) / total:.3f}" if total else "—",
-        ])
+    summary_rows = _single_experiment_summary_rows(
+        groups, completed_results, effective_judge_model,
+    )
     detail_rows = [[
         item["group_name"], item["answer_model"], item["judge_model"],
         item["number"], item["question"], item["document"],
@@ -3009,22 +3102,33 @@ def _single_experiment_summary_rows(
 ) -> list[list[object]]:
     summaries = []
     for group_index, group in enumerate(groups):
-        selected = [
+        group_results = [
             item for item in results
             if item.get("group_index") == group_index or item.get("group_name") == group["name"]
         ]
-        total = len(selected)
-        correct = sum(_result_score(item) == 2 for item in selected)
-        weighted_accuracy = sum(_result_score(item) for item in selected) / (2 * total) if total else 0
-        summaries.append([
-            group["name"], group["answer_model"], _group_reranker_mode(group),
-            _group_expansion_mode(group), judge_model, total,
-            f"{correct} / {total}", sum(_result_score(item) == 1 for item in selected),
-            f"{weighted_accuracy:.1%}" if total else "—",
-            f"{sum(bool(item.get('recall_at_5')) for item in selected) / total:.1%}" if total else "—",
-            f"{sum(bool(item.get('recall_at_10')) for item in selected) / total:.1%}" if total else "—",
-            f"{sum(float(item.get('reciprocal_rank', 0)) for item in selected) / total:.3f}" if total else "—",
-        ])
+        buckets: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for item in group_results:
+            set_id = str(item.get("question_set_id") or "unclassified")
+            set_name = str(item.get("question_set_name") or "未分類題目集")
+            source_project = str(item.get("source_project_id") or "")
+            buckets.setdefault((source_project, set_id, set_name), []).append(item)
+        for (source_project, _set_id, set_name), selected in buckets.items():
+            total = len(selected)
+            correct = sum(_result_score(item) == 2 for item in selected)
+            weighted_accuracy = sum(_result_score(item) for item in selected) / (2 * total) if total else 0
+            source_project_name = next(
+                (item.get("source_project_name", "") for item in selected), "",
+            )
+            summaries.append([
+                group["name"], group["answer_model"], _group_reranker_mode(group),
+                _group_expansion_mode(group), judge_model, total,
+                f"{correct} / {total}", sum(_result_score(item) == 1 for item in selected),
+                f"{weighted_accuracy:.1%}" if total else "—",
+                f"{sum(bool(item.get('recall_at_5')) for item in selected) / total:.1%}" if total else "—",
+                f"{sum(bool(item.get('recall_at_10')) for item in selected) / total:.1%}" if total else "—",
+                f"{sum(float(item.get('reciprocal_rank', 0)) for item in selected) / total:.3f}" if total else "—",
+                source_project_name, set_name,
+            ])
     return summaries
 
 
@@ -3033,6 +3137,7 @@ def _single_experiment_detail_rows(results: list[dict[str, Any]]) -> list[list[o
         item["group_name"], item["number"], item.get("document", ""), item["question"],
         item["expected_answer"], item.get("actual_answer", ""),
         _display_score(item), item.get("verification_changed"), item.get("reason", ""),
+        item.get("question_set_name", ""),
     ] for item in results]
 
 
@@ -3042,6 +3147,7 @@ def _experiment_project_detail_rows(results: list[dict[str, Any]]) -> list[list[
         item.get("document", ""), item["question"], item["expected_answer"],
         item.get("actual_answer", ""), _display_score(item),
         item.get("verification_changed"), item.get("reason", ""),
+        item.get("question_set_name", ""),
     ] for item in results]
 
 
@@ -3105,6 +3211,8 @@ def generate_experiment_answers_for_ui(
                 group["answer_model"], group.get("answer_reasoning_effort"), "answer_reasoning_effort",
             ),
             "number": question.get("number", question_index + 1),
+            "question_set_id": question.get("question_set_id", ""),
+            "question_set_name": question.get("question_set_name", "未分類題目集"),
             "question": question["question"], "expected_answer": question["expected_answer"],
             "document": question.get("document", ""), "actual_answer": actual,
             "answer_status": status, "retrieval_rank": rank,
@@ -3652,6 +3760,8 @@ def generate_experiment_project_answers_for_ui(
             "retrieval_config": _group_retrieval_config(group).to_dict(),
             "source_project_id": member_id, "source_project_name": member.get("name", member_id),
             "answer_model": group["answer_model"], "number": question.get("number", qi + 1),
+            "question_set_id": question.get("question_set_id", ""),
+            "question_set_name": question.get("question_set_name", "未分類題目集"),
             "question": question["question"], "expected_answer": question["expected_answer"],
             "document": question.get("document", ""), "actual_answer": actual,
             "answer_status": status, "retrieval_rank": rank,
@@ -3858,27 +3968,13 @@ def run_experiment_project_for_ui(
                 "source_project_name": member_names[member_id],
             })
 
-    summary_rows = []
-    for group_index, group in enumerate(groups):
-        selected = [item for item in all_results if item.get("group_index") == group_index]
-        total = len(selected)
-        correct = sum(_result_score(item) == 2 for item in selected)
-        weighted_accuracy = sum(_result_score(item) for item in selected) / (2 * total) if total else 0
-        summary_rows.append([
-            group["name"], group["answer_model"], _group_reranker_mode(group),
-            _group_expansion_mode(group), judge_model, total,
-            f"{correct} / {total}", sum(_result_score(item) == 1 for item in selected),
-            f"{weighted_accuracy:.1%}" if total else "—",
-            f"{sum(bool(item.get('recall_at_5')) for item in selected) / total:.1%}" if total else "—",
-            f"{sum(bool(item.get('recall_at_10')) for item in selected) / total:.1%}" if total else "—",
-            f"{sum(float(item.get('reciprocal_rank', 0)) for item in selected) / total:.3f}" if total else "—",
-        ])
+    summary_rows = _single_experiment_summary_rows(groups, all_results, judge_model)
     detail_rows = [[
         item["group_name"], item["source_project_name"], item["answer_model"],
         item["judge_model"], item["number"], item["question"], item.get("document", ""),
         item["expected_answer"], item["actual_answer"],
         _result_score(item), item.get("reason", ""),
-        item.get("retrieval_rank"),
+        item.get("retrieval_rank"), item.get("question_set_name", ""),
     ] for item in all_results]
     status = f"✅ 已完成 {len(groups)} 個實驗組，涵蓋 {len(members)} 個專案、{len(all_results)} 個題次。"
     try:
@@ -5043,7 +5139,7 @@ def build_app() -> gr.Blocks:
             gr.Markdown("#### 測試結果")
             evaluation_manual_edit_enabled = gr.Checkbox(
                 value=False, label="啟用答案結果人工修改",
-                info="預設鎖定判定欄；勾選後可將各題設為 0 錯誤、1 部分正確或 2 全對。",
+                info="勾選後會在結果表格下方為每題顯示下拉選單，可選 0 錯誤、1 部分正確或 2 全對。",
             )
             evaluation_results_table = gr.Dataframe(
                 headers=["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
@@ -5078,7 +5174,8 @@ def build_app() -> gr.Blocks:
         with gr.Tab("1-6 匯入問題集", interactive=False) as project_question_import_tab:
             gr.Markdown(
                 "在目前載入的專案匯入專屬題目集。題目集會儲存在該專案，"
-                "1-7 單一專案實驗與 2-3 跨專案實驗都直接使用這份資料。"
+                "每次匯入都會新增獨立題目集，不會覆蓋或混合其他題目集；"
+                "1-7 與 2-3 會分別列出各題目集的測試結果。"
             )
             with gr.Row():
                 project_question_file = gr.File(
@@ -5086,6 +5183,11 @@ def build_app() -> gr.Blocks:
                 )
                 import_project_questions_button = gr.Button("匯入此專案題目集", variant="primary")
             project_question_import_status = gr.Markdown("尚未載入題目集。")
+            project_question_set_selector = gr.Dropdown(
+                choices=[], value=None, label="已匯入題目集",
+                info="每次匯入會新增一份獨立題目集，不會合併其他題目。",
+            )
+            project_question_set_state = gr.State(None)
             project_question_table = gr.Dataframe(
                 headers=["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"],
                 datatype=["number", "str", "str", "str", "str"],
@@ -5192,7 +5294,7 @@ def build_app() -> gr.Blocks:
             experiment_status = gr.Markdown()
             gr.Markdown("#### 實驗組摘要")
             experiment_summary_table = gr.Dataframe(
-                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Recall@5", "Recall@10", "MRR"],
+                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Recall@5", "Recall@10", "MRR", "成員專案", "題目集"],
                 interactive=False, wrap=True,
             )
             gr.Markdown("#### 逐題結果")
@@ -5204,10 +5306,11 @@ def build_app() -> gr.Blocks:
                 headers=[
                     "實驗組", "題號", "來源文件", "題目", "正確答案", "實際答案",
                     "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由",
+                    "題目集",
                 ],
-                datatype=["str", "number", "str", "str", "str", "str", "number", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 8],
-                column_widths=[90, 60, 140, 300, 420, 420, 120, 150, 300],
+                datatype=["str", "number", "str", "str", "str", "str", "number", "bool", "str", "str"],
+                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                column_widths=[90, 60, 140, 300, 420, 420, 120, 150, 300, 120],
                 wrap=True, elem_classes=["evaluation-table", "evaluation-results-table"],
             )
             @gr.render(inputs=[experiment_results_state, experiment_manual_edit_enabled])
@@ -5373,13 +5476,13 @@ def build_app() -> gr.Blocks:
             )
             experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並在每個成員專案的 1-6 匯入題目集。")
             experiment_project_summary_table = gr.Dataframe(
-                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Recall@5", "Recall@10", "MRR"],
+                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Recall@5", "Recall@10", "MRR", "成員專案", "題目集"],
                 interactive=False, wrap=True,
             )
             experiment_project_details_table = gr.Dataframe(
-                headers=["實驗組", "成員專案", "題號", "來源文件", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
-                datatype=["str", "str", "number", "str", "str", "str", "str", "number", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                headers=["實驗組", "成員專案", "題號", "來源文件", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由", "題目集"],
+                datatype=["str", "str", "number", "str", "str", "str", "str", "number", "bool", "str", "str"],
+                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                 wrap=True,
             )
             experiment_project_manual_edit = gr.Checkbox(value=False, label="啟用答案結果人工修改", info="預設鎖定判定欄；勾選後可將各題設為 0 錯誤、1 部分正確或 2 全對。")
@@ -5445,15 +5548,25 @@ def build_app() -> gr.Blocks:
             show_progress="hidden",
         )
         project_question_import_tab.select(
-            load_project_question_set_for_ui,
-            inputs=[project_selector],
-            outputs=[project_question_import_status, project_question_table],
+            project_question_sets_for_ui,
+            inputs=[project_selector, project_question_set_selector],
+            outputs=[project_question_import_status, project_question_set_selector,
+                     project_question_set_state, project_question_table],
+            show_progress="hidden",
+        )
+        project_question_set_selector.change(
+            project_question_sets_for_ui,
+            inputs=[project_selector, project_question_set_selector],
+            outputs=[project_question_import_status, project_question_set_selector,
+                     project_question_set_state, project_question_table],
             show_progress="hidden",
         )
         import_project_questions_button.click(
             import_project_question_set_for_ui,
             inputs=[project_selector, project_question_file],
-            outputs=[project_question_import_status, project_question_table, project_question_file],
+            outputs=[project_question_import_status, project_question_set_selector,
+                     project_question_set_state, project_question_table,
+                     project_question_file],
         )
         experiment_tab.select(
             load_experiment_for_ui,
