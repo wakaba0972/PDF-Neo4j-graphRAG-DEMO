@@ -1462,6 +1462,43 @@ def import_project_question_set_for_ui(
     )
 
 
+def delete_project_question_set_for_ui(
+    project_id: str | None, question_set_id: str | None,
+) -> tuple[str, Any, Any, list[list[object]]]:
+    """Delete only the selected imported question set and refresh the preview."""
+    if not project_id:
+        return "❌ 請先載入專案。", gr.update(), gr.update(), []
+    if not question_set_id:
+        status, choices, selected, rows = project_question_sets_for_ui(project_id)
+        return "❌ 請先選擇要刪除的題目集。", choices, selected, rows
+    try:
+        project = load_project(project_id)
+        question_sets = _project_question_sets(project)
+        target = next(
+            (item for item in question_sets if item["question_set_id"] == question_set_id),
+            None,
+        )
+        if target is None:
+            raise ValueError("找不到選取的題目集，請重新整理清單後再試")
+        if question_set_id == "legacy-imported":
+            # This compatibility set is backed by the old imported-question
+            # fields rather than project.question_sets.
+            evaluation = dict(project.get("evaluation") or {})
+            evaluation.pop("questions", None)
+            save_project(project_id, {"evaluation": evaluation})
+        else:
+            question_sets = [
+                item for item in question_sets
+                if item["question_set_id"] != question_set_id
+            ]
+            save_project(project_id, {"question_sets": question_sets})
+        status, choices, selected, rows = project_question_sets_for_ui(project_id)
+        return f"✅ 已刪除題目集「{target['name']}」。{status}", choices, selected, rows
+    except (OSError, TypeError, ValueError) as exc:
+        status, choices, selected, rows = project_question_sets_for_ui(project_id)
+        return f"❌ 題目集刪除失敗：{exc}", choices, selected, rows
+
+
 def _built_project_choices() -> list[tuple[str, str]]:
     choices = []
     for name, project_id in list_projects():
@@ -5353,10 +5390,15 @@ def build_app() -> gr.Blocks:
                 )
                 import_project_questions_button = gr.Button("匯入此專案題目集", variant="primary")
             project_question_import_status = gr.Markdown("尚未載入題目集。")
-            project_question_set_selector = gr.Dropdown(
-                choices=[], value=None, label="已匯入題目集",
-                info="每次匯入會新增一份獨立題目集，不會合併其他題目。",
-            )
+            with gr.Row():
+                project_question_set_selector = gr.Dropdown(
+                    choices=[], value=None, label="已匯入題目集",
+                    info="每次匯入會新增一份獨立題目集，不會合併其他題目。",
+                    scale=5,
+                )
+                delete_project_question_set_button = gr.Button(
+                    "刪除選取題目集", variant="stop", scale=1,
+                )
             project_question_set_state = gr.State(None)
             project_question_table = gr.Dataframe(
                 headers=["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"],
@@ -5716,6 +5758,12 @@ def build_app() -> gr.Blocks:
             outputs=[project_question_import_status, project_question_set_selector,
                      project_question_set_state, project_question_table,
                      project_question_file],
+        )
+        delete_project_question_set_button.click(
+            delete_project_question_set_for_ui,
+            inputs=[project_selector, project_question_set_selector],
+            outputs=[project_question_import_status, project_question_set_selector,
+                     project_question_set_state, project_question_table],
         )
         experiment_tab.select(
             load_experiment_for_ui,

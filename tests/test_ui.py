@@ -683,6 +683,7 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     assert "從 PDF 建立題目與答案" in values
     assert values.count("檢索並生成回答") == 3
     assert "進行評測" in values
+    assert "刪除選取題目集" in values
     assert "匯入題目" in values
     assert "儲存題目" not in values
     assert "匯出題目" in values
@@ -1890,6 +1891,29 @@ def test_project_question_import_keeps_multiple_sets_independent(tmp_path, monke
     )
     assert selected_id == persisted["question_sets"][1]["question_set_id"]
     assert [row[1] for row in rows] == ["B"]
+
+
+def test_delete_project_question_set_removes_only_selected_set(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("delete-question-set")
+    ui.save_project(project["project_id"], {"question_sets": [
+        {"question_set_id": "set-a", "name": "題目集 A", "questions": [
+            {"number": 1, "question": "A", "expected_answer": "答案 A"},
+        ]},
+        {"question_set_id": "set-b", "name": "題目集 B", "questions": [
+            {"number": 1, "question": "B", "expected_answer": "答案 B"},
+        ]},
+    ]})
+
+    status, choices, selected, rows = ui.delete_project_question_set_for_ui(
+        project["project_id"], "set-a",
+    )
+
+    assert status.startswith("✅ 已刪除題目集「題目集 A」")
+    assert choices["choices"] == [("題目集 B", "set-b")]
+    assert selected == "set-b"
+    assert [row[1] for row in rows] == ["B"]
+    assert [item["question_set_id"] for item in ui.load_project(project["project_id"])["question_sets"]] == ["set-b"]
 
 
 def test_generated_1_5_questions_are_not_available_as_1_6_imports(tmp_path, monkeypatch) -> None:
