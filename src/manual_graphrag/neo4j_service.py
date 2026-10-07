@@ -399,14 +399,20 @@ def search_graph_evidence(
         # neo4j-graphrag 1.19.0 tries to format a missing-index error with the
         # nonexistent `self.index_name` attribute. Replace that implementation
         # detail with the actual index requested by this application.
+        guidance = ""
         if isinstance(exc, AttributeError) and "index_name" in str(exc):
             detail = f"找不到向量索引 `{target_vector_index}`。"
+            guidance = " 請使用目前的 Embedding 模型重新執行「Embedding 並匯入 Neo4j」。"
         else:
             detail = str(exc)
-        raise ValueError(
-            f"Neo4j 檢索失敗：{detail} "
-            "請使用目前的 Embedding 模型重新執行「Embedding 並匯入 Neo4j」。"
-        ) from exc
+            normalized = detail.casefold()
+            if "dimensionality" in normalized or "dimension" in normalized:
+                guidance = " 請使用目前的 Embedding 模型重新執行「Embedding 並匯入 Neo4j」。"
+            elif isinstance(exc, AttributeError) and (
+                "strategy" in normalized or "has no attribute" in normalized
+            ):
+                detail = f"檢索策略實作載入失敗：{detail}。請重新啟動應用程式後再試。"
+        raise ValueError(f"Neo4j 檢索失敗：{detail}{guidance}") from exc
     return [_restore_source_references(item) for item in selected]
 
 

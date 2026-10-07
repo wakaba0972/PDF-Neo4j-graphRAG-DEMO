@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -133,6 +135,33 @@ def test_strategy_registry_rejects_duplicate_ids() -> None:
     registry.register(spec, "test.module", "Strategy")
     with pytest.raises(ValueError, match="重複"):
         registry.register(spec, "test.module", "Strategy")
+
+
+def test_strategy_registry_serializes_concurrent_file_loading(tmp_path: Path, request) -> None:
+    strategy_id = "concurrent_probe"
+    module_name = f"strategies.implementations.{strategy_id}.strategy"
+    implementation = tmp_path / "strategy.py"
+    implementation.write_text(
+        "import time\n"
+        "time.sleep(0.05)\n"
+        "class ConcurrentProbeStrategy:\n"
+        "    strategy_id = 'concurrent_probe'\n"
+        "    def retrieve(self, context, config): return []\n",
+        encoding="utf-8",
+    )
+    registry = RetrievalStrategyRegistry()
+    registry.register_file(
+        RetrievalStrategySpec(strategy_id, "並行載入測試"),
+        implementation,
+        "ConcurrentProbeStrategy",
+    )
+    request.addfinalizer(lambda: sys.modules.pop(module_name, None))
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        strategies = list(executor.map(lambda _: registry.get(strategy_id), range(8)))
+
+    assert all(strategy.strategy_id == strategy_id for strategy in strategies)
+    assert all(strategy is strategies[0] for strategy in strategies)
 
 
 def test_strategy_spec_drives_parameter_validation_and_ui_choices(request) -> None:

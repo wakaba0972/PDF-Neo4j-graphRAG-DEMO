@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from importlib import import_module, util
 from pathlib import Path
 import sys
+from threading import RLock
 from typing import Any, Protocol
 
 
@@ -63,6 +64,13 @@ class RetrievalStrategyRegistry:
         self._implementations: dict[str, tuple[str, str]] = {}
         self._implementation_files: dict[str, Path] = {}
         self._loaded: dict[str, Any] = {}
+        # File-based strategy modules are executed directly (not through
+        # importlib.import_module), so Python's per-module import lock does not
+        # protect the interval between inserting the module in sys.modules and
+        # defining its strategy class. Retrieval is invoked concurrently by
+        # evaluation workers; serialize lazy loads to avoid observing a
+        # partially initialized module.
+        self._load_lock = RLock()
 
     def register(
         self, spec: RetrievalStrategySpec, module_path: str, class_name: str,
@@ -104,6 +112,10 @@ class RetrievalStrategyRegistry:
             raise ValueError(f"不支援的檢索策略 ID：{strategy_id}") from exc
 
     def get(self, strategy_id: str) -> Any:
+        with self._load_lock:
+            return self._get_locked(strategy_id)
+
+    def _get_locked(self, strategy_id: str) -> Any:
         if strategy_id in self._loaded:
             return self._loaded[strategy_id]
         try:
@@ -120,7 +132,16 @@ class RetrievalStrategyRegistry:
                     raise ValueError(f"無法載入檢索策略實作：{implementation_file}")
                 module = util.module_from_spec(module_spec)
                 sys.modules[module_name] = module
-                module_spec.loader.exec_module(module)
+                try:
+                    module_spec.loader.exec_module(module)
+                except Exception:
+                    # Do not leave a half-imported module behind. A later
+                    # retrieval should be able to retry and report the actual
+                    # import failure, rather than a misleading missing-class
+                    # AttributeError.
+                    if sys.modules.get(module_name) is module:
+                        del sys.modules[module_name]
+                    raise
         else:
             module = import_module(module_path)
         implementation_class = getattr(module, class_name)
