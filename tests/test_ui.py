@@ -114,17 +114,18 @@ def test_experiment_project_delete_button_requires_confirmation() -> None:
         component for component in app.config["components"]
         if component.get("props", {}).get("value") == "刪除實驗專案"
     )
-    confirm_button = next(
-        component for component in app.config["components"]
-        if component.get("props", {}).get("value") == "確認刪除"
-    )
     dependency = next(
         item for item in app.config["dependencies"]
         if any(target[0] == button["id"] for target in item.get("targets", []))
     )
     confirm_dependency = next(
         item for item in app.config["dependencies"]
-        if any(target[0] == confirm_button["id"] for target in item.get("targets", []))
+        if item.get("api_name") == "delete_confirmed_experiment_project_for_ui"
+    )
+    confirm_button_id = confirm_dependency["targets"][0][0]
+    confirm_button = next(
+        component for component in app.config["components"]
+        if component["id"] == confirm_button_id
     )
 
     assert button["props"]["variant"] == "stop"
@@ -603,7 +604,7 @@ def test_project_archive_ui_callbacks_export_and_import(tmp_path, monkeypatch) -
     assert "已匯入專案" in import_status
 
 
-def test_delete_button_uses_browser_confirmation() -> None:
+def test_delete_button_uses_gradio_confirmation_components() -> None:
     app = build_app()
     button = next(
         component for component in app.config["components"]
@@ -613,14 +614,61 @@ def test_delete_button_uses_browser_confirmation() -> None:
         item for item in app.config["dependencies"]
         if any(target[0] == button["id"] for target in item.get("targets", []))
     )
-    assert "window.confirm" in dependency["js"]
-    assert "throw new Error" in dependency["js"]
-    assert len(dependency["inputs"]) == 2
+    confirm_button = next(
+        component for component in app.config["components"]
+        if component.get("props", {}).get("value") == "確認刪除"
+    )
+    confirm_dependency = next(
+        item for item in app.config["dependencies"]
+        if any(target[0] == confirm_button["id"] for target in item.get("targets", []))
+    )
+    assert dependency.get("js") is None
+    assert dependency["api_name"] == "request_project_deletion_for_ui"
+    assert confirm_dependency["api_name"] == "delete_confirmed_project_for_ui"
+    assert len(confirm_dependency["outputs"]) == len(
+        ui.delete_confirmed_project_for_ui("missing")
+    )
+    component_ids = {component["id"] for component in app.config["components"]}
+    assert all(output_id in component_ids for output_id in confirm_dependency["outputs"])
     assert any(
         str(item.get("api_name", "")).startswith("refresh_projects_after_delete_for_ui")
-        and item.get("trigger_after") == dependency["id"]
+        and item.get("trigger_after") == confirm_dependency["id"]
         for item in app.config["dependencies"]
     )
+
+
+def test_project_delete_confirmation_can_be_requested_and_cancelled() -> None:
+    status, confirm, cancel, selector = ui.request_project_deletion_for_ui("project-a")
+    assert "project-a" in status["value"]
+    assert status["visible"] and confirm["visible"] and cancel["visible"]
+    assert selector["interactive"] is False
+
+    status, confirm, cancel, selector = ui.cancel_project_deletion_for_ui()
+    assert status["visible"] is False
+    assert confirm["visible"] is False and cancel["visible"] is False
+    assert selector["interactive"] is True
+
+
+def test_confirmed_project_delete_runs_through_gradio_api(tmp_path, monkeypatch) -> None:
+    import asyncio
+
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("Gradio callback delete")
+    app = build_app()
+    dependency = next(
+        item for item in app.config["dependencies"]
+        if item.get("api_name") == "delete_confirmed_project_for_ui"
+    )
+
+    result = asyncio.run(app.process_api(
+        dependency["id"], [project["project_id"], "Zhao"],
+    ))
+
+    assert len(result["data"]) == len(
+        ui.delete_confirmed_project_for_ui("nonexistent-project")
+    )
+    assert "已刪除專案" in result["data"][2]
+    assert ui.list_projects() == []
 
 
 def test_build_app_has_automatic_evaluation_page() -> None:

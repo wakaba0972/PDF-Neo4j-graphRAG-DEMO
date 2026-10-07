@@ -579,7 +579,7 @@ def reset_experiment_project_connection_for_ui(
 
 
 def lock_project_tabs_for_ui(project_id: str) -> tuple[dict[str, Any], ...]:
-    return tuple(gr.update(interactive=False) for _ in range(7))
+    return tuple(gr.update(interactive=False) for _ in range(6))
 
 
 def delete_project_for_ui(
@@ -589,21 +589,52 @@ def delete_project_for_ui(
         name = delete_project(project_id)
     except (OSError, ValueError) as exc:
         return (
-            gr.update(), gr.update(), f"❌ {exc}",
+            gr.update(interactive=True), gr.update(), f"❌ {exc}",
             *lock_project_tabs_for_ui(project_id), False,
         )
     choices = _project_choices()
     return (
-        gr.update(choices=choices, value=choices[0][1] if choices else None), {},
+        gr.update(choices=choices, value=choices[0][1] if choices else None, interactive=True), {},
         f"✅ 已刪除專案「{name}」。", *lock_project_tabs_for_ui(""), True,
     )
 
 
+def request_project_deletion_for_ui(
+    project_id: str | None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    if not isinstance(project_id, str) or not project_id:
+        return (
+            gr.update(value="請先選擇要刪除的專案。", visible=True),
+            gr.update(visible=False), gr.update(visible=False),
+            gr.update(interactive=True),
+        )
+    return (
+        gr.update(
+            value=f"確定永久刪除專案「{project_id}」及其本機資料？",
+            visible=True,
+        ),
+        gr.update(visible=True), gr.update(visible=True),
+        gr.update(interactive=False),
+    )
+
+
+def cancel_project_deletion_for_ui() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    return (
+        gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
+        gr.update(interactive=True),
+    )
+
+
+def delete_confirmed_project_for_ui(project_id: str) -> tuple[Any, ...]:
+    result = delete_project_for_ui(project_id)
+    return (*result, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False))
+
+
 def refresh_projects_after_delete_for_ui(deleted: bool) -> dict[str, Any]:
     if not deleted:
-        return gr.update()
+        return gr.update(interactive=True)
     choices = _project_choices()
-    return gr.update(choices=choices, value=choices[0][1] if choices else None)
+    return gr.update(choices=choices, value=choices[0][1] if choices else None, interactive=True)
 
 
 def _project_choices() -> list[tuple[str, str]]:
@@ -4614,6 +4645,12 @@ def build_app() -> gr.Blocks:
                     "刪除專案", variant="stop", elem_classes="project-workspace-action",
                 )
             with gr.Row():
+                project_delete_confirmation_status = gr.Markdown(visible=False)
+                confirm_delete_project_button = gr.Button(
+                    "確認刪除", variant="stop", visible=False,
+                )
+                cancel_delete_project_button = gr.Button("取消", visible=False)
+            with gr.Row():
                 new_project_name = gr.Textbox(label="新專案名稱", placeholder="例如：ALCX17 使用手冊")
                 create_project_button = gr.Button(
                     "建立新專案", variant="primary", elem_classes="project-workspace-action",
@@ -5999,23 +6036,33 @@ def build_app() -> gr.Blocks:
             outputs=schema_documents,
             show_progress="hidden",
         )
-        delete_project_event = delete_project_button.click(
-            delete_project_for_ui,
+        delete_project_button.click(
+            request_project_deletion_for_ui,
+            inputs=project_selector,
+            outputs=[project_delete_confirmation_status,
+                     confirm_delete_project_button, cancel_delete_project_button,
+                     project_selector],
+            show_progress="hidden",
+        )
+        delete_project_event = confirm_delete_project_button.click(
+            delete_confirmed_project_for_ui,
             inputs=project_selector,
             outputs=[project_selector, project_state, project_status,
                      connection_tab, pdf_tab, graph_tab, qa_tab, evaluation_tab, experiment_tab,
-                     delete_project_completed],
-            js="""(projectId) => {
-                if (!window.confirm('確定要刪除此專案嗎？專案設定、PDF、圖譜、題庫與紀錄都會永久刪除。')) {
-                    throw new Error('使用者取消刪除');
-                }
-                return projectId;
-            }""",
+                     delete_project_completed, project_delete_confirmation_status,
+                     confirm_delete_project_button, cancel_delete_project_button],
         )
         delete_project_event.then(
             refresh_projects_after_delete_for_ui,
             inputs=delete_project_completed,
             outputs=project_selector,
+            show_progress="hidden",
+        )
+        cancel_delete_project_button.click(
+            cancel_project_deletion_for_ui,
+            outputs=[project_delete_confirmation_status,
+                     confirm_delete_project_button, cancel_delete_project_button,
+                     project_selector],
             show_progress="hidden",
         )
         for project_load_event in [import_load_event, load_project_event, initialize_project_event]:
