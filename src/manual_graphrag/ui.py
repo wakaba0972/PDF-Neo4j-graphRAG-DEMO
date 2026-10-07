@@ -1240,6 +1240,27 @@ def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
     )
 
 
+def request_experiment_project_deletion_for_ui(
+    project_id: str | None,
+) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
+    if not isinstance(project_id, str) or not project_id:
+        return "", "請先選擇要刪除的實驗專案。", gr.update(visible=True), gr.update(interactive=False)
+    return (
+        project_id,
+        f"確定刪除實驗專案「{project_id}」？只會刪除實驗設定與結果，不會刪除成員專案或 Neo4j 資料庫。",
+        gr.update(visible=True), gr.update(interactive=True),
+    )
+
+
+def cancel_experiment_project_deletion_for_ui() -> tuple[str, dict[str, Any], dict[str, Any]]:
+    return "", gr.update(visible=False), gr.update(interactive=False)
+
+
+def delete_confirmed_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
+    result = delete_experiment_project_for_ui(project_id)
+    return (*result, "", gr.update(visible=False))
+
+
 def load_experiment_project_for_ui(
     project_id: str | None,
 ) -> tuple[dict[str, Any], list[list[Any]], Any, str]:
@@ -5182,6 +5203,13 @@ def build_app() -> gr.Blocks:
                 delete_experiment_project_button = gr.Button(
                     "刪除實驗專案", variant="stop", elem_classes="project-workspace-action",
                 )
+            experiment_project_delete_pending = gr.State("")
+            with gr.Row(visible=False) as experiment_project_delete_confirmation:
+                experiment_project_delete_confirmation_status = gr.Markdown()
+                confirm_delete_experiment_project_button = gr.Button(
+                    "確認刪除", variant="stop",
+                )
+                cancel_delete_experiment_project_button = gr.Button("取消")
             with gr.Row():
                 new_experiment_project_name = gr.Textbox(label="新實驗專案名稱")
                 create_experiment_project_button = gr.Button(
@@ -5597,22 +5625,37 @@ def build_app() -> gr.Blocks:
             experiment_project_state, experiment_project_members_table,
             experiment_project_members, experiment_project_status,
         ]
+        experiment_project_delete_outputs = [
+            experiment_project_selector, experiment_project_state,
+            experiment_project_members_table, experiment_project_members,
+            experiment_project_status, experiment_connection_table,
+            experiment_project_connection_state, experiment_connection_status,
+            *experiment_project_group_all_components,
+            experiment_project_groups_status, experiment_project_max_concurrency,
+            experiment_project_pending_answers_state, experiment_project_results_state,
+            experiment_project_summary_table,
+            experiment_project_details_table, experiment_project_test_status,
+            experiment_project_answers_status, evaluate_experiment_project_button,
+        ]
         delete_experiment_project_button.click(
-            delete_experiment_project_for_ui,
+            request_experiment_project_deletion_for_ui,
             inputs=[experiment_project_selector],
             outputs=[
-                experiment_project_selector, experiment_project_state,
-                experiment_project_members_table, experiment_project_members,
-                experiment_project_status, experiment_connection_table,
-                experiment_project_connection_state, experiment_connection_status,
-                *experiment_project_group_all_components,
-                experiment_project_groups_status, experiment_project_max_concurrency,
-                experiment_project_pending_answers_state, experiment_project_results_state,
-                experiment_project_summary_table,
-                experiment_project_details_table, experiment_project_test_status,
-                experiment_project_answers_status, evaluate_experiment_project_button,
+                experiment_project_delete_pending,
+                experiment_project_delete_confirmation_status,
+                experiment_project_delete_confirmation,
+                confirm_delete_experiment_project_button,
             ],
-            js="(projectId) => { if (!projectId) return [null]; return [confirm(`確定刪除實驗專案「${projectId}」？這只會刪除此實驗專案的設定與結果，不會刪除其中的車型專案或 Neo4j 資料庫。`) ? projectId : null]; }",
+            show_progress="hidden",
+        )
+        confirm_delete_experiment_project_button.click(
+            delete_confirmed_experiment_project_for_ui,
+            inputs=[experiment_project_delete_pending],
+            outputs=[
+                *experiment_project_delete_outputs,
+                experiment_project_delete_pending,
+                experiment_project_delete_confirmation,
+            ],
         ).then(
             activate_workspace_for_ui,
             inputs=[experiment_workspace_mode, experiment_project_state,
@@ -5622,6 +5665,15 @@ def build_app() -> gr.Blocks:
         ).then(
             experiment_project_banner_for_ui,
             inputs=experiment_project_state, outputs=current_project_banner,
+        )
+        cancel_delete_experiment_project_button.click(
+            cancel_experiment_project_deletion_for_ui,
+            outputs=[
+                experiment_project_delete_pending,
+                experiment_project_delete_confirmation,
+                confirm_delete_experiment_project_button,
+            ],
+            show_progress="hidden",
         )
         load_experiment_project_button.click(
             load_experiment_project_for_ui,

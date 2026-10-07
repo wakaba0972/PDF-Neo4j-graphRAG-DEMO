@@ -84,22 +84,51 @@ def test_cancel_experiment_project_deletion_does_not_clear_or_delete(monkeypatch
     assert "沒有刪除任何資料" in result[104]
 
 
+def test_request_experiment_project_deletion_shows_confirmation() -> None:
+    pending_id, message, row_update, button_update = (
+        ui.request_experiment_project_deletion_for_ui("exp-a")
+    )
+
+    assert pending_id == "exp-a"
+    assert "exp-a" in message
+    assert "不會刪除成員專案" in message
+    assert row_update["visible"] is True
+    assert button_update["interactive"] is True
+
+
+def test_cancel_experiment_project_deletion_hides_confirmation() -> None:
+    pending_id, row_update, button_update = (
+        ui.cancel_experiment_project_deletion_for_ui()
+    )
+
+    assert pending_id == ""
+    assert row_update["visible"] is False
+    assert button_update["interactive"] is False
+
+
 def test_experiment_project_delete_button_requires_confirmation() -> None:
     app = build_app()
     button = next(
         component for component in app.config["components"]
         if component.get("props", {}).get("value") == "刪除實驗專案"
     )
+    confirm_button = next(
+        component for component in app.config["components"]
+        if component.get("props", {}).get("value") == "確認刪除"
+    )
     dependency = next(
         item for item in app.config["dependencies"]
         if any(target[0] == button["id"] for target in item.get("targets", []))
     )
+    confirm_dependency = next(
+        item for item in app.config["dependencies"]
+        if any(target[0] == confirm_button["id"] for target in item.get("targets", []))
+    )
 
     assert button["props"]["variant"] == "stop"
-    assert "confirm(" in dependency["js"]
-    assert "return [null]" in dependency["js"]
-    assert "? projectId : null]" in dependency["js"]
-    assert "不會刪除其中的車型專案或 Neo4j 資料庫" in dependency["js"]
+    assert dependency.get("js") is None
+    assert dependency["api_name"] == "request_experiment_project_deletion_for_ui"
+    assert confirm_dependency["api_name"] == "delete_confirmed_experiment_project_for_ui"
 
 
 def test_build_app_wires_project_state_change_to_banner() -> None:
