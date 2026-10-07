@@ -2362,11 +2362,10 @@ def test_inline_experiment_group_add_and_remove(tmp_path, monkeypatch) -> None:
 def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     app = build_app()
     components = app.config["components"]
-    assert {renderable.fn.__name__ for renderable in app.renderables} >= {
-        "render_evaluation_score_dropdowns",
-        "render_experiment_score_dropdowns",
-        "render_experiment_project_score_dropdowns",
-    }
+    renderable_names = {renderable.fn.__name__ for renderable in app.renderables}
+    assert "render_evaluation_score_dropdowns" in renderable_names
+    assert "render_experiment_score_dropdowns" not in renderable_names
+    assert "render_experiment_project_score_dropdowns" not in renderable_names
     assert any(
         "全對 / 總題數" in component.get("props", {}).get("headers", [])
         for component in components
@@ -2387,6 +2386,25 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         for component in components
     ) == 2
     assert any(component.get("props", {}).get("value") == "新增實驗組" for component in components)
+    experiment_tables = [
+        component for component in components
+        if component.get("type") == "dataframe"
+        and component.get("props", {}).get("headers") in (
+            ["實驗組", "題號", "來源文件", "題目集", "題目", "正確答案",
+             "實際答案", "答案判定（0錯誤／1部分正確／2全對）",
+             "複核後判定有變更", "評判理由"],
+            ["實驗組", "成員專案", "題號", "來源文件", "題目集", "題目",
+             "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）",
+             "複核後判定有變更", "評判理由"],
+        )
+    ]
+    assert len(experiment_tables) == 2
+    assert experiment_tables[0]["props"]["interactive"] is False
+    assert 7 not in experiment_tables[0]["props"]["static_columns"]
+    assert experiment_tables[1]["props"]["interactive"] is False
+    assert 8 not in experiment_tables[1]["props"]["static_columns"]
+    assert ui.experiment_table_editability_for_ui(True)["interactive"] is True
+    assert ui.experiment_table_editability_for_ui(False)["interactive"] is False
     answer_heading = next(
         item for item in components
         if item.get("props", {}).get("value") == "#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）"
@@ -2428,7 +2446,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     assert column_widths[1] < column_widths[4] and column_widths[1] < column_widths[5]
     assert column_widths[2] < column_widths[4] and column_widths[2] < column_widths[5]
     assert column_widths[6] < column_widths[4] and column_widths[6] < column_widths[5]
-    assert 7 in result_table["props"]["static_columns"]
+    assert 7 not in result_table["props"]["static_columns"]
     experiment_project_table = next(
         item for item in components
         if item.get("props", {}).get("headers", [])[:3] == ["實驗組", "成員專案", "題號"]

@@ -2301,6 +2301,11 @@ def manual_result_editability_for_ui(enabled: bool) -> dict[str, Any]:
     return gr.update(interactive=False)
 
 
+def experiment_table_editability_for_ui(enabled: bool) -> dict[str, Any]:
+    """Unlock only the answer-score cell; other columns remain static."""
+    return gr.update(interactive=bool(enabled))
+
+
 def reset_manual_result_editability_for_ui() -> tuple[dict[str, Any], ...]:
     return (
         gr.update(value=False), gr.update(interactive=False),
@@ -3386,12 +3391,13 @@ def update_manual_experiment_result_for_ui(
     current = [dict(item) for item in results or []]
     if not project_id or not current:
         return "❌ 尚無可人工修改的實驗結果。", [], [], current
+    project: dict[str, Any] = {}
     try:
         submitted = rows.tolist() if hasattr(rows, "tolist") else list(rows or [])
         if len(submitted) != len(current):
             raise ValueError("結果列數與實驗題次不符")
-        changed = 0
-        for item, row in zip(current, submitted):
+        scores = []
+        for row in submitted:
             if len(row) < 8:
                 raise ValueError("逐題結果欄位不完整")
             try:
@@ -3400,6 +3406,9 @@ def update_manual_experiment_result_for_ui(
                 raise ValueError("答案判定只能選 0、1 或 2") from exc
             if score not in (0, 1, 2) or float(row[7]) != score:
                 raise ValueError("答案判定只能選 0、1 或 2")
+            scores.append(score)
+        changed = 0
+        for item, score in zip(current, scores):
             if score != _result_score(item):
                 item["score"] = score
                 item["passed"] = score == 2
@@ -3417,7 +3426,14 @@ def update_manual_experiment_result_for_ui(
             "detail_rows": details,
         })
     except (OSError, TypeError, ValueError) as exc:
-        return f"❌ 人工評判保存失敗：{exc}", [], [], current
+        return (
+            f"❌ 人工評判保存失敗：{exc}",
+            _single_experiment_summary_rows(
+                (project.get("experiment") or {}).get("groups", []), current,
+                (project.get("experiment") or {}).get("judge_model", ""),
+            ) if project_id else [],
+            _single_experiment_detail_rows(current), current,
+        )
     correct = sum(_result_score(item) == 2 for item in current)
     partial = sum(_result_score(item) == 1 for item in current)
     rate = sum(_result_score(item) for item in current) / (2 * len(current))
@@ -3425,16 +3441,6 @@ def update_manual_experiment_result_for_ui(
         f"✅ 評測完成｜已保存人工評判變更 {changed} 筆；完全正確 {correct}、部分正確 {partial} / {len(current)} 題；得分正確率 {rate:.1%}。",
         summary, details, current,
     )
-
-
-def update_manual_experiment_score_for_ui(
-    project_id: str, index: int, score: int, results: list[dict[str, Any]],
-) -> tuple[str, list[list[Any]], list[list[Any]], list[dict[str, Any]]]:
-    rows = _single_experiment_detail_rows(results or [])
-    if index < 0 or index >= len(rows):
-        return "❌ 題次編號無效。", [], rows, results or []
-    rows[index][7] = score
-    return update_manual_experiment_result_for_ui(project_id, rows, results)
 
 
 def export_experiment_results_for_ui(
@@ -3913,9 +3919,9 @@ def update_manual_experiment_project_result_for_ui(
         submitted = rows.tolist() if hasattr(rows, "tolist") else list(rows or [])
         if len(submitted) != len(current):
             raise ValueError("結果列數與實驗題次不符")
-        changed = 0
-        for item, row in zip(current, submitted):
-            if len(row) < 8:
+        scores = []
+        for row in submitted:
+            if len(row) < 9:
                 raise ValueError("逐題結果欄位不完整")
             try:
                 score = int(row[8])
@@ -3923,6 +3929,9 @@ def update_manual_experiment_project_result_for_ui(
                 raise ValueError("答案判定只能選 0、1 或 2") from exc
             if score not in (0, 1, 2) or float(row[8]) != score:
                 raise ValueError("答案判定只能選 0、1 或 2")
+            scores.append(score)
+        changed = 0
+        for item, score in zip(current, scores):
             if score != _result_score(item):
                 item["score"] = score
                 item["passed"] = score == 2
@@ -3938,20 +3947,14 @@ def update_manual_experiment_project_result_for_ui(
             "status": f"✅ 評測完成｜完全正確 {sum(_result_score(item) == 2 for item in current)}、部分正確 {sum(_result_score(item) == 1 for item in current)} / {len(current)} 個跨專案實驗題次；得分正確率 {sum(_result_score(item) for item in current) / (2 * len(current)):.1%}。",
         })
     except (OSError, TypeError, ValueError) as exc:
-        return f"❌ 人工評判保存失敗：{exc}", [], [], project
+        groups = (project or {}).get("groups") or []
+        judge_model = (project or {}).get("judge_model") or str(current[0].get("judge_model", ""))
+        return (
+            f"❌ 人工評判保存失敗：{exc}",
+            _single_experiment_summary_rows(groups, current, judge_model),
+            _experiment_project_detail_rows(current), project,
+        )
     return f"✅ 已保存人工評判變更 {changed} 筆；完全正確 {sum(_result_score(item) == 2 for item in current)}、部分正確 {sum(_result_score(item) == 1 for item in current)} / {len(current)} 個跨專案實驗題次；得分正確率 {sum(_result_score(item) for item in current) / (2 * len(current)):.1%}。", summary, details, updated
-
-
-def update_manual_experiment_project_score_for_ui(
-    project: dict[str, Any], index: int, score: int,
-    results: list[dict[str, Any]],
-) -> tuple[str, list[list[Any]], list[list[Any]], dict[str, Any], list[dict[str, Any]]]:
-    rows = _experiment_project_detail_rows(results or [])
-    if index < 0 or index >= len(rows):
-        return "❌ 題次編號無效。", [], rows, project or {}, results or []
-    rows[index][8] = score
-    status, summary, details, updated = update_manual_experiment_project_result_for_ui(project, rows, results)
-    return status, summary, details, updated, updated.get("results", results or [])
 
 
 def run_experiment_project_for_ui(
@@ -5351,7 +5354,7 @@ def build_app() -> gr.Blocks:
             gr.Markdown("#### 逐題結果")
             experiment_manual_edit_enabled = gr.Checkbox(
                 value=False, label="啟用答案結果人工修改",
-                info="預設鎖定判定欄；勾選後可將各題設為 0 錯誤、1 部分正確或 2 全對。",
+                info="勾選後可直接在逐題結果表格的答案判定欄輸入 0、1 或 2。",
             )
             experiment_details_table = gr.Dataframe(
                 headers=[
@@ -5360,28 +5363,10 @@ def build_app() -> gr.Blocks:
                     "複核後判定有變更", "評判理由",
                 ],
                 datatype=["str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 8, 9],
                 column_widths=[90, 60, 140, 300, 420, 420, 120, 150, 300, 120],
                 wrap=True, elem_classes=["evaluation-table", "evaluation-results-table"],
             )
-            @gr.render(inputs=[experiment_results_state, experiment_manual_edit_enabled])
-            def render_experiment_score_dropdowns(results, editing_enabled):
-                if not results:
-                    return
-                gr.Markdown("人工修改答案判定")
-                for index, item in enumerate(results):
-                    with gr.Row():
-                        gr.Markdown(f"{item.get('group_name', '')}｜題目 {item.get('number', index + 1)}｜{item.get('question', '')}")
-                        score = gr.Dropdown(
-                            choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
-                            value=_result_score(item), label="答案判定",
-                            interactive=bool(editing_enabled), scale=1,
-                        )
-                        score.change(
-                            update_manual_experiment_score_for_ui,
-                            inputs=[project_selector, gr.State(index), score, experiment_results_state],
-                            outputs=[experiment_status, experiment_summary_table, experiment_details_table, experiment_results_state],
-                        )
             with gr.Row():
                 export_experiment_results_button = gr.Button("匯出實驗結果 JSON")
                 experiment_export_file = gr.File(label="完整逐題結果 JSON", interactive=False)
@@ -5537,28 +5522,13 @@ def build_app() -> gr.Blocks:
             experiment_project_details_table = gr.Dataframe(
                 headers=["實驗組", "成員專案", "題號", "來源文件", "題目集", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
                 datatype=["str", "str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 9, 10],
                 wrap=True,
             )
-            experiment_project_manual_edit = gr.Checkbox(value=False, label="啟用答案結果人工修改", info="預設鎖定判定欄；勾選後可將各題設為 0 錯誤、1 部分正確或 2 全對。")
-            @gr.render(inputs=[experiment_project_results_state, experiment_project_manual_edit])
-            def render_experiment_project_score_dropdowns(results, editing_enabled):
-                if not results:
-                    return
-                gr.Markdown("人工修改答案判定")
-                for index, item in enumerate(results):
-                    with gr.Row():
-                        gr.Markdown(f"{item.get('group_name', '')}｜{item.get('source_project_name', '')}｜題目 {item.get('number', index + 1)}｜{item.get('question', '')}")
-                        score = gr.Dropdown(
-                            choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
-                            value=_result_score(item), label="答案判定",
-                            interactive=bool(editing_enabled), scale=1,
-                        )
-                        score.change(
-                            update_manual_experiment_project_score_for_ui,
-                            inputs=[experiment_project_state, gr.State(index), score, experiment_project_results_state],
-                            outputs=[experiment_project_test_status, experiment_project_summary_table, experiment_project_details_table, experiment_project_state, experiment_project_results_state],
-                        )
+            experiment_project_manual_edit = gr.Checkbox(
+                value=False, label="啟用答案結果人工修改",
+                info="勾選後可直接在逐題結果表格的答案判定欄輸入 0、1 或 2。",
+            )
 
         schema_model_endpoint = gr.State(initial_llm_credentials[0][0])
         schema_model_key = gr.State(initial_llm_credentials[0][1])
@@ -5826,7 +5796,7 @@ def build_app() -> gr.Blocks:
             show_progress="hidden",
         )
         experiment_manual_edit_enabled.change(
-            manual_result_editability_for_ui,
+            experiment_table_editability_for_ui,
             inputs=experiment_manual_edit_enabled,
             outputs=experiment_details_table,
             show_progress="hidden",
@@ -6083,7 +6053,7 @@ def build_app() -> gr.Blocks:
             show_progress="minimal",
         )
         experiment_project_manual_edit.input(
-            manual_result_editability_for_ui,
+            experiment_table_editability_for_ui,
             inputs=experiment_project_manual_edit, outputs=experiment_project_details_table,
             show_progress="hidden",
         )
