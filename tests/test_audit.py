@@ -113,3 +113,33 @@ def test_audit_ignores_long_document_text_when_finding_project_ids(tmp_path, mon
     audit_log = project_dir / "activity.log"
     assert audit_log.is_file()
     assert '"action": "neo4j_import"' in audit_log.read_text(encoding="utf-8")
+
+
+def test_audit_does_not_traverse_large_project_payload_after_finding_id(tmp_path, monkeypatch):
+    from pathlib import Path
+    from manual_graphrag import experiment_project_store, project_store
+
+    projects_dir = tmp_path / "projects"
+    experiments_dir = tmp_path / "experiments"
+    project_dir = projects_dir / "project-a"
+    project_dir.mkdir(parents=True)
+    (project_dir / "project.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(project_store, "PROJECTS_DIR", projects_dir)
+    monkeypatch.setattr(experiment_project_store, "EXPERIMENT_PROJECTS_DIR", experiments_dir)
+
+    path_probes = []
+    original_is_file = Path.is_file
+
+    def count_path_probe(path):
+        path_probes.append(path)
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", count_path_probe)
+    _record_callback_event("project_loaded", ({
+        "project_id": "project-a",
+        "chunks": [{"text": f"short chunk text {index}"} for index in range(500)],
+        "graph_state": {"entities": [{"description": f"entity {index}"} for index in range(500)]},
+    },), {})
+
+    assert path_probes == []
+    assert (project_dir / "activity.log").is_file()

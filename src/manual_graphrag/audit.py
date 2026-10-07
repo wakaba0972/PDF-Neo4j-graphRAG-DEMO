@@ -142,20 +142,33 @@ def _record_callback_event(
     project_ids: set[str] = set()
     experiment_ids: set[str] = set()
 
-    def visit(value: Any) -> None:
+    def visit(value: Any, *, allow_id_string: bool = False) -> None:
         if isinstance(value, dict):
             project_id = value.get("project_id")
             experiment_id = value.get("experiment_project_id")
-            if _is_safe_project_id(project_id):
+            found_project = _is_safe_project_id(project_id)
+            found_experiment = _is_safe_project_id(experiment_id)
+            if found_project:
                 project_ids.add(project_id)
-            if _is_safe_project_id(experiment_id):
+            if found_experiment:
                 experiment_ids.add(experiment_id)
-            for nested in value.values():
-                visit(nested)
+            # A project/state object already identifies its owner. Walking its
+            # chunks, graph text, answers, and source rows only adds thousands
+            # of useless filesystem probes during otherwise fast UI callbacks.
+            if found_project or found_experiment:
+                return
+            for key, nested in value.items():
+                visit(
+                    nested,
+                    allow_id_string=key in {
+                        "members", "project_ids", "member_project_ids",
+                        "experiment_project_ids",
+                    },
+                )
         elif isinstance(value, (list, tuple)):
             for nested in value:
-                visit(nested)
-        elif _is_safe_project_id(value):
+                visit(nested, allow_id_string=allow_id_string)
+        elif allow_id_string and _is_safe_project_id(value):
             candidate = Path(value)
             if candidate.name == value and (Path(PROJECTS_DIR) / value / "project.json").is_file():
                 project_ids.add(value)
@@ -165,7 +178,9 @@ def _record_callback_event(
                 experiment_ids.add(value)
 
     for value in values:
-        visit(value)
+        # Standalone callback arguments include project selector IDs. Scalar
+        # text nested in a project's full state should never be path-probed.
+        visit(value, allow_id_string=isinstance(value, str))
     for project_id in project_ids:
         append_audit_event(
             Path(PROJECTS_DIR) / project_id / "activity.log", action, details=details,
