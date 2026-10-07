@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import inspect
-from functools import wraps
+from functools import partial, wraps
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, get_type_hints
 
 
 _CURRENT_ACTOR: ContextVar[str | None] = ContextVar("manual_graphrag_actor", default=None)
@@ -60,6 +60,9 @@ def bind_gradio_callbacks_to_actor(app: Any, actor_state: Any) -> None:
         block_function.inputs.append(actor_state)
         dependency["inputs"].append(actor_state._id)
         original = block_function.fn
+        annotation_source = original
+        while isinstance(annotation_source, partial):
+            annotation_source = annotation_source.func
         original_signature = inspect.signature(original)
         parameters = list(original_signature.parameters.values())
         actor_parameter = inspect.Parameter(
@@ -103,6 +106,11 @@ def bind_gradio_callbacks_to_actor(app: Any, actor_state: Any) -> None:
                 return result
 
         wrapped.__signature__ = wrapped_signature
+        wrapped.__module__ = getattr(annotation_source, "__module__", wrapped.__module__)
+        try:
+            wrapped.__annotations__ = get_type_hints(annotation_source)
+        except (NameError, TypeError):
+            pass
         block_function.fn = wrapped
 
 
