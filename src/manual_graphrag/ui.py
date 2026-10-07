@@ -5612,7 +5612,7 @@ def build_app() -> gr.Blocks:
                 experiment_project_details_table, experiment_project_test_status,
                 experiment_project_answers_status, evaluate_experiment_project_button,
             ],
-            js="(projectId) => { if (!projectId) return null; return confirm(`確定刪除實驗專案「${projectId}」？這只會刪除此實驗專案的設定與結果，不會刪除其中的車型專案或 Neo4j 資料庫。`) ? projectId : null; }",
+            js="(projectId) => { if (!projectId) return [null]; return [confirm(`確定刪除實驗專案「${projectId}」？這只會刪除此實驗專案的設定與結果，不會刪除其中的車型專案或 Neo4j 資料庫。`) ? projectId : null]; }",
         ).then(
             activate_workspace_for_ui,
             inputs=[experiment_workspace_mode, experiment_project_state,

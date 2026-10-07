@@ -97,7 +97,8 @@ def test_experiment_project_delete_button_requires_confirmation() -> None:
 
     assert button["props"]["variant"] == "stop"
     assert "confirm(" in dependency["js"]
-    assert "? projectId : null" in dependency["js"]
+    assert "return [null]" in dependency["js"]
+    assert "? projectId : null]" in dependency["js"]
     assert "不會刪除其中的車型專案或 Neo4j 資料庫" in dependency["js"]
 
 
