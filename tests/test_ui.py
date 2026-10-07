@@ -394,14 +394,14 @@ def test_reranker_and_graph_evidence_expansion_default_off() -> None:
     controls = {
         label: [component for component in app.config["components"]
                 if component.get("props", {}).get("label") == label]
-        for label in ("Reranker 模式", "證據擴展模式")
+        for label in ("Reranker", "證據擴展")
     }
-    assert len(controls["Reranker 模式"]) >= 2
-    assert len(controls["證據擴展模式"]) >= 2
+    assert len(controls["Reranker"]) >= 2
+    assert len(controls["證據擴展"]) >= 2
     assert all(
         component.get("props", {}).get("value") == "停用"
         for component in app.config["components"]
-        if component.get("props", {}).get("label") in {"Reranker 模式", "證據擴展模式"}
+        if component.get("props", {}).get("label") in {"Reranker", "證據擴展"}
     )
     assert all(component["type"] == "dropdown" for group in controls.values() for component in group)
 
@@ -422,7 +422,7 @@ def test_evaluation_results_table_uses_smaller_font_class() -> None:
     )
 
     assert "evaluation-results-table" in results_table["props"]["elem_classes"]
-    assert results_table["props"]["interactive"] is False
+    assert results_table["props"]["interactive"] is True
     assert any(
         component.get("props", {}).get("label") == "啟用答案結果人工修改"
         and component.get("props", {}).get("value") is False
@@ -2099,6 +2099,17 @@ def test_experiment_strategy_controls_show_only_selected_strategy_parameters() -
     assert [item["visible"] for item in synced[1:]] == [True, False]
 
 
+def test_single_evaluation_strategy_controls_sync_active_parameters() -> None:
+    entries = ui._strategy_parameter_entries()
+    values = [6 if strategy_id == "vector" else spec.default
+              for strategy_id, _name, spec in entries]
+
+    synced = ui._sync_single_strategy_parameter_controls("基本向量檢索", *values)
+
+    assert synced[0] == {"effective_search_ratio": 6}
+    assert [item["visible"] for item in synced[1:]] == [True, False]
+
+
 def test_experiment_group_ui_renders_and_saves_new_strategy_parameter(request) -> None:
     strategy = RetrievalStrategySpec(
         "beam", "Beam 搜尋",
@@ -2493,7 +2504,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         ]
         and component.get("type") == "dropdown"
         for component in components
-    ) == ui.EXPERIMENT_GROUP_LIMIT * 2
+    ) == ui.EXPERIMENT_GROUP_LIMIT * 2 + 1
     assert sum(
         component.get("props", {}).get("label") == "全域評測模型"
         and component.get("type") == "dropdown"
@@ -3552,27 +3563,35 @@ def test_evaluation_preferences_save_new_modes(monkeypatch) -> None:
     status = ui.save_evaluation_preferences_for_ui(
         "project", "generation-model", "test-model", 12, "混合檢索", 6,
         False, 5, "LLM Reranker", "證據擴展 V2", "judge-model",
+        strategy_params_json={"effective_search_ratio": 7},
     )
 
     assert status.startswith("✅")
     preferences = captured["evaluation"]["preferences"]
-    assert preferences["retrieval_config"] == _retrieval_config(
+    expected_config = ui._retrieval_config_from_controls(
         "混合檢索", 6, "LLM Reranker", "證據擴展 V2",
-    )
+        {"effective_search_ratio": 7},
+    ).to_dict()
+    assert preferences["retrieval_config"] == expected_config
 
 
 def test_load_evaluation_restores_retrieval_modes(monkeypatch) -> None:
+    retrieval = ui._retrieval_config_from_controls(
+        "基本向量檢索", 9, "LLM Reranker", "證據擴展 V2",
+        {"effective_search_ratio": 6},
+    ).to_dict()
     monkeypatch.setattr(ui, "load_project", lambda _project_id: {"evaluation": {
         "preferences": {
-            "retrieval_config": _retrieval_config(
-                "混合檢索", 9, "LLM Reranker", "證據擴展 V2",
-            ),
+            "retrieval_config": retrieval,
         },
     }})
 
     loaded = ui.load_evaluation_for_ui("project")
 
     assert loaded[9:11] == ("LLM Reranker", "證據擴展 V2")
+    assert loaded[17] == {"effective_search_ratio": 6}
+    assert loaded[18]["visible"] is True and loaded[18]["value"] == 6
+    assert loaded[19]["visible"] is False
 
 
 def test_load_evaluation_restores_saved_summary(monkeypatch) -> None:

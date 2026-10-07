@@ -859,12 +859,17 @@ def _strategy_parameter_entries() -> list[tuple[str, str, Any]]:
     ]
 
 
-def _create_experiment_strategy_parameter_controls() -> list[Any]:
+def _create_experiment_strategy_parameter_controls(
+    initial_strategy_id: str | None = None,
+) -> list[Any]:
     """Create a separate native control for every strategy-declared UI parameter."""
     controls = []
-    for _strategy_id, name, spec in _strategy_parameter_entries():
+    for strategy_id, name, spec in _strategy_parameter_entries():
         label = spec.label or name.replace("_", " ").title()
-        common = {"label": label, "show_label": True, "visible": False, "scale": 2}
+        common = {
+            "label": label, "show_label": True,
+            "visible": strategy_id == initial_strategy_id, "scale": 2,
+        }
         if spec.choices:
             control = gr.Dropdown(choices=list(spec.choices), value=spec.default, **common)
         elif spec.value_type is bool:
@@ -906,6 +911,13 @@ def _visible_params_for_strategy(config: RetrievalConfig) -> dict[str, Any]:
     }
 
 
+def _evaluation_strategy_parameter_values(config: RetrievalConfig) -> tuple[Any, ...]:
+    return (
+        _visible_params_for_strategy(config),
+        *_experiment_strategy_parameter_updates(config, True),
+    )
+
+
 def _sync_experiment_strategy_parameter_controls(
     strategy: str, group_name: str, *values: Any,
 ) -> tuple[Any, ...]:
@@ -921,6 +933,27 @@ def _sync_experiment_strategy_parameter_controls(
         gr.update(
             value=value,
             visible=visible and entry_strategy_id == strategy_id,
+        )
+        for (entry_strategy_id, _name, _spec), value in zip(entries, values)
+    ]
+    return (params, *updates)
+
+
+def _sync_single_strategy_parameter_controls(
+    strategy: str, *values: Any,
+) -> tuple[Any, ...]:
+    """Sync the single-project evaluation controls using the strategy catalog."""
+    strategy_id = strategy_id_from_label(strategy)
+    entries = _strategy_parameter_entries()
+    params = {
+        name: value
+        for (entry_strategy_id, name, _spec), value in zip(entries, values)
+        if entry_strategy_id == strategy_id
+    }
+    updates = [
+        gr.update(
+            value=value,
+            visible=entry_strategy_id == strategy_id,
         )
         for (entry_strategy_id, _name, _spec), value in zip(entries, values)
     ]
@@ -2652,16 +2685,19 @@ def _retrieval_rank(
 
 
 def load_evaluation_for_ui(project_id: str) -> tuple[Any, ...]:
+    default_retrieval = RetrievalConfig.from_dict(_default_retrieval_config())
     if not project_id:
         return ({}, [], [], *([gr.update()] * 11),
                 *([gr.update(value=DEFAULT_REASONING_EFFORT, visible=False)] * 3),
-                "{}", "請先選擇專案。", gr.update(value=False))
+                *_evaluation_strategy_parameter_values(default_retrieval),
+                "請先選擇專案。", gr.update(value=False))
     try:
         project = load_project(project_id)
     except (OSError, ValueError) as exc:
         return ({}, [], [], *([gr.update()] * 11),
                 *([gr.update(value=DEFAULT_REASONING_EFFORT, visible=False)] * 3),
-                "{}", f"❌ {exc}", gr.update(value=False))
+                *_evaluation_strategy_parameter_values(default_retrieval),
+                f"❌ {exc}", gr.update(value=False))
     evaluation = dict(project.get("evaluation") or {})
     evaluation.setdefault("dirty", False)
     preferences = evaluation.get("preferences") or {}
@@ -2694,7 +2730,7 @@ def load_evaluation_for_ui(project_id: str) -> tuple[Any, ...]:
         gr.update(value=preferences.get("judge_reasoning_effort", DEFAULT_JUDGE_REASONING_EFFORT),
                   visible=str(judge_model or "").casefold() == GPT_6_LUNA_MODEL,
                   choices=list(GPT_6_LUNA_REASONING_EFFORTS)),
-        _strategy_parameter_value(retrieval_config, "effective_search_ratio"),
+        *_evaluation_strategy_parameter_values(retrieval_config),
         (_evaluation_summary(results, loaded=True) if results else
          f"已載入 {len(questions)} 道題目與 0 筆測試結果。"),
         gr.update(value=bool(evaluation.get("verification_enabled", False))),
@@ -5318,23 +5354,34 @@ def build_app() -> gr.Blocks:
                         value=DEFAULT_REASONING_EFFORT, label="推理強度",
                         visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
                     )
-                    evaluation_retrieval_mode = gr.Radio(
-                        strategy_choices(), value="混合檢索", label="檢索模式",
+                    evaluation_retrieval_mode = gr.Dropdown(
+                        strategy_choices(), value="混合檢索", label="檢索策略",
+                        allow_custom_value=False,
                     )
-                    evaluation_top_k = gr.Slider(1, 50, value=8, step=1, label="Top K")
+                    evaluation_top_k = gr.Number(
+                        value=8, minimum=1, maximum=50, precision=0, label="Top K",
+                    )
                     evaluation_use_reranker = gr.Dropdown(
-                        choices=list(RERANKER_MODES), value="停用", label="Reranker 模式",
+                        choices=list(RERANKER_MODES), value="停用", label="Reranker",
                         allow_custom_value=False,
                     )
                     evaluation_expand_evidence = gr.Dropdown(
-                        choices=list(EVIDENCE_EXPANSION_MODES), value="停用", label="證據擴展模式",
+                        choices=list(EVIDENCE_EXPANSION_MODES), value="停用", label="證據擴展",
                         info="在策略檢索後，透過圖譜關係擴展候選證據。",
                         allow_custom_value=False,
                     )
+                evaluation_strategy_params_state = gr.State(
+                    _visible_params_for_strategy(
+                        RetrievalConfig.from_dict(_default_retrieval_config())
+                    )
+                )
+                evaluation_strategy_parameter_controls = _create_experiment_strategy_parameter_controls(
+                    initial_strategy_id="hybrid",
+                )
+                with gr.Row():
                     evaluation_test_max_concurrent_requests = gr.Number(
                         value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="最大並行請求數",
                     )
-                evaluation_strategy_params_json = _create_strategy_parameter_controls()[0]
                 generate_evaluation_answers_button = gr.Button("檢索並生成回答", variant="primary")
             with gr.Group(elem_classes="evaluation-metrics-box"):
                 evaluation_answers_status = gr.Markdown(
@@ -5729,7 +5776,9 @@ def build_app() -> gr.Blocks:
                      evaluation_judge_max_concurrent_requests,
                      evaluation_generation_effort, evaluation_test_effort,
                      evaluation_judge_effort,
-                     evaluation_strategy_params_json, evaluation_status,
+                     evaluation_strategy_params_state,
+                     *evaluation_strategy_parameter_controls,
+                     evaluation_status,
                      evaluation_verify_judgment,
                      evaluation_answers_status, run_evaluation_button],
         )
@@ -5794,13 +5843,12 @@ def build_app() -> gr.Blocks:
             evaluation_use_reranker,
             evaluation_expand_evidence, evaluation_judge_model,
             evaluation_generation_effort, evaluation_test_effort, evaluation_judge_effort,
-            evaluation_judge_max_concurrent_requests, evaluation_strategy_params_json,
+            evaluation_judge_max_concurrent_requests, evaluation_strategy_params_state,
         ]
         for component in [evaluation_generation_model, evaluation_test_model, evaluation_question_count,
-                          evaluation_retrieval_mode, evaluation_top_k,
+                          evaluation_top_k,
                           evaluation_allow_parallel_generation, evaluation_use_reranker,
                           evaluation_expand_evidence,
-                          evaluation_strategy_params_json,
                           evaluation_test_max_concurrent_requests, evaluation_judge_model,
                           evaluation_judge_max_concurrent_requests,
                           evaluation_generation_effort, evaluation_test_effort,
@@ -5808,6 +5856,22 @@ def build_app() -> gr.Blocks:
             component.input(
                 save_evaluation_preferences_for_ui,
                 inputs=evaluation_preference_inputs, outputs=evaluation_status,
+                show_progress="hidden",
+            )
+        evaluation_strategy_controls = [
+            evaluation_retrieval_mode, *evaluation_strategy_parameter_controls,
+        ]
+        for component in evaluation_strategy_controls:
+            component.input(
+                _sync_single_strategy_parameter_controls,
+                inputs=evaluation_strategy_controls,
+                outputs=[evaluation_strategy_params_state,
+                         *evaluation_strategy_parameter_controls],
+                show_progress="hidden",
+            ).then(
+                save_evaluation_preferences_for_ui,
+                inputs=evaluation_preference_inputs,
+                outputs=evaluation_status,
                 show_progress="hidden",
             )
         evaluation_questions_table.input(
@@ -5834,7 +5898,7 @@ def build_app() -> gr.Blocks:
                     evaluation_top_k, chunk_state, evaluation_allow_parallel_generation,
                     evaluation_test_max_concurrent_requests,
                     evaluation_use_reranker, evaluation_expand_evidence,
-                    evaluation_generation_effort, evaluation_strategy_params_json],
+                    evaluation_generation_effort, evaluation_strategy_params_state],
             outputs=[evaluation_status, evaluation_questions_table,
                      evaluation_state, evaluation_results_table],
         )
@@ -5846,7 +5910,7 @@ def build_app() -> gr.Blocks:
                     evaluation_test_model, evaluation_retrieval_mode,
                     evaluation_top_k, evaluation_state, evaluation_test_max_concurrent_requests,
                     evaluation_use_reranker, evaluation_expand_evidence,
-                    evaluation_test_effort, evaluation_strategy_params_json],
+                    evaluation_test_effort, evaluation_strategy_params_state],
             outputs=[evaluation_status, evaluation_state, evaluation_results_table],
         )
         run_evaluation_button.click(
