@@ -1082,7 +1082,11 @@ def test_load_project_ignores_legacy_model_credentials(tmp_path, monkeypatch) ->
 
 
 def test_project_answer_appends_project_history_without_separate_archive(monkeypatch) -> None:
-    monkeypatch.setattr(ui, "answer_question_for_ui", lambda *args: ("✅ 完成", "答案", [["來源"]]))
+    answer_call = {}
+    def fake_answer(*args, **kwargs):
+        answer_call.update(args=args, kwargs=kwargs)
+        return "✅ 完成", "答案", [["來源"]]
+    monkeypatch.setattr(ui, "answer_question_for_ui", fake_answer)
     monkeypatch.setattr(ui, "load_project", lambda project_id: {"graph_state": {"document": "manual.pdf"}})
     captured = {}
     def fake_append(project_id, record):
@@ -1094,7 +1098,10 @@ def test_project_answer_appends_project_history_without_separate_archive(monkeyp
         "endpoint", "key", "embedding-endpoint", "embedding-key",
         "bolt", "neo4j", "user", "pass",
         "answer-model", "問題", "混合檢索", 8, "停用", "證據擴展 V2",
+        ui.DEFAULT_REASONING_EFFORT, 3,
     )
+    assert len(answer_call["args"]) == 15
+    assert answer_call["kwargs"]["strategy_params"] == 3
     assert captured["document"] == "manual.pdf"
     assert captured["sources"] == [["來源"]]
     assert captured["question"] == "問題"

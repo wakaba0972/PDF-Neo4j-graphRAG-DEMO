@@ -1133,7 +1133,12 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
 
 
 def answer_question_for_project_ui(project_id: str, *args: Any) -> tuple[Any, ...]:
-    status, answer, sources = answer_question_for_ui(*args)
+    if len(args) > 15:
+        status, answer, sources = answer_question_for_ui(
+            *args[:15], strategy_params=args[15],
+        )
+    else:
+        status, answer, sources = answer_question_for_ui(*args)
     if not status.startswith("✅") or not project_id:
         return status, answer, sources
     try:
