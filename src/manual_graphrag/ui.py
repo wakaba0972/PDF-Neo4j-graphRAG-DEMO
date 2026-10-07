@@ -95,6 +95,7 @@ from .storage import write_json
 DEFAULT_LLM_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_EVALUATION_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_REASONING_EFFORT = "low"
+DEFAULT_JUDGE_REASONING_EFFORT = "medium"
 DEFAULT_MAX_CONCURRENT_REQUESTS = 10
 KNOWN_USERS = ("Jay", "Christine", "Swallow", "Tai", "Zhao")
 
@@ -1407,7 +1408,7 @@ def load_experiment_project_runtime_state_for_ui(
     judge_model = (
         project.get("judge_model") or DEFAULT_LLM_MODEL
     )
-    judge_effort = project.get("judge_reasoning_effort", DEFAULT_REASONING_EFFORT)
+    judge_effort = project.get("judge_reasoning_effort", DEFAULT_JUDGE_REASONING_EFFORT)
     return (
         gr.update(value=judge_model, choices=choices),
         gr.update(value=judge_effort, visible=str(judge_model).casefold() == GPT_6_LUNA_MODEL,
@@ -1561,7 +1562,7 @@ def save_experiment_project_judge_settings_for_ui(
     try:
         updated = save_experiment_project(project["experiment_project_id"], {
             "judge_model": judge_model or "",
-            "judge_reasoning_effort": reasoning_effort or DEFAULT_REASONING_EFFORT,
+            "judge_reasoning_effort": reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT,
             "judge_max_concurrent_requests": max(1, int(max_concurrent_requests)),
         })
         return updated, "✅ 全域評測模型與最大並行請求數已自動儲存。"
@@ -1834,7 +1835,7 @@ def load_experiment_for_ui(
     status = f"題庫 {len(questions)} 題。{status}"
     groups = data.get("groups") or []
     global_judge_model = data.get("judge_model") or DEFAULT_EVALUATION_MODEL
-    global_judge_effort = data.get("judge_reasoning_effort") or DEFAULT_REASONING_EFFORT
+    global_judge_effort = data.get("judge_reasoning_effort") or DEFAULT_JUDGE_REASONING_EFFORT
     results = data.get("results", [])
     pending_answers = data.get("pending_answers") or results
     summary_rows = data.get("summary_rows", [])
@@ -1887,7 +1888,7 @@ def save_experiment_judge_settings_for_ui(
         if concurrency < 1:
             raise ValueError("評測最大並行請求數必須大於 0")
         data["judge_model"] = judge_model or ""
-        data["judge_reasoning_effort"] = reasoning_effort or DEFAULT_REASONING_EFFORT
+        data["judge_reasoning_effort"] = reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT
         data["judge_max_concurrent_requests"] = concurrency
         data["status"] = (
             "⚠️ 實驗設定已變更；畫面保留的是最近一次執行結果。"
@@ -2315,7 +2316,7 @@ def load_evaluation_for_ui(project_id: str) -> tuple[Any, ...]:
         gr.update(value=preferences.get("test_reasoning_effort", DEFAULT_REASONING_EFFORT),
                   visible=str(test_model or "").casefold() == GPT_6_LUNA_MODEL,
                   choices=list(GPT_6_LUNA_REASONING_EFFORTS)),
-        gr.update(value=preferences.get("judge_reasoning_effort", DEFAULT_REASONING_EFFORT),
+        gr.update(value=preferences.get("judge_reasoning_effort", DEFAULT_JUDGE_REASONING_EFFORT),
                   visible=str(judge_model or "").casefold() == GPT_6_LUNA_MODEL,
                   choices=list(GPT_6_LUNA_REASONING_EFFORTS)),
         (_evaluation_summary(results, loaded=True) if results else
@@ -2334,7 +2335,7 @@ def save_evaluation_preferences_for_ui(
     judge_model: str | None = None,
     generation_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     test_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
-    judge_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
+    judge_reasoning_effort: str = DEFAULT_JUDGE_REASONING_EFFORT,
     judge_max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
 ) -> str:
     if not project_id:
@@ -2361,7 +2362,7 @@ def save_evaluation_preferences_for_ui(
             "judge_max_concurrent_requests": judge_concurrency,
             "generation_reasoning_effort": generation_reasoning_effort or DEFAULT_REASONING_EFFORT,
             "test_reasoning_effort": test_reasoning_effort or DEFAULT_REASONING_EFFORT,
-            "judge_reasoning_effort": judge_reasoning_effort or DEFAULT_REASONING_EFFORT,
+            "judge_reasoning_effort": judge_reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT,
         }
         save_project(project_id, {"evaluation": evaluation})
     except (OSError, TypeError, ValueError) as exc:
@@ -2583,6 +2584,7 @@ def evaluate_generated_answers_for_ui(
         return "❌ 請先按「檢索並生成回答」完成回答生成。", [], current
     if not judge_model or not judge_model_endpoint:
         return "❌ 請選擇可用的評測模型。", [], current
+    judge_reasoning_effort = judge_reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT
     try:
         concurrency = int(max_concurrent_requests)
         if concurrency < 1:
@@ -2662,6 +2664,7 @@ def run_evaluation_for_ui(
         return "❌ 請選擇回答模型與評測模型。", [], evaluation
     if judge_model_endpoint is not None and not judge_model_endpoint:
         return "❌ 無法解析評測模型的服務設定。", [], evaluation
+    judge_reasoning_effort = judge_reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT
     try:
         retrieval_config = _retrieval_config_from_controls(
             retrieval_mode, int(top_k), use_reranker, expand_evidence,
@@ -2786,7 +2789,7 @@ def run_experiment_groups_for_ui(
     effective_judge_effort = (
         judge_reasoning_effort or previous.get("judge_reasoning_effort")
         or next((group.get("judge_reasoning_effort") for group in groups if group.get("judge_reasoning_effort")), None)
-        or DEFAULT_REASONING_EFFORT
+        or DEFAULT_JUDGE_REASONING_EFFORT
     )
     persisted_groups = [{
         key: value for key, value in group.items()
@@ -3091,6 +3094,7 @@ def evaluate_experiment_answers_for_ui(
         return "❌ 請先按「檢索並生成回答」完成回答生成。", [], [], []
     if not judge_model or not judge_endpoint:
         return "❌ 請選擇可用的評測模型。", [], [], []
+    judge_reasoning_effort = judge_reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT
     try:
         concurrency = int(max_concurrent_requests)
         if concurrency < 1:
@@ -3416,7 +3420,7 @@ def export_experiment_results_for_ui(
                     groups[0].get("answer_model") if groups else None,
                 ),
                 "judge_reasoning_effort": experiment.get(
-                    "judge_reasoning_effort", DEFAULT_REASONING_EFFORT,
+                    "judge_reasoning_effort", DEFAULT_JUDGE_REASONING_EFFORT,
                 ),
             },
             "question_count": len(experiment.get("questions") or []),
@@ -3628,6 +3632,7 @@ def evaluate_experiment_project_answers_for_ui(
     endpoint, key = resolve_model_credentials_for_ui(llm_state, judge_model or "")
     if not endpoint:
         return "❌ 請選擇可用的評測模型。", [], [], [], project
+    judge_reasoning_effort = judge_reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT
     try:
         concurrency = int(max_concurrent_requests)
         if concurrency < 1:
@@ -3681,7 +3686,7 @@ def evaluate_experiment_project_answers_for_ui(
             "pending_answers": pending_answers, "results": results, "summary_rows": summary,
             "detail_rows": details, "judge_model": judge_model,
             "verification_enabled": bool(verification_enabled),
-            "judge_reasoning_effort": judge_reasoning_effort or DEFAULT_REASONING_EFFORT,
+            "judge_reasoning_effort": judge_reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT,
             "judge_max_concurrent_requests": concurrency, "status": status,
         })
     except (OSError, TypeError, ValueError) as exc:
@@ -3818,7 +3823,7 @@ def run_experiment_project_for_ui(
         updated = save_experiment_project(project_id, {
             "results": all_results, "summary_rows": summary_rows,
             "detail_rows": detail_rows, "judge_model": judge_model,
-            "judge_reasoning_effort": judge_reasoning_effort or DEFAULT_REASONING_EFFORT,
+            "judge_reasoning_effort": judge_reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT,
             "max_concurrent_requests": int(max_concurrent_requests), "status": status,
         })
     except (OSError, TypeError, ValueError) as exc:
@@ -4953,7 +4958,7 @@ def build_app() -> gr.Blocks:
                     )
                     evaluation_judge_effort = gr.Dropdown(
                         choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                        value=DEFAULT_REASONING_EFFORT, label="推理強度",
+                        value=DEFAULT_JUDGE_REASONING_EFFORT, label="推理強度",
                         visible=True,
                     )
                     evaluation_judge_max_concurrent_requests = gr.Number(
@@ -5094,7 +5099,7 @@ def build_app() -> gr.Blocks:
                     )
                     experiment_judge_effort = gr.Dropdown(
                         choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                        value=DEFAULT_REASONING_EFFORT, label="評測推理強度",
+                        value=DEFAULT_JUDGE_REASONING_EFFORT, label="評測推理強度",
                         visible=True, scale=1,
                     )
                     experiment_judge_max_concurrent_requests = gr.Number(
@@ -5274,7 +5279,7 @@ def build_app() -> gr.Blocks:
                     label="全域評測模型", scale=2,
                 )
                 experiment_project_judge_effort = gr.Dropdown(
-                    choices=list(GPT_6_LUNA_REASONING_EFFORTS), value=DEFAULT_REASONING_EFFORT,
+                    choices=list(GPT_6_LUNA_REASONING_EFFORTS), value=DEFAULT_JUDGE_REASONING_EFFORT,
                     label="評測推理強度", visible=preferred_llm == GPT_6_LUNA_MODEL,
                 )
                 experiment_project_judge_concurrency = gr.Number(

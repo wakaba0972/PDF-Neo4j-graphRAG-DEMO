@@ -183,6 +183,29 @@ def test_pages_three_through_five_default_judge_fields_to_luna(monkeypatch) -> N
     )
 
 
+def test_luna_evaluation_reasoning_effort_defaults_to_medium() -> None:
+    app = build_app()
+    components = [
+        component for component in app.config["components"]
+        if component.get("props", {}).get("label") in {
+            "評測推理強度", "推理強度", "回答推理強度",
+        }
+    ]
+    judge_fields = [
+        component for component in components
+        if component.get("props", {}).get("label") in {"評測推理強度", "推理強度"}
+    ]
+    answer_fields = [
+        component for component in components
+        if component.get("props", {}).get("label") == "回答推理強度"
+    ]
+
+    assert ui.DEFAULT_JUDGE_REASONING_EFFORT == "medium"
+    assert any(field["props"]["value"] == "medium" for field in judge_fields)
+    assert all(field["props"]["value"] == "medium" for field in judge_fields if field["props"]["label"] == "評測推理強度")
+    assert all(field["props"]["value"] == "low" for field in answer_fields)
+
+
 def test_pause_and_stop_buttons_bypass_the_queue() -> None:
     app = build_app()
     pause_button = next(
@@ -2265,7 +2288,7 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
     }
     assert payload["max_concurrent_requests"] == 5
     assert payload["evaluation"] == {
-        "judge_model": "judge-a", "judge_reasoning_effort": "low",
+        "judge_model": "judge-a", "judge_reasoning_effort": "medium",
     }
     assert payload["summary"] == {
         "question_count": 1, "correct_count": 1, "partial_count": 0, "correct_total": "1 / 1",
@@ -3149,7 +3172,7 @@ def test_evaluation_preferences_keep_generation_and_test_models_separate(monkeyp
         "judge_max_concurrent_requests": 7,
         "generation_reasoning_effort": "low",
         "test_reasoning_effort": "low",
-        "judge_reasoning_effort": "low",
+        "judge_reasoning_effort": "medium",
     }
 
 
