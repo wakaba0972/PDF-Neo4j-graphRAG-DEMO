@@ -344,7 +344,7 @@ def test_evaluation_results_table_uses_smaller_font_class() -> None:
         component
         for component in app.config["components"]
         if component.get("props", {}).get("headers")
-        == ["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（勾選=正確）", "複核後判定有變更", "評判理由"]
+        == ["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"]
     )
     html_styles = "\n".join(
         str(component.get("props", {}).get("value", ""))
@@ -659,13 +659,13 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     result_table_index = next(
         index for index, component in enumerate(components)
         if component.get("props", {}).get("headers")
-            == ["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（勾選=正確）", "複核後判定有變更", "評判理由"]
+                == ["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"]
     )
     assert question_table_index < answer_heading_index < answer_availability_index < judge_heading_index < result_title_index < result_table_index
     results_table = components[result_table_index]
     assert results_table["props"]["interactive"] is False
-    assert results_table["props"]["datatype"][5] == "bool"
-    assert 5 not in results_table["props"]["static_columns"]
+    assert results_table["props"]["datatype"][5] == "number"
+    assert 5 in results_table["props"]["static_columns"]
     judge_button = next(
         component for component in components
         if component.get("props", {}).get("value") == "進行評測"
@@ -1292,14 +1292,14 @@ def test_run_evaluation_for_ui_judges_and_saves(monkeypatch) -> None:
         "model", "混合檢索", 8, evaluation, 2,
     )
 
-    assert "總共答對 1 題 / 1 題" in status
-    assert "manual.pdf：答案正確 1 / 1" in status
-    assert "答錯：0 題" in status
-    assert "答案正確率：100.0%" in status
+    assert "完全正確 1 題 / 1 題" in status
+    assert "manual.pdf：完全正確 1 / 1" in status
+    assert "錯誤：0 題" in status
+    assert "得分正確率：100.0%" in status
     assert "Recall@5：100.0%" in status
     assert "Recall@10：100.0%" in status
     assert "MRR：1.000" in status
-    assert rows[0][3:] == ["manual.pdf", "實際答案", True, None, "正確"]
+    assert rows[0][3:] == ["manual.pdf", "實際答案", 2, None, "正確"]
     assert captured["test_workers"] == 2
     assert updated["results"][0]["passed"] is True
     assert captured["evaluation"] == updated
@@ -1356,9 +1356,10 @@ def test_evaluation_judges_saved_answers_without_generating_again(monkeypatch) -
         max_concurrent_requests=2,
     )
 
-    assert "總共答對 2 題 / 2 題" in status
+    assert "完全正確 2 題 / 2 題" in status
     assert rows[0][4] == "回答內容"
-    assert rows[0][5] is True
+    assert rows[0][5] == 2
+    assert updated["results"][0]["score"] == 2
     assert updated["results"][0]["reason"] == "正確"
     assert captured["evaluation"] == updated
     assert captured["judge_workers"] == 2
@@ -1386,9 +1387,9 @@ def test_evaluation_verification_rechecks_judgment_without_changing_answer(monke
         verification_enabled=True,
     )
 
-    assert "答對 0 題 / 1 題" in status
+    assert "完全正確 0 題 / 1 題" in status
     assert rows[0][4] == "原始實際答案"
-    assert rows[0][5:8] == [False, True, "複核發現答案缺少關鍵條件"]
+    assert rows[0][5:8] == [0, True, "複核發現答案缺少關鍵條件"]
     result = updated["results"][0]
     assert result["actual_answer"] == "原始實際答案"
     assert result["first_passed"] is True
@@ -1405,18 +1406,35 @@ def test_manual_evaluation_edit_updates_reason_and_accuracy(monkeypatch) -> None
         {"number": 2, "question": "Q2", "expected_answer": "A2", "passed": True, "reason": "正確"},
     ]}
     rows = ui._evaluation_result_rows(evaluation["results"])
-    rows[1][5] = False
+    rows[1][5] = 1
 
     status, updated_rows, updated = ui.update_manual_evaluation_for_ui("project", rows, evaluation)
 
-    assert "總共答對 1 題 / 2 題" in status
-    assert "答案正確率：50.0%" in status
+    assert "完全正確 1 題 / 2 題" in status
+    assert "部分正確：1 題" in status
+    assert "得分正確率：75.0%" in status
     assert "人工評判變更 1 筆" in status
     assert updated["results"][0]["reason"] == "正確"
     assert updated["results"][1]["passed"] is False
+    assert updated["results"][1]["score"] == 1
     assert updated["results"][1]["reason"] == "人工評判"
-    assert updated_rows[1][5] is False
+    assert updated_rows[1][5] == 1
     assert captured["evaluation"] == updated
+
+
+def test_manual_evaluation_rejects_score_outside_zero_to_two(monkeypatch) -> None:
+    monkeypatch.setattr(ui, "save_project", lambda *_args, **_kwargs: pytest.fail("無效分數不應儲存"))
+    evaluation = {"results": [{
+        "number": 1, "question": "Q", "expected_answer": "A", "score": 2,
+    }]}
+    rows = ui._evaluation_result_rows(evaluation["results"])
+    rows[0][5] = 3
+
+    status, updated_rows, updated = ui.update_manual_evaluation_for_ui("project", rows, evaluation)
+
+    assert status == "❌ 人工評判保存失敗：答案判定只能選 0、1 或 2"
+    assert updated_rows[0][5] == 2
+    assert updated["results"][0]["score"] == 2
 
 
 def test_run_evaluation_for_ui_forwards_credentials_to_answer_question_for_ui(monkeypatch) -> None:
@@ -2006,19 +2024,19 @@ def test_evaluate_experiment_answers_and_manual_edit_recompute_summary(monkeypat
     )
 
     assert status.startswith("✅ 評測完成")
-    assert summaries[0][6:8] == ["1 / 1", "100.0%"]
-    assert details[0][6] is True
+    assert summaries[0][6:9] == ["1 / 1", 0, "100.0%"]
+    assert details[0][6] == 2
     edited = [list(details[0])]
-    edited[0][6] = False
+    edited[0][6] = 1
     manual_status, manual_summary, manual_details, updated = ui.update_manual_experiment_result_for_ui(
         "project", edited, results,
     )
 
     assert "人工評判變更 1 筆" in manual_status
     assert manual_status.startswith("✅ 評測完成｜")
-    assert "答對 0 / 1 個實驗題次" in manual_status
-    assert manual_summary[0][6:8] == ["0 / 1", "0.0%"]
-    assert manual_details[0][6] is False
+    assert "完全正確 0、部分正確 1 / 1 題" in manual_status
+    assert manual_summary[0][6:9] == ["0 / 1", 1, "50.0%"]
+    assert manual_details[0][6] == 1
     assert updated[0]["reason"] == "人工評判"
     assert saved["experiment"]["results"] == updated
 
@@ -2095,8 +2113,13 @@ def test_inline_experiment_group_add_and_remove(tmp_path, monkeypatch) -> None:
 def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     app = build_app()
     components = app.config["components"]
+    assert {renderable.fn.__name__ for renderable in app.renderables} >= {
+        "render_evaluation_score_dropdowns",
+        "render_experiment_score_dropdowns",
+        "render_experiment_project_score_dropdowns",
+    }
     assert any(
-        "答對數 / 總題數" in component.get("props", {}).get("headers", [])
+        "全對 / 總題數" in component.get("props", {}).get("headers", [])
         for component in components
     )
     assert not any(component.get("props", {}).get("headers") == [
@@ -2142,10 +2165,10 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     assert "evaluation-judge-button" in evaluate_button["props"]["elem_classes"]
     result_table = next(
         item for item in components
-        if "答案結果（勾選=正確）" in item.get("props", {}).get("headers", [])
+        if item.get("props", {}).get("headers", [None, None])[0:2] == ["實驗組", "題號"]
     )
     assert result_table["props"]["interactive"] is False
-    assert result_table["props"]["datatype"][6] == "bool"
+    assert result_table["props"]["datatype"][6] == "number"
     assert "回答模型" not in result_table["props"]["headers"]
     assert "評測模型" not in result_table["props"]["headers"]
     assert result_table["props"]["headers"][1:4] == ["題號", "來源文件", "題目"]
@@ -2156,7 +2179,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     assert column_widths[1] < column_widths[4] and column_widths[1] < column_widths[5]
     assert column_widths[2] < column_widths[4] and column_widths[2] < column_widths[5]
     assert column_widths[6] < column_widths[4] and column_widths[6] < column_widths[5]
-    assert 6 not in result_table["props"]["static_columns"]
+    assert 6 in result_table["props"]["static_columns"]
     assert any(
         component.get("props", {}).get("label") == "啟用答案結果人工修改"
         and component.get("props", {}).get("value") is False
@@ -2235,7 +2258,7 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
     compact = json.loads(Path(compact_file_path).read_text(encoding="utf-8"))
 
     assert status.startswith("✅ 已匯出 1 個實驗組；總答對 1 / 1")
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert "status" not in payload
     assert payload["project"] == {
         "project_id": project["project_id"], "name": "experiment-export",
@@ -2245,7 +2268,7 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
         "judge_model": "judge-a", "judge_reasoning_effort": "low",
     }
     assert payload["summary"] == {
-        "question_count": 1, "correct_count": 1, "correct_total": "1 / 1",
+        "question_count": 1, "correct_count": 1, "partial_count": 0, "correct_total": "1 / 1",
         "accuracy": 1.0, "recall_at_5": 1.0, "recall_at_10": 1.0, "mrr": 1.0,
     }
     assert payload["groups"][0] == {
@@ -2258,14 +2281,14 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
         },
         "summary": {
             "answer_model": "model-a", "judge_model": "judge-a",
-            "question_count": 1, "correct_count": 1, "correct_total": "1 / 1",
+            "question_count": 1, "correct_count": 1, "partial_count": 0, "correct_total": "1 / 1",
             "accuracy": 1.0, "recall_at_5": 1.0,
             "recall_at_10": 1.0, "mrr": 1.0,
         },
         "results": [{
             key: value for key, value in result.items()
             if key not in {"group_index", "group_name"}
-        } | {"manual_judgment": False}],
+        } | {"score": 2, "passed": True, "manual_judgment": False}],
     }
     assert compact["format"] == "manual-graphrag-experiment-summary"
     assert compact["summary"] == payload["summary"]
@@ -2300,7 +2323,7 @@ def test_export_experiment_results_syncs_latest_manual_judgment(tmp_path, monkey
         "summary_rows": [["向量組", "model-a", "judge-a", 1, "1 / 1", "100.0%", "100.0%", "100.0%", "1.000"]],
     }})
     edited_rows = ui._single_experiment_detail_rows([result])
-    edited_rows[0][6] = False
+    edited_rows[0][6] = 1
 
     status, file_path, compact_file_path = ui.export_experiment_results_for_ui(project["project_id"], edited_rows)
     exported = json.loads(Path(file_path).read_text(encoding="utf-8"))
@@ -2312,11 +2335,15 @@ def test_export_experiment_results_syncs_latest_manual_judgment(tmp_path, monkey
     assert exported["groups"][0]["results"][0]["manual_judgment"] is True
     assert exported["groups"][0]["summary"] == {
         "answer_model": "model-a", "judge_model": "judge-a",
-        "question_count": 1, "correct_count": 0, "correct_total": "0 / 1",
-        "accuracy": 0.0, "recall_at_5": 1.0, "recall_at_10": 1.0, "mrr": 1.0,
+        "question_count": 1, "correct_count": 0, "partial_count": 1, "correct_total": "0 / 1",
+        "accuracy": 0.5, "recall_at_5": 1.0, "recall_at_10": 1.0, "mrr": 1.0,
     }
     assert exported["summary"]["correct_total"] == "0 / 1"
+    assert exported["summary"]["partial_count"] == 1
+    assert exported["summary"]["accuracy"] == 0.5
     assert compact["summary"]["correct_total"] == "0 / 1"
+    assert compact["schema_version"] == 2
+    assert compact["summary"]["accuracy"] == 0.5
     assert compact["groups"][0]["summary"]["correct_total"] == "0 / 1"
     _second_status, second_file_path, second_compact_file_path = ui.export_experiment_results_for_ui(
         project["project_id"], edited_rows,
@@ -2368,8 +2395,8 @@ def test_run_experiment_groups_outputs_each_group_summary_and_details(monkeypatc
 
     assert status.startswith("✅ 已完成 2 個實驗組")
     assert summaries == [
-        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", "100.0%", "100.0%", "100.0%", "1.000"],
-        ["混合擴展", "model-b", "Reranker", "證據擴展 V2", "judge-x", 2, "2 / 2", "100.0%", "100.0%", "100.0%", "1.000"],
+        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000"],
+        ["混合擴展", "model-b", "Reranker", "證據擴展 V2", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000"],
     ]
     assert len(details) == len(results) == 4
     assert captured["workers"] == 2
@@ -3181,7 +3208,7 @@ def test_load_evaluation_restores_saved_summary(monkeypatch) -> None:
     loaded = ui.load_evaluation_for_ui("project")
 
     assert "已載入測試結果" in loaded[-2]
-    assert "答案正確率：50.0%" in loaded[-2]
+    assert "得分正確率：50.0%" in loaded[-2]
     assert "Recall@5：50.0%" in loaded[-2]
     assert "Recall@10：50.0%" in loaded[-2]
     assert "MRR：0.250" in loaded[-2]
@@ -3507,7 +3534,7 @@ def test_multi_project_experiment_runs_each_projects_own_database(tmp_path, monk
     assert [call[1] for call in calls] == [own_questions[member["project_id"]] for member in members]
     assert [call[2] for call in calls] == [member["neo4j_database"] for member in members]
     assert all(call[3] is False for call in calls)
-    assert summaries[0][5:8] == [2, "1 / 2", "50.0%"]
+    assert summaries[0][5:9] == [2, "1 / 2", 0, "50.0%"]
     assert {row[1] for row in details} == {member["name"] for member in members}
     assert len(saved["results"]) == 2
 
@@ -3540,16 +3567,17 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     evaluated_status, results, summaries, details, saved = ui.evaluate_experiment_project_answers_for_ui(
         saved, pending, "judge", "low", 2, {},
     )
-    assert evaluated_status == "✅ 評測完成｜答對 1 / 1 個跨專案實驗題次。"
+    assert "完全正確 1、部分正確 0 / 1 個跨專案實驗題次" in evaluated_status
     assert results[0]["passed"] is True
     assert summaries[0][6] == "1 / 1"
     assert details[0][1:3] == ["跨專案成員", 1]
 
-    details[0][7] = False
+    details[0][7] = 1
     edited_status, summaries, _details, saved = ui.update_manual_experiment_project_result_for_ui(
         saved, details, results,
     )
-    assert "答對 0 / 1" in edited_status
+    assert "完全正確 0、部分正確 1 / 1 個跨專案實驗題次" in edited_status
+    assert "得分正確率 50.0%" in edited_status
     assert summaries[0][6] == "0 / 1"
     assert saved["results"][0]["reason"] == "人工評判"
 

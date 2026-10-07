@@ -358,31 +358,32 @@ def judge_evaluation_answer(
     reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     if not actual_answer.strip():
-        return {"passed": False, "reason": "實際答案為空，未回答標準答案中的關鍵事實。"}
+        return {"score": 0, "reason": "實際答案為空，未回答標準答案中的關鍵事實。"}
     if _is_abstention(actual_answer) and not _is_abstention(expected_answer):
         return {
-            "passed": False,
+            "score": 0,
             "reason": "實際答案表示無法回答或資料不足，但標準答案包含明確事實。",
         }
 
     def validate(payload: dict[str, Any]) -> dict[str, Any]:
-        passed = payload.get("passed")
+        score = payload.get("score")
         reason = str(payload.get("reason", "")).strip()
-        if not isinstance(passed, bool) or not reason:
-            raise ValueError("評判結果必須包含 passed boolean 與 reason")
-        return {"passed": passed, "reason": reason}
+        if not isinstance(score, int) or isinstance(score, bool) or score not in {0, 1, 2} or not reason:
+            raise ValueError("評判結果必須包含 0、1、2 的 score 與 reason")
+        return {"score": score, "reason": reason}
 
     return _chat_json(
         base_url,
         api_key,
         model,
-        "你是嚴謹的問答評測員。只有實際答案包含標準答案的核心事實才能通過。"
-        "誠實表示不知道、文件未提及、找不到資訊或證據不足，不等於回答正確；"
-        "當標準答案有明確事實而實際答案拒答時，passed 必須為 false。"
+        "你是嚴謹的問答評測員，請依答案涵蓋標準答案核心內容的程度給 0 到 2 分。"
+        "0 代表錯誤或未回答核心事實；1 代表部分正確但遺漏重要內容或條件；"
+        "2 代表完整正確，涵蓋標準答案的必要事實。"
+        "誠實表示不知道、文件未提及、找不到資訊或證據不足，不能得分；"
         "不要求逐字相同，只輸出 JSON。",
         f"問題：{question}\n標準答案：{expected_answer}\n實際答案：{actual_answer}\n"
         "請逐項檢查標準答案中的數值、單位、名稱、條件與結論是否出現在實際答案。"
-        '輸出格式：{"passed":true,"reason":"簡短理由"}。',
+        '輸出格式：{"score":2,"reason":"簡短理由"}。',
         validator=validate,
         reasoning_effort=reasoning_effort,
     )
@@ -395,31 +396,30 @@ def verify_evaluation_judgment(
     question: str,
     expected_answer: str,
     actual_answer: str,
-    first_passed: bool,
+    first_score: int,
     first_reason: str,
     reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     """Independently review a first-pass answer judgment and its rationale."""
     def validate(payload: dict[str, Any]) -> dict[str, Any]:
-        passed = payload.get("passed")
+        score = payload.get("score")
         reason = str(payload.get("reason", "")).strip()
-        if not isinstance(passed, bool) or not reason:
-            raise ValueError("複核結果必須包含 passed boolean 與 reason")
-        return {"passed": passed, "reason": reason}
+        if not isinstance(score, int) or isinstance(score, bool) or score not in {0, 1, 2} or not reason:
+            raise ValueError("複核結果必須包含 0、1、2 的 score 與 reason")
+        return {"score": score, "reason": reason}
 
-    first_result = "正確" if first_passed else "錯誤"
+    first_result = first_score
     return _chat_json(
         base_url,
         api_key,
         model,
         "你是獨立的第二輪問答評測複核員。重新核對題目、標準答案和實際答案，"
-        "並檢查第一輪的正誤判定及理由是否成立。不要因為第一輪已給結論就照單全收；"
-        "若第一輪忽略標準答案的核心事實、數值、單位、條件或錯把不完整答案判正確，應修正判定。"
-        "拒答不能視為正確。只輸出 JSON。",
+        "並檢查第一輪 0 到 2 分的判定及理由是否成立。不要因為第一輪已給結論就照單全收；"
+        "0=錯誤，1=部分正確，2=完整正確。拒答不能視為正確。只輸出 JSON。",
         f"問題：{question}\n標準答案：{expected_answer}\n實際答案：{actual_answer}\n"
-        f"第一輪判定：{first_result}\n第一輪理由：{first_reason}\n"
-        "請重新獨立檢查；輸出最終判定及簡短理由，格式為 "
-        '{"passed":true,"reason":"複核後理由"}。',
+        f"第一輪判定分數：{first_result}\n第一輪理由：{first_reason}\n"
+        "請重新獨立檢查；輸出最終 0 到 2 分及簡短理由，格式為 "
+        '{"score":2,"reason":"複核後理由"}。',
         validator=validate,
         reasoning_effort=reasoning_effort,
     )

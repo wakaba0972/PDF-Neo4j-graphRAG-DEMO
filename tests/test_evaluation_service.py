@@ -219,18 +219,27 @@ def test_generate_evaluation_questions_rejects_invalid_input() -> None:
         )
 
 
-def test_judge_evaluation_answer_returns_boolean(monkeypatch) -> None:
+def test_judge_evaluation_answer_returns_three_level_score(monkeypatch) -> None:
     monkeypatch.setattr(
         evaluation_service,
         "_chat_json",
-        lambda *args, **kwargs: kwargs["validator"]({"passed": True, "reason": "語意相符"}),
+        lambda *args, **kwargs: kwargs["validator"]({"score": 1, "reason": "部分涵蓋"}),
     )
 
     result = evaluation_service.judge_evaluation_answer(
         "url", "key", "model", "問題", "標準", "實際"
     )
 
-    assert result == {"passed": True, "reason": "語意相符"}
+    assert result == {"score": 1, "reason": "部分涵蓋"}
+
+
+def test_judge_evaluation_answer_rejects_scores_outside_zero_to_two(monkeypatch) -> None:
+    monkeypatch.setattr(
+        evaluation_service, "_chat_json",
+        lambda *args, **kwargs: kwargs["validator"]({"score": 3, "reason": "超出範圍"}),
+    )
+    with pytest.raises(ValueError, match="0、1、2"):
+        evaluation_service.judge_evaluation_answer("url", "key", "model", "Q", "A", "A")
 
 
 def test_verify_evaluation_judgment_reviews_first_pass_and_reason(monkeypatch) -> None:
@@ -241,16 +250,16 @@ def test_verify_evaluation_judgment_reviews_first_pass_and_reason(monkeypatch) -
             base_url=base_url, api_key=api_key, model=model,
             system_prompt=system_prompt, user_prompt=user_prompt,
         )
-        return kwargs["validator"]({"passed": False, "reason": "標準答案中的數值遺漏"})
+        return kwargs["validator"]({"score": 1, "reason": "標準答案中的數值遺漏"})
 
     monkeypatch.setattr(evaluation_service, "_chat_json", fake_chat)
     result = evaluation_service.verify_evaluation_judgment(
         "url", "key", "judge", "問題", "標準答案", "實際答案",
-        True, "第一輪認為正確", reasoning_effort="low",
+        2, "第一輪認為正確", reasoning_effort="low",
     )
 
-    assert result == {"passed": False, "reason": "標準答案中的數值遺漏"}
-    assert "第一輪判定：正確" in captured["user_prompt"]
+    assert result == {"score": 1, "reason": "標準答案中的數值遺漏"}
+    assert "第一輪判定分數：2" in captured["user_prompt"]
     assert "第一輪理由：第一輪認為正確" in captured["user_prompt"]
     assert "實際答案：實際答案" in captured["user_prompt"]
 
@@ -273,7 +282,7 @@ def test_judge_rejects_abstention_when_expected_answer_has_fact(monkeypatch) -> 
         "根據提供的證據內容，沒有任何資訊提及容量。因此，無法回答此問題。",
     )
 
-    assert result["passed"] is False
+    assert result["score"] == 0
     assert "標準答案包含明確事實" in result["reason"]
 
 
@@ -288,5 +297,5 @@ def test_judge_rejects_empty_answer_without_model_call(monkeypatch) -> None:
         "url", "key", "model", "問題", "明確答案", "  "
     )
 
-    assert result["passed"] is False
+    assert result["score"] == 0
     assert "實際答案為空" in result["reason"]

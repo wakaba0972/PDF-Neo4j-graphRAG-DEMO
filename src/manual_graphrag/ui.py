@@ -167,6 +167,29 @@ def _reasoning_effort_record(model: str | None, effort: str | None, field: str) 
     )
 
 
+def _result_score(item: dict[str, Any]) -> int:
+    """Read the 0-2 score while accepting legacy boolean result records."""
+    score = item.get("score")
+    if not isinstance(score, bool) and score in (0, 1, 2):
+        return int(score)
+    return 2 if bool(item.get("passed")) else 0
+
+
+def _display_score(item: dict[str, Any]) -> int | None:
+    if "score" in item or "passed" in item:
+        return _result_score(item)
+    return None
+
+
+def _normalize_judgment(judgment: dict[str, Any]) -> dict[str, Any]:
+    score = judgment.get("score")
+    if isinstance(score, bool) or score not in (0, 1, 2):
+        score = 2 if bool(judgment.get("passed")) else 0
+    else:
+        score = int(score)
+    return {**judgment, "score": score, "passed": score == 2}
+
+
 def _verify_judgment_if_enabled(
     judgment: dict[str, Any], verification_enabled: bool,
     endpoint: str, api_key: str, model: str,
@@ -176,30 +199,36 @@ def _verify_judgment_if_enabled(
     result = {**judgment, "verification_enabled": bool(verification_enabled)}
     if not verification_enabled:
         return {**result, "verification_changed": None}
-    first_passed = bool(judgment.get("passed"))
+    judgment = _normalize_judgment(judgment)
+    first_score = _result_score(judgment)
     first_reason = str(judgment.get("reason", ""))
     try:
         verified = verify_evaluation_judgment(
             endpoint, api_key, model, question, expected_answer, actual_answer,
-            first_passed, first_reason,
+            first_score, first_reason,
             **_reasoning_effort_kwargs(model, reasoning_effort),
         )
     except ValueError as exc:
         return {
             **result,
-            "first_passed": first_passed,
+            "first_score": first_score,
+            "first_passed": first_score == 2,
             "first_reason": first_reason,
             "verification_changed": None,
             "verification_error": str(exc),
         }
+    verified = _normalize_judgment(verified)
     return {
         **result,
-        "first_passed": first_passed,
+        "first_score": first_score,
+        "first_passed": first_score == 2,
+        "verification_score": verified.get("score", 2 if verified.get("passed") else 0),
         "first_reason": first_reason,
-        "verification_passed": verified["passed"],
+        "verification_passed": verified["score"] == 2,
         "verification_reason": verified["reason"],
-        "verification_changed": bool(verified["passed"]) != first_passed,
-        "passed": verified["passed"],
+        "verification_changed": verified.get("score", 2 if verified.get("passed") else 0) != first_score,
+        "score": verified.get("score", 2 if verified.get("passed") else 0),
+        "passed": verified.get("score", 2 if verified.get("passed") else 0) == 2,
         "reason": verified["reason"],
     }
 
@@ -2014,7 +2043,7 @@ def _evaluation_result_rows(results: list[dict[str, Any]]) -> list[list[object]]
         item["expected_answer"],
         item.get("document", ""),
         item.get("actual_answer", ""),
-        bool(item.get("passed")),
+        _result_score(item),
         item.get("verification_changed"),
         item.get("reason", ""),
     ] for item in results]
@@ -2036,7 +2065,7 @@ def _evaluation_answer_availability(evaluation: dict[str, Any] | None) -> tuple[
 def update_manual_evaluation_for_ui(
     project_id: str, rows: Any, evaluation: dict[str, Any],
 ) -> tuple[str, list[list[object]], dict[str, Any]]:
-    """Persist checkbox edits as manual judgments and refresh aggregate metrics."""
+    """Persist 0-2 manual scores and refresh aggregate metrics."""
     current = dict(evaluation or {})
     results = [dict(item) for item in current.get("results") or []]
     if not project_id or not results:
@@ -2049,9 +2078,15 @@ def update_manual_evaluation_for_ui(
         for item, row in zip(results, submitted):
             if len(row) < 7:
                 raise ValueError("測試結果欄位不完整")
-            passed = bool(row[5])
-            if passed != bool(item.get("passed")):
-                item["passed"] = passed
+            try:
+                score = int(row[5])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("答案判定只能選 0、1 或 2") from exc
+            if score not in (0, 1, 2) or float(row[5]) != score:
+                raise ValueError("答案判定只能選 0、1 或 2")
+            if score != _result_score(item):
+                item["score"] = score
+                item["passed"] = score == 2
                 item["reason"] = "人工評判"
                 item["manual_judgment"] = True
                 changed += 1
@@ -2065,8 +2100,9 @@ def update_manual_evaluation_for_ui(
 
 
 def manual_result_editability_for_ui(enabled: bool) -> dict[str, Any]:
-    """Unlock the result table only after an explicit user opt-in."""
-    return gr.update(interactive=bool(enabled))
+    """Keep the display table locked; per-row score dropdowns use this flag."""
+    del enabled
+    return gr.update(interactive=False)
 
 
 def reset_manual_result_editability_for_ui() -> tuple[dict[str, Any], ...]:
@@ -2077,7 +2113,8 @@ def reset_manual_result_editability_for_ui() -> tuple[dict[str, Any], ...]:
 
 
 def _evaluation_summary(results: list[dict[str, Any]], *, loaded: bool = False) -> str:
-    passed = sum(bool(item.get("passed")) for item in results)
+    passed = sum(_result_score(item) == 2 for item in results)
+    partial = sum(_result_score(item) == 1 for item in results)
     total = len(results)
     recall_at_5 = sum(bool(item.get("recall_at_5")) for item in results) / total
     recall_at_10 = sum(
@@ -2094,19 +2131,20 @@ def _evaluation_summary(results: list[dict[str, Any]], *, loaded: bool = False) 
     for item in results:
         document = str(item.get("document") or "未標示文件")
         stats = document_totals.setdefault(document, [0, 0, 0])
-        stats[0] += int(bool(item.get("passed")))
+        stats[0] += int(_result_score(item) == 2)
         stats[1] += 1
+        stats[2] += int(_result_score(item) == 1)
     document_summary = "\n".join(
-        f"- {document}：答案正確 {stats[0]} / {stats[1]}"
+        f"- {document}：完全正確 {stats[0]} / {stats[1]}，部分正確 {stats[2]}"
         for document, stats in document_totals.items()
     )
 
     heading = "已載入測試結果" if loaded else "測試完成"
-    failed = total - passed
-    accuracy = passed / total * 100
+    failed = sum(_result_score(item) == 0 for item in results)
+    accuracy = sum(_result_score(item) for item in results) / (2 * total) * 100
     return (
-        f"## {heading}｜總共答對 {passed} 題 / {total} 題  "
-        f"\n答錯：{failed} 題｜答案正確率：{accuracy:.1f}%"
+        f"## {heading}｜完全正確 {passed} 題 / {total} 題  "
+        f"\n部分正確：{partial} 題｜錯誤：{failed} 題｜得分正確率：{accuracy:.1f}%"
         f"\n\n### 各 PDF 結果\n{document_summary}"
         f"  \nRecall@5：{recall_at_5:.1%}｜Recall@10：{recall_at_10:.1%}｜MRR：{mrr:.3f}"
     )
@@ -2576,7 +2614,7 @@ def evaluate_generated_answers_for_ui(
             **item,
             "judge_model": judge_model,
             **_reasoning_effort_record(judge_model, judge_reasoning_effort, "judge_reasoning_effort"),
-            **judgment,
+            **_normalize_judgment(judgment),
         }
 
     results: list[dict[str, Any] | None] = [None] * len(pending)
@@ -2680,7 +2718,7 @@ def run_evaluation_for_ui(
             "recall_at_5": retrieval_rank is not None and retrieval_rank <= 5,
             "recall_at_10": retrieval_rank is not None and retrieval_rank <= 10,
             "reciprocal_rank": 1 / retrieval_rank if retrieval_rank else 0.0,
-            **judgment,
+            **_normalize_judgment(judgment),
         }
 
     results: list[dict[str, Any] | None] = [None] * len(questions)
@@ -2832,7 +2870,7 @@ def run_experiment_groups_for_ui(
             "recall_at_5": rank is not None and rank <= 5,
             "recall_at_10": rank is not None and rank <= 10,
             "reciprocal_rank": 1 / rank if rank else 0.0,
-            **judgment,
+            **_normalize_judgment(judgment),
         }
 
     try:
@@ -2862,11 +2900,14 @@ def run_experiment_groups_for_ui(
             item for item in completed_results if item["group_index"] == group_index
         ]
         total = len(group_results)
+        full = sum(_result_score(item) == 2 for item in group_results)
+        weighted_accuracy = sum(_result_score(item) for item in group_results) / (2 * total) if total else 0
         summary_rows.append([
             group["name"], group["answer_model"],
             _group_reranker_mode(group), _group_expansion_mode(group),
-            effective_judge_model, total, f"{sum(bool(item['passed']) for item in group_results)} / {total}",
-            f"{sum(bool(item['passed']) for item in group_results) / total:.1%}" if total else "—",
+            effective_judge_model, total, f"{full} / {total}",
+            sum(_result_score(item) == 1 for item in group_results),
+            f"{weighted_accuracy:.1%}" if total else "—",
             f"{sum(bool(item['recall_at_5']) for item in group_results) / total:.1%}" if total else "—",
             f"{sum(bool(item['recall_at_10']) for item in group_results) / total:.1%}" if total else "—",
             f"{sum(float(item['reciprocal_rank']) for item in group_results) / total:.3f}" if total else "—",
@@ -2875,7 +2916,7 @@ def run_experiment_groups_for_ui(
         item["group_name"], item["answer_model"], item["judge_model"],
         item["number"], item["question"], item["document"],
         item["expected_answer"], item["actual_answer"],
-        "✅ 通過" if item["passed"] else "❌ 未通過",
+        _result_score(item),
         item.get("verification_changed"), item["reason"],
         item["retrieval_rank"],
     ] for item in completed_results]
@@ -2908,11 +2949,13 @@ def _single_experiment_summary_rows(
             if item.get("group_index") == group_index or item.get("group_name") == group["name"]
         ]
         total = len(selected)
-        correct = sum(bool(item.get("passed")) for item in selected)
+        correct = sum(_result_score(item) == 2 for item in selected)
+        weighted_accuracy = sum(_result_score(item) for item in selected) / (2 * total) if total else 0
         summaries.append([
             group["name"], group["answer_model"], _group_reranker_mode(group),
             _group_expansion_mode(group), judge_model, total,
-            f"{correct} / {total}", f"{correct / total:.1%}" if total else "—",
+            f"{correct} / {total}", sum(_result_score(item) == 1 for item in selected),
+            f"{weighted_accuracy:.1%}" if total else "—",
             f"{sum(bool(item.get('recall_at_5')) for item in selected) / total:.1%}" if total else "—",
             f"{sum(bool(item.get('recall_at_10')) for item in selected) / total:.1%}" if total else "—",
             f"{sum(float(item.get('reciprocal_rank', 0)) for item in selected) / total:.3f}" if total else "—",
@@ -2924,7 +2967,7 @@ def _single_experiment_detail_rows(results: list[dict[str, Any]]) -> list[list[o
     return [[
         item["group_name"], item["number"], item.get("document", ""), item["question"],
         item["expected_answer"], item.get("actual_answer", ""),
-        item.get("passed"), item.get("verification_changed"), item.get("reason", ""),
+        _display_score(item), item.get("verification_changed"), item.get("reason", ""),
     ] for item in results]
 
 
@@ -2932,7 +2975,7 @@ def _experiment_project_detail_rows(results: list[dict[str, Any]]) -> list[list[
     return [[
         item["group_name"], item["source_project_name"], item["number"],
         item.get("document", ""), item["question"], item["expected_answer"],
-        item.get("actual_answer", ""), item.get("passed"),
+        item.get("actual_answer", ""), _display_score(item),
         item.get("verification_changed"), item.get("reason", ""),
     ] for item in results]
 
@@ -3076,7 +3119,7 @@ def evaluate_experiment_answers_for_ui(
         return {
             **item, "judge_model": judge_model,
             **_reasoning_effort_record(judge_model, judge_reasoning_effort, "judge_reasoning_effort"),
-            **verdict,
+            **_normalize_judgment(verdict),
         }
 
     evaluated: list[dict[str, Any] | None] = [None] * len(pending_answers)
@@ -3095,7 +3138,10 @@ def evaluate_experiment_answers_for_ui(
         previous = project.get("experiment") or {}
         summary = _single_experiment_summary_rows(groups, results, judge_model)
         details = _single_experiment_detail_rows(results)
-        status = f"✅ 評測完成｜答對 {sum(bool(item.get('passed')) for item in results)} / {len(results)} 個實驗題次。"
+        full = sum(_result_score(item) == 2 for item in results)
+        partial = sum(_result_score(item) == 1 for item in results)
+        rate = sum(_result_score(item) for item in results) / (2 * len(results))
+        status = f"✅ 評測完成｜完全正確 {full}、部分正確 {partial} / {len(results)} 個實驗題次；得分正確率 {rate:.1%}。"
         _save_experiment_data(project_id, {
             **previous, "pending_answers": pending_answers, "results": results,
             "summary_rows": summary, "detail_rows": details,
@@ -3138,18 +3184,15 @@ def update_manual_experiment_result_for_ui(
         for item, row in zip(current, submitted):
             if len(row) < 8:
                 raise ValueError("逐題結果欄位不完整")
-            value = row[6]
-            if isinstance(value, str):
-                normalized = value.strip().casefold()
-                if normalized in {"正確", "通過", "✅ 通過", "true", "1"}:
-                    value = True
-                elif normalized in {"錯誤", "未通過", "❌ 未通過", "false", "0"}:
-                    value = False
-                else:
-                    raise ValueError("答案結果請設為正確或錯誤")
-            passed = bool(value)
-            if passed != bool(item.get("passed")):
-                item["passed"] = passed
+            try:
+                score = int(row[6])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("答案判定只能選 0、1 或 2") from exc
+            if score not in (0, 1, 2) or float(row[6]) != score:
+                raise ValueError("答案判定只能選 0、1 或 2")
+            if score != _result_score(item):
+                item["score"] = score
+                item["passed"] = score == 2
                 item["reason"] = "人工評判"
                 item["manual_judgment"] = True
                 changed += 1
@@ -3165,11 +3208,23 @@ def update_manual_experiment_result_for_ui(
         })
     except (OSError, TypeError, ValueError) as exc:
         return f"❌ 人工評判保存失敗：{exc}", [], [], current
-    correct = sum(bool(item.get("passed")) for item in current)
+    correct = sum(_result_score(item) == 2 for item in current)
+    partial = sum(_result_score(item) == 1 for item in current)
+    rate = sum(_result_score(item) for item in current) / (2 * len(current))
     return (
-        f"✅ 評測完成｜已保存人工評判變更 {changed} 筆；答對 {correct} / {len(current)} 個實驗題次。",
+        f"✅ 評測完成｜已保存人工評判變更 {changed} 筆；完全正確 {correct}、部分正確 {partial} / {len(current)} 題；得分正確率 {rate:.1%}。",
         summary, details, current,
     )
+
+
+def update_manual_experiment_score_for_ui(
+    project_id: str, index: int, score: int, results: list[dict[str, Any]],
+) -> tuple[str, list[list[Any]], list[list[Any]], list[dict[str, Any]]]:
+    rows = _single_experiment_detail_rows(results or [])
+    if index < 0 or index >= len(rows):
+        return "❌ 題次編號無效。", [], rows, results or []
+    rows[index][6] = score
+    return update_manual_experiment_result_for_ui(project_id, rows, results)
 
 
 def export_experiment_results_for_ui(
@@ -3199,7 +3254,14 @@ def export_experiment_results_for_ui(
         for row in summary_rows:
             if not row:
                 continue
-            if len(row) >= 11:
+            if len(row) >= 12:
+                summaries[str(row[0])] = {
+                    "answer_model": row[1], "judge_model": row[4],
+                    "question_count": row[5], "correct_total": row[6],
+                    "partial_count": row[7], "accuracy": row[8],
+                    "recall_at_5": row[9], "recall_at_10": row[10], "mrr": row[11],
+                }
+            elif len(row) >= 11:
                 summaries[str(row[0])] = {
                     "answer_model": row[1], "judge_model": row[4],
                     "question_count": row[5], "correct_total": row[6],
@@ -3225,7 +3287,7 @@ def export_experiment_results_for_ui(
                 }
         result_fields = (
             "number", "question", "document", "expected_answer", "actual_answer",
-            "answer_model", "judge_model", "passed", "reason", "retrieval_rank", "recall_at_5", "recall_at_10",
+            "answer_model", "judge_model", "score", "passed", "reason", "retrieval_rank", "recall_at_5", "recall_at_10",
             "reciprocal_rank", "answer_reasoning_effort", "judge_reasoning_effort",
             "manual_judgment", "verification_enabled", "first_passed", "first_reason",
             "verification_passed", "verification_reason", "verification_changed",
@@ -3237,6 +3299,8 @@ def export_experiment_results_for_ui(
             group_results = [
                 {
                     **{key: result.get(key) for key in result_fields if key in result},
+                    "score": _result_score(result),
+                    "passed": _result_score(result) == 2,
                     "manual_judgment": bool(result.get("manual_judgment", False)),
                 }
                 for result in results
@@ -3246,8 +3310,9 @@ def export_experiment_results_for_ui(
             saved_summary = summaries.get(name, {})
             if group_results:
                 question_count = len(group_results)
-                correct_count = sum(bool(result.get("passed")) for result in group_results)
-                accuracy = correct_count / question_count
+                correct_count = sum(_result_score(result) == 2 for result in group_results)
+                partial_count = sum(_result_score(result) == 1 for result in group_results)
+                accuracy = sum(_result_score(result) for result in group_results) / (2 * question_count)
                 recall_at_5 = (
                     sum(bool(result.get("recall_at_5")) for result in group_results)
                     / question_count
@@ -3272,6 +3337,7 @@ def export_experiment_results_for_ui(
                 correct_count = int(
                     saved_summary.get("correct_count", round(accuracy * question_count)) or 0
                 )
+                partial_count = int(saved_summary.get("partial_count", 0) or 0)
 
                 def rate(value: Any) -> float | None:
                     if value is None:
@@ -3296,6 +3362,7 @@ def export_experiment_results_for_ui(
                 ),
                 "question_count": question_count,
                 "correct_count": correct_count,
+                "partial_count": partial_count,
                 "correct_total": f"{correct_count} / {question_count}",
                 "accuracy": accuracy,
                 "recall_at_5": recall_at_5,
@@ -3332,14 +3399,15 @@ def export_experiment_results_for_ui(
         overall_summary = {
             "question_count": total_questions,
             "correct_count": total_correct,
+            "partial_count": sum(item["summary"]["partial_count"] for item in exported_groups),
             "correct_total": f"{total_correct} / {total_questions}",
-            "accuracy": total_correct / total_questions if total_questions else 0.0,
+            "accuracy": (weighted_metric("accuracy") or 0.0) if total_questions else 0.0,
             "recall_at_5": weighted_metric("recall_at_5"),
             "recall_at_10": weighted_metric("recall_at_10"),
             "mrr": weighted_metric("mrr"),
         }
         payload = {
-            "schema_version": 3,
+            "schema_version": 4,
             "project": {"project_id": project_id, "name": project.get("name", "")},
             "max_concurrent_requests": experiment.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
             "evaluation": {
@@ -3361,7 +3429,7 @@ def export_experiment_results_for_ui(
             payload,
         )
         compact_payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "format": "manual-graphrag-experiment-summary",
             "project": {"project_id": project_id, "name": project.get("name", "")},
             "max_concurrent_requests": experiment.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
@@ -3589,7 +3657,7 @@ def evaluate_experiment_project_answers_for_ui(
         verdict.setdefault("verification_enabled", bool(verification_enabled))
         verdict.setdefault("verification_changed", None)
         return {**item, "judge_model": judge_model,
-                **_reasoning_effort_record(judge_model, judge_reasoning_effort, "judge_reasoning_effort"), **verdict}
+            **_reasoning_effort_record(judge_model, judge_reasoning_effort, "judge_reasoning_effort"), **_normalize_judgment(verdict)}
 
     try:
         with ThreadPoolExecutor(max_workers=min(concurrency, len(pending_answers))) as executor:
@@ -3605,8 +3673,10 @@ def evaluate_experiment_project_answers_for_ui(
         groups = (project or {}).get("groups") or []
         summary = _single_experiment_summary_rows(groups, results, judge_model)
         details = _experiment_project_detail_rows(results)
-        correct = sum(bool(item.get("passed")) for item in results)
-        status = f"✅ 評測完成｜答對 {correct} / {len(results)} 個跨專案實驗題次。"
+        correct = sum(_result_score(item) == 2 for item in results)
+        partial = sum(_result_score(item) == 1 for item in results)
+        rate = sum(_result_score(item) for item in results) / (2 * len(results))
+        status = f"✅ 評測完成｜完全正確 {correct}、部分正確 {partial} / {len(results)} 個跨專案實驗題次；得分正確率 {rate:.1%}。"
         updated = save_experiment_project(project["experiment_project_id"], {
             "pending_answers": pending_answers, "results": results, "summary_rows": summary,
             "detail_rows": details, "judge_model": judge_model,
@@ -3633,17 +3703,15 @@ def update_manual_experiment_project_result_for_ui(
         for item, row in zip(current, submitted):
             if len(row) < 8:
                 raise ValueError("逐題結果欄位不完整")
-            value = row[7]
-            if isinstance(value, str):
-                normalized = value.strip().casefold()
-                if normalized in {"正確", "通過", "✅ 通過", "true", "1"}:
-                    value = True
-                elif normalized in {"錯誤", "未通過", "❌ 未通過", "false", "0"}:
-                    value = False
-                else:
-                    raise ValueError("答案結果請設為正確或錯誤")
-            if bool(value) != bool(item.get("passed")):
-                item["passed"] = bool(value)
+            try:
+                score = int(row[7])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("答案判定只能選 0、1 或 2") from exc
+            if score not in (0, 1, 2) or float(row[7]) != score:
+                raise ValueError("答案判定只能選 0、1 或 2")
+            if score != _result_score(item):
+                item["score"] = score
+                item["passed"] = score == 2
                 item["reason"] = "人工評判"
                 item["manual_judgment"] = True
                 changed += 1
@@ -3653,11 +3721,23 @@ def update_manual_experiment_project_result_for_ui(
         details = _experiment_project_detail_rows(current)
         updated = save_experiment_project(project["experiment_project_id"], {
             "results": current, "summary_rows": summary, "detail_rows": details,
-            "status": f"✅ 評測完成｜答對 {sum(bool(item.get('passed')) for item in current)} / {len(current)} 個跨專案實驗題次。",
+            "status": f"✅ 評測完成｜完全正確 {sum(_result_score(item) == 2 for item in current)}、部分正確 {sum(_result_score(item) == 1 for item in current)} / {len(current)} 個跨專案實驗題次；得分正確率 {sum(_result_score(item) for item in current) / (2 * len(current)):.1%}。",
         })
     except (OSError, TypeError, ValueError) as exc:
         return f"❌ 人工評判保存失敗：{exc}", [], [], project
-    return f"✅ 已保存人工評判變更 {changed} 筆；答對 {sum(bool(item.get('passed')) for item in current)} / {len(current)} 個跨專案實驗題次。", summary, details, updated
+    return f"✅ 已保存人工評判變更 {changed} 筆；完全正確 {sum(_result_score(item) == 2 for item in current)}、部分正確 {sum(_result_score(item) == 1 for item in current)} / {len(current)} 個跨專案實驗題次；得分正確率 {sum(_result_score(item) for item in current) / (2 * len(current)):.1%}。", summary, details, updated
+
+
+def update_manual_experiment_project_score_for_ui(
+    project: dict[str, Any], index: int, score: int,
+    results: list[dict[str, Any]],
+) -> tuple[str, list[list[Any]], list[list[Any]], dict[str, Any], list[dict[str, Any]]]:
+    rows = _experiment_project_detail_rows(results or [])
+    if index < 0 or index >= len(rows):
+        return "❌ 題次編號無效。", [], rows, project or {}, results or []
+    rows[index][7] = score
+    status, summary, details, updated = update_manual_experiment_project_result_for_ui(project, rows, results)
+    return status, summary, details, updated, updated.get("results", results or [])
 
 
 def run_experiment_project_for_ui(
@@ -3715,11 +3795,13 @@ def run_experiment_project_for_ui(
     for group_index, group in enumerate(groups):
         selected = [item for item in all_results if item.get("group_index") == group_index]
         total = len(selected)
-        correct = sum(bool(item.get("passed")) for item in selected)
+        correct = sum(_result_score(item) == 2 for item in selected)
+        weighted_accuracy = sum(_result_score(item) for item in selected) / (2 * total) if total else 0
         summary_rows.append([
             group["name"], group["answer_model"], _group_reranker_mode(group),
             _group_expansion_mode(group), judge_model, total,
-            f"{correct} / {total}", f"{correct / total:.1%}" if total else "—",
+            f"{correct} / {total}", sum(_result_score(item) == 1 for item in selected),
+            f"{weighted_accuracy:.1%}" if total else "—",
             f"{sum(bool(item.get('recall_at_5')) for item in selected) / total:.1%}" if total else "—",
             f"{sum(bool(item.get('recall_at_10')) for item in selected) / total:.1%}" if total else "—",
             f"{sum(float(item.get('reciprocal_rank', 0)) for item in selected) / total:.3f}" if total else "—",
@@ -3728,7 +3810,7 @@ def run_experiment_project_for_ui(
         item["group_name"], item["source_project_name"], item["answer_model"],
         item["judge_model"], item["number"], item["question"], item.get("document", ""),
         item["expected_answer"], item["actual_answer"],
-        "✅ 通過" if item.get("passed") else "❌ 未通過", item.get("reason", ""),
+        _result_score(item), item.get("reason", ""),
         item.get("retrieval_rank"),
     ] for item in all_results]
     status = f"✅ 已完成 {len(groups)} 個實驗組，涵蓋 {len(members)} 個專案、{len(all_results)} 個題次。"
@@ -4888,18 +4970,37 @@ def build_app() -> gr.Blocks:
             gr.Markdown("#### 測試結果")
             evaluation_manual_edit_enabled = gr.Checkbox(
                 value=False, label="啟用答案結果人工修改",
-                info="預設鎖定判定欄；勾選後才可修改逐題正確／錯誤結果。",
+                info="預設鎖定判定欄；勾選後可將各題設為 0 錯誤、1 部分正確或 2 全對。",
             )
             evaluation_results_table = gr.Dataframe(
-                headers=["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（勾選=正確）", "複核後判定有變更", "評判理由"],
-                datatype=["number", "str", "str", "str", "str", "bool", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 6, 7], wrap=True,
+                headers=["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
+                datatype=["number", "str", "str", "str", "str", "number", "bool", "str"],
+                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7], wrap=True,
                 elem_classes=["evaluation-table", "evaluation-results-table"],
             )
             with gr.Group(elem_classes="evaluation-metrics-box"):
                 evaluation_status = gr.Markdown(
                     "請先載入專案並解析 PDF。", elem_classes="evaluation-metrics"
                 )
+            @gr.render(inputs=[evaluation_state, evaluation_manual_edit_enabled])
+            def render_evaluation_score_dropdowns(evaluation, editing_enabled):
+                results = (evaluation or {}).get("results") or []
+                if not results:
+                    return
+                gr.Markdown("人工修改答案判定")
+                for index, item in enumerate(results):
+                    with gr.Row():
+                        gr.Markdown(f"題目 {item.get('number', index + 1)}｜{item.get('question', '')}", scale=5)
+                        score = gr.Dropdown(
+                            choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
+                            value=_result_score(item), label="答案判定",
+                            interactive=bool(editing_enabled), scale=1,
+                        )
+                        score.change(
+                            update_manual_evaluation_score_for_ui,
+                            inputs=[project_selector, gr.State(index), score, evaluation_state],
+                            outputs=[evaluation_status, evaluation_results_table, evaluation_state],
+                        )
 
         with gr.Tab("1-6 匯入問題集", interactive=False) as project_question_import_tab:
             gr.Markdown(
@@ -5018,24 +5119,42 @@ def build_app() -> gr.Blocks:
             experiment_status = gr.Markdown()
             gr.Markdown("#### 實驗組摘要")
             experiment_summary_table = gr.Dataframe(
-                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "答對數 / 總題數", "答案正確率", "Recall@5", "Recall@10", "MRR"],
+                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Recall@5", "Recall@10", "MRR"],
                 interactive=False, wrap=True,
             )
             gr.Markdown("#### 逐題結果")
             experiment_manual_edit_enabled = gr.Checkbox(
                 value=False, label="啟用答案結果人工修改",
-                info="預設鎖定判定欄；勾選後才可修改逐題正確／錯誤結果。",
+                info="預設鎖定判定欄；勾選後可將各題設為 0 錯誤、1 部分正確或 2 全對。",
             )
             experiment_details_table = gr.Dataframe(
                 headers=[
                     "實驗組", "題號", "來源文件", "題目", "正確答案", "實際答案",
-                    "答案結果（勾選=正確）", "複核後判定有變更", "評判理由",
+                    "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由",
                 ],
-                datatype=["str", "number", "str", "str", "str", "str", "bool", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 7, 8],
+                datatype=["str", "number", "str", "str", "str", "str", "number", "bool", "str"],
+                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 8],
                 column_widths=[90, 60, 140, 300, 420, 420, 120, 150, 300],
                 wrap=True, elem_classes=["evaluation-table", "evaluation-results-table"],
             )
+            @gr.render(inputs=[experiment_results_state, experiment_manual_edit_enabled])
+            def render_experiment_score_dropdowns(results, editing_enabled):
+                if not results:
+                    return
+                gr.Markdown("人工修改答案判定")
+                for index, item in enumerate(results):
+                    with gr.Row():
+                        gr.Markdown(f"{item.get('group_name', '')}｜題目 {item.get('number', index + 1)}｜{item.get('question', '')}", scale=5)
+                        score = gr.Dropdown(
+                            choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
+                            value=_result_score(item), label="答案判定",
+                            interactive=bool(editing_enabled), scale=1,
+                        )
+                        score.change(
+                            update_manual_experiment_score_for_ui,
+                            inputs=[project_selector, gr.State(index), score, experiment_results_state],
+                            outputs=[experiment_status, experiment_summary_table, experiment_details_table, experiment_results_state],
+                        )
             with gr.Row():
                 export_experiment_results_button = gr.Button("匯出實驗結果 JSON")
                 experiment_export_file = gr.File(label="完整逐題結果 JSON", interactive=False)
@@ -5175,16 +5294,34 @@ def build_app() -> gr.Blocks:
             )
             experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並在每個成員專案的 1-6 匯入題目集。")
             experiment_project_summary_table = gr.Dataframe(
-                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "答對數 / 總題數", "答案正確率", "Recall@5", "Recall@10", "MRR"],
+                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Recall@5", "Recall@10", "MRR"],
                 interactive=False, wrap=True,
             )
             experiment_project_details_table = gr.Dataframe(
-                headers=["實驗組", "成員專案", "題號", "來源文件", "題目", "正確答案", "實際答案", "答案結果（勾選=正確）", "複核後判定有變更", "評判理由"],
-                datatype=["str", "str", "number", "str", "str", "str", "str", "bool", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 8, 9],
+                headers=["實驗組", "成員專案", "題號", "來源文件", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
+                datatype=["str", "str", "number", "str", "str", "str", "str", "number", "bool", "str"],
+                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
                 wrap=True,
             )
-            experiment_project_manual_edit = gr.Checkbox(value=False, label="啟用答案結果人工修改", info="預設鎖定判定欄；勾選後才可修改正確／錯誤。")
+            experiment_project_manual_edit = gr.Checkbox(value=False, label="啟用答案結果人工修改", info="預設鎖定判定欄；勾選後可將各題設為 0 錯誤、1 部分正確或 2 全對。")
+            @gr.render(inputs=[experiment_project_results_state, experiment_project_manual_edit])
+            def render_experiment_project_score_dropdowns(results, editing_enabled):
+                if not results:
+                    return
+                gr.Markdown("人工修改答案判定")
+                for index, item in enumerate(results):
+                    with gr.Row():
+                        gr.Markdown(f"{item.get('group_name', '')}｜{item.get('source_project_name', '')}｜題目 {item.get('number', index + 1)}｜{item.get('question', '')}", scale=5)
+                        score = gr.Dropdown(
+                            choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
+                            value=_result_score(item), label="答案判定",
+                            interactive=bool(editing_enabled), scale=1,
+                        )
+                        score.change(
+                            update_manual_experiment_project_score_for_ui,
+                            inputs=[experiment_project_state, gr.State(index), score, experiment_project_results_state],
+                            outputs=[experiment_project_test_status, experiment_project_summary_table, experiment_project_details_table, experiment_project_state, experiment_project_results_state],
+                        )
 
         schema_model_endpoint = gr.State(initial_llm_credentials[0][0])
         schema_model_key = gr.State(initial_llm_credentials[0][1])
