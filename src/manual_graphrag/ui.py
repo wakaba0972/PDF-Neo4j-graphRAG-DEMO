@@ -61,6 +61,7 @@ from .project_store import (
     import_project_archive,
     list_projects,
     load_project,
+    load_project_summary,
     project_database_name,
     remove_document,
     save_project,
@@ -1225,7 +1226,7 @@ def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
 
 def load_experiment_project_for_ui(
     project_id: str | None,
-) -> tuple[dict[str, Any], list[list[str]], Any, str]:
+) -> tuple[dict[str, Any], list[list[Any]], Any, str]:
     if not project_id:
         return {}, [], gr.update(choices=_built_project_choices(), value=[]), "請建立或選擇實驗專案。"
     try:
@@ -1233,10 +1234,9 @@ def load_experiment_project_for_ui(
         members = []
         for member_id in project.get("members", []):
             try:
-                member = load_project(member_id)
-                members.append([member["name"], member_id, member.get("neo4j_database", "")])
+                members.append(_experiment_member_summary_row(member_id))
             except (OSError, ValueError):
-                members.append(["（原專案不存在）", member_id, ""])
+                members.append(["（原專案不存在）", member_id, "未知", 0, 0, "", "", "None", ""])
         return (
             project, members,
             gr.update(choices=_built_project_choices(), value=project.get("members", [])),
@@ -1254,7 +1254,7 @@ def experiment_project_banner_for_ui(project: dict[str, Any] | None) -> str:
 
 def save_experiment_project_members_for_ui(
     project_id: str | None, member_ids: list[str] | None,
-) -> tuple[dict[str, Any], list[list[str]], str]:
+) -> tuple[dict[str, Any], list[list[Any]], str]:
     if not project_id:
         return {}, [], "❌ 請先建立或載入實驗專案。"
     selected = list(dict.fromkeys(member_ids or []))
@@ -1267,9 +1267,9 @@ def save_experiment_project_members_for_ui(
         known = dict((member_id, name) for name, member_id in list_projects())
         rows = []
         for member_id in selected:
-            member = load_project(member_id)
-            rows.append([member.get("name", known.get(member_id, member_id)), member_id,
-                         member.get("neo4j_database", "")])
+            row = _experiment_member_summary_row(member_id)
+            row[0] = known.get(member_id, row[0])
+            rows.append(row)
         preserved_questions = {
             member_id: questions for member_id, questions in
             (current.get("questions_by_project") or {}).items() if member_id in selected
@@ -1280,6 +1280,22 @@ def save_experiment_project_members_for_ui(
         return current, rows, f"✅ 已保存 {len(selected)} 個已建圖專案。"
     except (OSError, ValueError) as exc:
         return load_experiment_project(project_id), [], f"❌ 成員設定保存失敗：{exc}"
+
+
+def _experiment_member_summary_row(project_id: str) -> list[Any]:
+    member = load_project(project_id)
+    summary = load_project_summary(project_id)
+    return [
+        member.get("name", project_id),
+        project_id,
+        summary.get("created_by", "未知"),
+        summary.get("document_count", 0),
+        summary.get("chunk_count", 0),
+        summary.get("chunk_size") if summary.get("chunk_size") is not None else "",
+        summary.get("chunk_overlap") if summary.get("chunk_overlap") is not None else "",
+        summary.get("schema_granularity") or "None",
+        member.get("neo4j_database", ""),
+    ]
 
 
 def test_experiment_project_connections_for_ui(
@@ -5072,8 +5088,12 @@ def build_app() -> gr.Blocks:
             )
             save_experiment_members_button = gr.Button("保存成員專案")
             experiment_project_members_table = gr.Dataframe(
-                headers=["專案", "專案 ID", "Neo4j Database"],
-                datatype=["str", "str", "str"], interactive=False, wrap=True,
+                headers=[
+                    "專案", "專案 ID", "建立者", "文件數", "Chunk 數",
+                    "Chunk Size", "Overlap", "Schema 粒度", "Neo4j Database",
+                ],
+                datatype=["str", "str", "str", "number", "number", "number", "number", "str", "str"],
+                interactive=False, wrap=True,
             )
 
         with gr.Tab("2-1 成員專案連線測試", interactive=False) as experiment_connection_tab:

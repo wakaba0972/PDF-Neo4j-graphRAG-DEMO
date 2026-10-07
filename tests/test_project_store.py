@@ -14,6 +14,7 @@ from manual_graphrag.project_store import (
     import_project_archive,
     list_projects,
     load_project,
+    load_project_summary,
     remove_document,
     save_project,
 )
@@ -44,6 +45,36 @@ def test_project_name_can_be_updated_without_changing_base_name(tmp_path) -> Non
     assert saved["name"] == "Zhao | s25 | 1500-200-None"
     assert saved["base_name"] == "Zhao | s25"
     assert list_projects(tmp_path) == [("Zhao | s25 | 1500-200-None", project["project_id"])]
+
+
+def test_project_summary_file_tracks_creator_documents_and_build_settings(tmp_path) -> None:
+    project = create_project("Zhao | s25", tmp_path, actor="Zhao")
+    save_project(project["project_id"], {
+        "settings": {"chunk_size": 1500, "chunk_overlap": 200, "schema_granularity": "詳細"},
+        "documents_meta": [{"file_name": "guide.pdf"}, {"file_name": "parts.pdf"}],
+        "chunks": [{"number": 1}, {"number": 2}, {"number": 3}],
+        "graph_state": {
+            "run_id": "graph-1",
+            "schema": {"entity_types": [{"name": "DEVICE"}]},
+            "build_config": {
+                "chunk_size": 1500,
+                "chunk_overlap": 200,
+                "schema_granularity": "詳細",
+            },
+        },
+    }, root=tmp_path)
+
+    summary_path = tmp_path / project["project_id"] / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    assert summary == load_project_summary(project["project_id"], tmp_path)
+    assert summary["created_by"] == "Zhao"
+    assert summary["document_count"] == 2
+    assert summary["chunk_count"] == 3
+    assert summary["chunk_size"] == 1500
+    assert summary["chunk_overlap"] == 200
+    assert summary["schema_granularity"] == "詳細"
+    assert summary["graph_built"] is True
 
 
 def test_each_project_gets_a_stable_unique_database(tmp_path) -> None:

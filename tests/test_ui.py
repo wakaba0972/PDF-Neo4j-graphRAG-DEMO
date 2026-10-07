@@ -3295,7 +3295,18 @@ def test_experiment_project_members_require_existing_built_graphs(tmp_path, monk
     monkeypatch.chdir(tmp_path)
     built = ui.create_project("已建圖車型")
     unbuilt = ui.create_project("未建圖車型")
-    ui.save_project(built["project_id"], {"graph_state": {"neo4j_imported": True}})
+    ui.save_project(built["project_id"], {
+        "documents_meta": [{"file_name": "guide.pdf"}],
+        "chunks": [{"number": 1}],
+        "settings": {"chunk_size": 1500, "chunk_overlap": 200},
+        "graph_state": {
+            "run_id": "graph-run", "neo4j_imported": True,
+            "build_config": {
+                "chunk_size": 1500, "chunk_overlap": 200,
+                "schema_granularity": "粗略",
+            },
+        },
+    })
     experiment = ui.create_experiment_project("跨車型比較")
 
     assert ui._built_project_choices() == [("已建圖車型", built["project_id"])]
@@ -3311,7 +3322,12 @@ def test_experiment_project_members_require_existing_built_graphs(tmp_path, monk
     )
     assert status.startswith("✅")
     assert state["members"] == [built["project_id"]]
-    assert rows == [["已建圖車型", built["project_id"], built["neo4j_database"]]]
+    assert rows == [[
+        "已建圖車型", built["project_id"], "未知", 1, 1, 1500, 200, "粗略",
+        built["neo4j_database"],
+    ]]
+    summary_file = tmp_path / "data" / "projects" / built["project_id"] / "summary.json"
+    assert summary_file.is_file()
 
 
 def test_import_experiment_project_questions_saves_per_member(tmp_path, monkeypatch):

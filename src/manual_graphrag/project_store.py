@@ -31,6 +31,51 @@ def project_database_name(project_id: str) -> str:
     return f"vehicle-{digest}"
 
 
+def build_project_summary(project: dict[str, Any]) -> dict[str, Any]:
+    """Return a compact, human-readable snapshot of the project's build metadata."""
+    settings = project.get("settings") or {}
+    graph_state = project.get("graph_state") or {}
+    build_config = graph_state.get("build_config") or {}
+    schema_granularity = build_config.get("schema_granularity")
+    if schema_granularity is None and graph_state.get("schema"):
+        schema_granularity = settings.get("schema_granularity")
+    documents = project.get("documents_meta") or project.get("documents") or []
+    document_names = {
+        str(item.get("file_name") or item.get("name") or "")
+        for item in documents if isinstance(item, dict)
+    }
+    document_count = len({name for name in document_names if name})
+    if not document_count:
+        document_count = len(project.get("documents") or [])
+    return {
+        "project_id": project.get("project_id", ""),
+        "name": project.get("name", ""),
+        "created_by": project.get("created_by") or "未知（舊專案）",
+        "document_count": document_count,
+        "chunk_count": len(project.get("chunks") or []),
+        "chunk_size": build_config.get("chunk_size", settings.get("chunk_size")),
+        "chunk_overlap": build_config.get("chunk_overlap", settings.get("chunk_overlap")),
+        "schema_granularity": schema_granularity,
+        "graph_built": bool(graph_state.get("run_id")),
+        "updated_at": project.get("updated_at", ""),
+    }
+
+
+def _write_project_summary(project_dir: Path, project: dict[str, Any]) -> dict[str, Any]:
+    summary = build_project_summary(project)
+    write_json(project_dir / "summary.json", summary)
+    return summary
+
+
+def load_project_summary(
+    project_id: str, root: str | Path = PROJECTS_DIR,
+) -> dict[str, Any]:
+    project = load_project(project_id, root)
+    summary_path = Path(root) / project_id / "summary.json"
+    _write_project_summary(summary_path.parent, project)
+    return read_json(summary_path)
+
+
 def _without_model_credentials(settings: Any) -> Any:
     if not isinstance(settings, dict):
         return settings
@@ -51,6 +96,9 @@ def list_projects(root: str | Path = PROJECTS_DIR) -> list[tuple[str, str]]:
     for config_path in base.glob("*/project.json"):
         try:
             data = read_json(config_path)
+            summary_path = config_path.parent / "summary.json"
+            if not summary_path.is_file():
+                _write_project_summary(config_path.parent, data)
             projects.append((str(data.get("name") or config_path.parent.name), config_path.parent.name))
         except (OSError, ValueError, TypeError):
             continue
@@ -74,6 +122,7 @@ def create_project(
         "neo4j_database": project_database_name(project_id),
         "name": clean_name,
         "base_name": clean_name,
+        "created_by": actor or current_actor() or "未知",
         "created_at": now,
         "updated_at": now,
         "settings": {},
@@ -84,6 +133,7 @@ def create_project(
         "questions": [],
     }
     write_json(target / "project.json", project)
+    _write_project_summary(target, project)
     append_audit_event(
         target / "activity.log", current_action() or "project_created", actor=actor,
     )
@@ -249,6 +299,7 @@ def import_project_archive(
                 "neo4j_database": project_database_name(project_id),
                 "name": clean_name,
                 "base_name": clean_name,
+                "created_by": actor or current_actor() or "未知",
                 "created_at": now,
                 "updated_at": now,
             })
@@ -270,6 +321,7 @@ def import_project_archive(
                 graph_state["neo4j_imported"] = False
                 graph_state["neo4j_error"] = "匯入封裝不包含外部 Neo4j Database；請重新執行 Embedding 並匯入 Neo4j。"
             write_json(target / "project.json", project_payload)
+            _write_project_summary(target, project_payload)
             append_audit_event(
                 target / "activity.log", current_action() or "project_imported",
                 actor=actor,
@@ -318,6 +370,7 @@ def _save_project_unlocked(
     }
     updated["settings"] = _without_model_credentials(updated.get("settings", {}))
     write_json(project_dir / "project.json", updated)
+    _write_project_summary(project_dir, updated)
     return updated
 
 
