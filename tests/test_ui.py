@@ -780,9 +780,9 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     )
     assert question_table_index < answer_heading_index < answer_availability_index < judge_heading_index < result_title_index < result_table_index
     results_table = components[result_table_index]
-    assert results_table["props"]["interactive"] is False
+    assert results_table["props"]["interactive"] is True
     assert results_table["props"]["datatype"][5] == "number"
-    assert 5 not in results_table["props"]["static_columns"]
+    assert results_table["props"]["static_columns"] == list(range(8))
     judge_button = next(
         component for component in components
         if component.get("props", {}).get("value") == "進行評測"
@@ -1586,6 +1586,14 @@ def test_manual_evaluation_score_dropdown_updates_single_question(monkeypatch) -
     assert updated["results"][0]["score"] == 1
     assert updated["results"][0]["reason"] == "人工評判"
     assert saved["evaluation"] == updated
+
+
+def test_manual_evaluation_toggle_unlocks_only_score_column() -> None:
+    locked = ui.manual_result_editability_for_ui(False)
+    unlocked = ui.manual_result_editability_for_ui(True)
+
+    assert locked["static_columns"] == list(range(8))
+    assert unlocked["static_columns"] == [0, 1, 2, 3, 4, 6, 7]
 
 
 def test_experiment_summaries_report_each_question_set_separately() -> None:
@@ -2478,7 +2486,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         component for component in components
         if component.get("props", {}).get("headers", [])[:3] == ["編號", "問題", "標準答案"]
     )
-    assert 5 not in evaluation_table["props"]["static_columns"]
+    assert evaluation_table["props"]["static_columns"] == list(range(8))
     assert sum(
         component.get("props", {}).get("choices") == [
             ("基本向量檢索", "基本向量檢索"), ("混合檢索", "混合檢索"),

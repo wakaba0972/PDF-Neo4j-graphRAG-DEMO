@@ -2471,8 +2471,9 @@ def update_manual_evaluation_score_for_ui(
 
 
 def manual_result_editability_for_ui(enabled: bool) -> dict[str, Any]:
-    """Unlock the answer-score cell in the result table when requested."""
-    return gr.update(interactive=bool(enabled))
+    """Unlock only the answer-score column when requested."""
+    locked_columns = [0, 1, 2, 3, 4, 6, 7]
+    return gr.update(static_columns=locked_columns if enabled else list(range(8)))
 
 
 def experiment_table_editability_for_ui(enabled: bool) -> dict[str, Any]:
@@ -2482,7 +2483,7 @@ def experiment_table_editability_for_ui(enabled: bool) -> dict[str, Any]:
 
 def reset_manual_result_editability_for_ui() -> tuple[dict[str, Any], ...]:
     return (
-        gr.update(value=False), gr.update(interactive=False),
+        gr.update(value=False), gr.update(static_columns=list(range(8))),
         gr.update(value=False), gr.update(interactive=False),
     )
 
@@ -5371,7 +5372,7 @@ def build_app() -> gr.Blocks:
             evaluation_results_table = gr.Dataframe(
                 headers=["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
                 datatype=["number", "str", "str", "str", "str", "number", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 6, 7], wrap=True,
+                type="array", interactive=True, static_columns=list(range(8)), wrap=True,
                 elem_classes=["evaluation-table", "evaluation-results-table"],
             )
             with gr.Group(elem_classes="evaluation-metrics-box"):
