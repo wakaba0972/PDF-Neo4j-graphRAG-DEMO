@@ -10,6 +10,7 @@ from manual_graphrag import service_settings as settings
 from manual_graphrag import ui
 from manual_graphrag.audit import actor_context
 from manual_graphrag.chunking import PageText, TextChunk
+from manual_graphrag.retrieval import RetrievalParameterSpec, RetrievalStrategySpec
 from manual_graphrag.ui import build_app, connection_summary, persist_env_settings
 
 
@@ -54,7 +55,7 @@ def test_delete_experiment_project_ui_clears_selected_workspace(monkeypatch) -> 
     result = ui.delete_experiment_project_for_ui("a")
 
     assert deleted == ["a"]
-    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * 9 + 9
+    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS + 9
     assert result[0]["choices"] == [("實驗 B", "b")]
     assert result[0]["value"] is None
     assert result[1] == {}
@@ -63,7 +64,7 @@ def test_delete_experiment_project_ui_clears_selected_workspace(monkeypatch) -> 
     assert "實驗專案「實驗 A」" in result[4]
     assert "不受影響" in result[4]
     assert result[5] == [] and result[6] == {}
-    assert result[116] == "實驗組設定會自動儲存。"
+    assert result[8 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS] == "實驗組設定會自動儲存。"
     assert result[-1]["value"] == "開始評測"
     assert result[-1]["interactive"] is False
 
@@ -75,13 +76,14 @@ def test_cancel_experiment_project_deletion_does_not_clear_or_delete(monkeypatch
     result = ui.delete_experiment_project_for_ui(True)
 
     assert deleted == []
-    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * 9 + 9
+    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS + 9
     assert all(
         isinstance(value, dict) and value.get("__type__") == "update"
-        for index, value in enumerate(result) if index not in {4, 116}
+        for index, value in enumerate(result)
+        if index not in {4, 8 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS}
     )
     assert "沒有刪除任何資料" in result[4]
-    assert "沒有刪除任何資料" in result[116]
+    assert "沒有刪除任何資料" in result[8 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS]
 
 
 def test_request_experiment_project_deletion_shows_confirmation() -> None:
@@ -2000,7 +2002,7 @@ def test_inline_experiment_groups_round_trip_strategy_specific_params() -> None:
     values = ui._inline_group_values([group])
     restored = ui._groups_from_inline_values(tuple(values))
 
-    assert values[7] == 6
+    assert values[7]["effective_search_ratio"] == 6
     assert restored == [group]
 
 
@@ -2041,6 +2043,48 @@ def test_native_strategy_parameter_value_is_saved_without_json_encoding() -> Non
     )
 
     assert config.params["effective_search_ratio"] == 6
+
+
+def test_experiment_strategy_controls_show_only_selected_strategy_parameters() -> None:
+    entries = ui._strategy_parameter_entries()
+    values = [6 if strategy_id == "vector" else spec.default
+              for strategy_id, _name, spec in entries]
+
+    synced = ui._sync_experiment_strategy_parameter_controls(
+        "基本向量檢索", "向量實驗組", *values,
+    )
+
+    assert synced[0] == {"effective_search_ratio": 6}
+    assert [item["visible"] for item in synced[1:]] == [True, False]
+
+
+def test_experiment_group_ui_renders_and_saves_new_strategy_parameter(request) -> None:
+    strategy = RetrievalStrategySpec(
+        "beam", "Beam 搜尋",
+        {"beam_width": RetrievalParameterSpec(
+            int, default=4, minimum=1, maximum=12,
+            label="搜尋寬度", control="slider",
+        )},
+    )
+    ui.RETRIEVAL_STRATEGIES.register(strategy, "unused.test.module", "BeamStrategy")
+    request.addfinalizer(lambda: (
+        ui.RETRIEVAL_STRATEGIES.specs.pop("beam", None),
+        ui.RETRIEVAL_STRATEGIES.labels.pop("beam", None),
+        ui.RETRIEVAL_STRATEGIES.ids_by_label.pop("Beam 搜尋", None),
+        ui.RETRIEVAL_STRATEGIES._implementations.pop("beam", None),
+    ))
+
+    controls = ui._create_experiment_strategy_parameter_controls()
+    values = [3, 3, 7]
+    synced = ui._sync_experiment_strategy_parameter_controls(
+        "Beam 搜尋", "Beam 組", *values,
+    )
+
+    assert len(controls) == 3
+    assert isinstance(controls[-1], ui.gr.Slider)
+    assert controls[-1].label == "搜尋寬度"
+    assert synced[0] == {"beam_width": 7}
+    assert [item["visible"] for item in synced[1:]] == [False, False, True]
 
 
 def test_inline_experiment_groups_autosave_and_reload(tmp_path, monkeypatch) -> None:
@@ -2089,8 +2133,9 @@ def test_inline_experiment_groups_autosave_and_reload(tmp_path, monkeypatch) -> 
     assert restored[12]["value"] == 5
     assert restored[13]["value"] == "停用"
     assert restored[14]["value"] == "證據擴展 V2"
-    assert restored[15]["visible"] is True
-    assert restored[8 + ui.EXPERIMENT_GROUP_LIMIT * 9]["value"] == "gpt-6-luna"
+    assert restored[15]["value"]["effective_search_ratio"] == 3
+    assert restored[16]["visible"] is True
+    assert restored[8 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS]["value"] == "gpt-6-luna"
 
 
 def test_luna_reasoning_controls_are_visible_only_for_luna_and_default_low() -> None:
@@ -2152,10 +2197,10 @@ def test_experiment_global_judge_settings_save_and_reload(tmp_path, monkeypatch)
         project["project_id"], settings.load_service_settings("llm"),
     )
 
-    assert loaded[8 + ui.EXPERIMENT_GROUP_LIMIT * 9]["value"] == "gpt-6-luna"
-    assert loaded[9 + ui.EXPERIMENT_GROUP_LIMIT * 9]["value"] == "high"
-    assert loaded[9 + ui.EXPERIMENT_GROUP_LIMIT * 9]["visible"] is True
-    assert loaded[10 + ui.EXPERIMENT_GROUP_LIMIT * 9] == 7
+    assert loaded[8 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS]["value"] == "gpt-6-luna"
+    assert loaded[9 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS]["value"] == "high"
+    assert loaded[9 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS]["visible"] is True
+    assert loaded[10 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS] == 7
     assert ui.load_project(project["project_id"])["experiment"]["groups"] == groups
     assert ui.load_project(project["project_id"])["experiment"]["judge_model"] == "gpt-6-luna"
 
@@ -2212,7 +2257,7 @@ def test_experiment_default_concurrency_is_ten(tmp_path, monkeypatch) -> None:
     restored = ui.load_experiment_for_ui(project["project_id"], settings.load_service_settings("llm"))
 
     assert restored[4] == 10
-    judge_index = 8 + ui.EXPERIMENT_GROUP_LIMIT * 9
+    judge_index = 8 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS
     assert restored[judge_index]["value"] == "gpt-6-luna"
     assert ("OpenAI｜gpt-6-luna", "gpt-6-luna") in restored[judge_index]["choices"]
     app = build_app()
@@ -3731,7 +3776,7 @@ def test_experiment_project_inline_groups_add_edit_and_remove(tmp_path, monkeypa
         project, llm_state, *empty_values,
     )
     project = added[-2]
-    assert len(added) == ui.EXPERIMENT_GROUP_LIMIT * 9 + 2
+    assert len(added) == ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS + 2
     assert project["groups"][0]["name"] == "實驗組 1"
     assert project["groups"][0]["answer_model"] == ui.DEFAULT_LLM_MODEL
     assert "已自動儲存" in added[-1]

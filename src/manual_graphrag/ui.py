@@ -79,7 +79,13 @@ from .qa_service import (
     legacy_rerank_evidence,
     rerank_evidence,
 )
-from .retrieval import RETRIEVAL_STRATEGIES, RetrievalConfig, strategy_choices, strategy_label
+from .retrieval import (
+    RETRIEVAL_STRATEGIES,
+    RetrievalConfig,
+    strategy_choices,
+    strategy_id_from_label,
+    strategy_label,
+)
 from .service_settings import (
     capture_service_settings,
     configured_models,
@@ -844,6 +850,83 @@ def _create_strategy_parameter_controls(*, visible: bool = True, compact: bool =
     return controls
 
 
+def _strategy_parameter_entries() -> list[tuple[str, str, Any]]:
+    return [
+        (strategy_id, name, spec)
+        for strategy_id in RETRIEVAL_STRATEGIES.ids()
+        for name, spec in RETRIEVAL_STRATEGIES.get_spec(strategy_id).parameters.items()
+        if spec.visible_in_ui
+    ]
+
+
+def _create_experiment_strategy_parameter_controls() -> list[Any]:
+    """Create a separate native control for every strategy-declared UI parameter."""
+    controls = []
+    for _strategy_id, name, spec in _strategy_parameter_entries():
+        label = spec.label or name.replace("_", " ").title()
+        common = {"label": label, "show_label": False, "visible": False, "scale": 2}
+        if spec.choices:
+            control = gr.Dropdown(choices=list(spec.choices), value=spec.default, **common)
+        elif spec.value_type is bool:
+            control = gr.Checkbox(value=bool(spec.default), **common)
+        elif spec.control == "slider" and spec.minimum is not None and spec.maximum is not None:
+            control = gr.Slider(
+                minimum=spec.minimum, maximum=spec.maximum,
+                step=1 if spec.value_type is int else 0.1,
+                value=spec.default, **common,
+            )
+        elif spec.value_type in (int, float):
+            control = gr.Number(
+                value=spec.default, minimum=spec.minimum, maximum=spec.maximum,
+                precision=0 if spec.value_type is int else 3, **common,
+            )
+        else:
+            control = gr.Textbox(value="" if spec.default is None else str(spec.default), **common)
+        controls.append(control)
+    return controls
+
+
+def _experiment_strategy_parameter_updates(
+    config: RetrievalConfig, row_visible: bool,
+) -> list[Any]:
+    return [
+        gr.update(
+            value=config.params.get(name, spec.default),
+            visible=row_visible and strategy_id == config.strategy_id,
+        )
+        for strategy_id, name, spec in _strategy_parameter_entries()
+    ]
+
+
+def _visible_params_for_strategy(config: RetrievalConfig) -> dict[str, Any]:
+    return {
+        name: config.params.get(name, spec.default)
+        for strategy_id, name, spec in _strategy_parameter_entries()
+        if strategy_id == config.strategy_id
+    }
+
+
+def _sync_experiment_strategy_parameter_controls(
+    strategy: str, group_name: str, *values: Any,
+) -> tuple[Any, ...]:
+    strategy_id = strategy_id_from_label(strategy)
+    entries = _strategy_parameter_entries()
+    params = {
+        name: value
+        for (entry_strategy_id, name, _spec), value in zip(entries, values)
+        if entry_strategy_id == strategy_id
+    }
+    visible = bool(str(group_name or "").strip())
+    updates = [
+        gr.update(
+            value=value,
+            visible=visible and entry_strategy_id == strategy_id,
+        )
+        for (entry_strategy_id, _name, _spec), value in zip(entries, values)
+    ]
+    return (params, *updates)
+
+
 def _group_retrieval_config(group: dict[str, Any]) -> RetrievalConfig:
     return RetrievalConfig.from_dict(group.get("retrieval_config"))
 
@@ -1410,7 +1493,7 @@ def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
         prefix[4] = message
         suffix = [gr.update() for _ in range(9)]
         suffix[0] = message
-        return (*prefix, *[gr.update() for _ in range(EXPERIMENT_GROUP_LIMIT * 9)], *suffix)
+        return (*prefix, *[gr.update() for _ in range(EXPERIMENT_GROUP_LIMIT * EXPERIMENT_GROUP_COMPONENTS)], *suffix)
 
     if not isinstance(project_id, str) or not project_id:
         return unchanged("操作已取消，或尚未選擇實驗專案；沒有刪除任何資料。")
@@ -1725,7 +1808,7 @@ def add_experiment_project_inline_group_for_ui(
     project: dict[str, Any] | None, llm_state: dict[str, Any], *values: Any,
 ) -> tuple[Any, ...]:
     if not project:
-        return (*[gr.update() for _ in range(EXPERIMENT_GROUP_LIMIT * 9)], {},
+        return (*[gr.update() for _ in range(EXPERIMENT_GROUP_LIMIT * EXPERIMENT_GROUP_COMPONENTS)], {},
                 "❌ 請先載入實驗專案。")
     try:
         groups = _groups_from_inline_values(values)
@@ -1759,7 +1842,7 @@ def remove_experiment_project_inline_group_for_ui(
     llm_state: dict[str, Any], *values: Any,
 ) -> tuple[Any, ...]:
     if not project:
-        return (*[gr.update() for _ in range(EXPERIMENT_GROUP_LIMIT * 9)], {},
+        return (*[gr.update() for _ in range(EXPERIMENT_GROUP_LIMIT * EXPERIMENT_GROUP_COMPONENTS)], {},
                 "❌ 請先載入實驗專案。")
     try:
         groups = _groups_from_inline_values(values)
@@ -1817,6 +1900,7 @@ def _experiment_group_rows(groups: list[dict[str, Any]]) -> list[list[object]]:
 
 EXPERIMENT_GROUP_LIMIT = 12
 EXPERIMENT_GROUP_FIELDS = 8
+EXPERIMENT_GROUP_COMPONENTS = EXPERIMENT_GROUP_FIELDS + len(_strategy_parameter_entries()) + 1
 
 
 def _inline_group_values(groups: list[dict[str, Any]]) -> list[Any]:
@@ -1832,7 +1916,7 @@ def _inline_group_values(groups: list[dict[str, Any]]) -> list[Any]:
             item.get("name", ""), item.get("answer_model"),
             item.get("answer_reasoning_effort", DEFAULT_REASONING_EFFORT),
             strategy, top_k, reranker, expansion,
-            _strategy_parameter_value(config, "effective_search_ratio"),
+            _visible_params_for_strategy(config),
         ])
     return values
 
@@ -1872,7 +1956,8 @@ def _inline_group_updates(
             gr.update(value=top_k, visible=visible),
             gr.update(value=reranker, visible=visible),
             gr.update(value=expansion, visible=visible),
-            gr.update(value=_strategy_parameter_value(config, "effective_search_ratio"), visible=visible),
+            gr.update(value=_visible_params_for_strategy(config)),
+            *_experiment_strategy_parameter_updates(config, visible),
             gr.update(visible=visible),
         ])
     return values
@@ -5328,18 +5413,21 @@ def build_app() -> gr.Blocks:
                         choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
                         label="證據擴展", show_label=False, visible=False, scale=2,
                     )
-                    group_strategy_params = _create_strategy_parameter_controls(
-                        visible=False, compact=True,
-                    )[0]
+                    group_strategy_params = gr.State({})
+                    group_strategy_parameter_controls = _create_experiment_strategy_parameter_controls()
                     delete_group_button = gr.Button("移除", size="sm", visible=False, scale=1)
                 experiment_group_rows.append([
                     group_name, group_model, group_answer_effort,
                     group_retrieval, group_top_k,
                     group_reranker, group_expansion, group_strategy_params,
+                    *group_strategy_parameter_controls,
                     delete_group_button,
                 ])
-            experiment_group_fields = [component for row in experiment_group_rows for component in row[:-1]]
-            experiment_group_all_components = [component for row in experiment_group_rows for component in row]
+            experiment_group_fields = [component for row in experiment_group_rows for component in row[:EXPERIMENT_GROUP_FIELDS]]
+            experiment_group_all_components = [
+                component for row in experiment_group_rows
+                for component in [*row[:EXPERIMENT_GROUP_FIELDS], *row[EXPERIMENT_GROUP_FIELDS:-1], row[-1]]
+            ]
             add_experiment_group_button = gr.Button("新增實驗組")
             experiment_group_status = gr.Markdown()
             with gr.Row():
@@ -5503,20 +5591,22 @@ def build_app() -> gr.Blocks:
                         choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
                         label="證據擴展", show_label=False, visible=False, scale=2,
                     )
-                    group_strategy_params = _create_strategy_parameter_controls(
-                        visible=False, compact=True,
-                    )[0]
+                    group_strategy_params = gr.State({})
+                    group_strategy_parameter_controls = _create_experiment_strategy_parameter_controls()
                     delete_group_button = gr.Button("移除", size="sm", visible=False, scale=1)
                 experiment_project_group_rows.append([
                     group_name, group_model, group_answer_effort,
                     group_retrieval, group_top_k, group_reranker,
-                    group_expansion, group_strategy_params, delete_group_button,
+                    group_expansion, group_strategy_params,
+                    *group_strategy_parameter_controls, delete_group_button,
                 ])
             experiment_project_group_fields = [
-                component for row in experiment_project_group_rows for component in row[:-1]
+                component for row in experiment_project_group_rows
+                for component in row[:EXPERIMENT_GROUP_FIELDS]
             ]
             experiment_project_group_all_components = [
-                component for row in experiment_project_group_rows for component in row
+                component for row in experiment_project_group_rows
+                for component in [*row[:EXPERIMENT_GROUP_FIELDS], *row[EXPERIMENT_GROUP_FIELDS:-1], row[-1]]
             ]
             add_experiment_project_group_button = gr.Button("新增實驗組")
             experiment_project_groups_status = gr.Markdown("實驗組設定會自動儲存。")
@@ -5751,14 +5841,17 @@ def build_app() -> gr.Blocks:
             project_selector, experiment_questions_state, experiment_max_concurrent_requests,
             experiment_groups_state, *experiment_group_fields,
         ]
+        strategy_selectors = {row[3] for row in experiment_group_rows}
+        parameter_states = {row[7] for row in experiment_group_rows}
         for group_component in [*experiment_group_fields, experiment_max_concurrent_requests]:
-            group_component.input(
-                save_inline_experiment_groups_for_ui,
-                inputs=inline_group_save_inputs,
-                outputs=[experiment_group_status, experiment_groups_state, experiment_status],
-                show_progress="hidden",
-            )
-            if group_component in experiment_group_fields:
+            if group_component not in strategy_selectors and group_component not in parameter_states:
+                group_component.input(
+                    save_inline_experiment_groups_for_ui,
+                    inputs=inline_group_save_inputs,
+                    outputs=[experiment_group_status, experiment_groups_state, experiment_status],
+                    show_progress="hidden",
+                )
+            if group_component in experiment_group_fields and group_component not in parameter_states:
                 group_component.input(lambda: [], outputs=experiment_pending_answers_state, show_progress="hidden")
         for component in [experiment_judge_model, experiment_judge_effort,
                           experiment_judge_max_concurrent_requests]:
@@ -5775,6 +5868,28 @@ def build_app() -> gr.Blocks:
             show_progress="hidden",
         )
         for row_index, row in enumerate(experiment_group_rows):
+            parameter_state = row[7]
+            parameter_controls = row[EXPERIMENT_GROUP_FIELDS:-1]
+            parameter_sync_inputs = [row[3], row[0], *parameter_controls]
+            parameter_sync_outputs = [parameter_state, *parameter_controls]
+            for trigger in [row[0], row[3], *parameter_controls]:
+                trigger.change(
+                    _sync_experiment_strategy_parameter_controls,
+                    inputs=parameter_sync_inputs,
+                    outputs=parameter_sync_outputs,
+                    show_progress="hidden",
+                )
+            for parameter_control in parameter_controls:
+                parameter_control.input(
+                    lambda: [], outputs=experiment_pending_answers_state,
+                    show_progress="hidden",
+                )
+            parameter_state.change(
+                save_inline_experiment_groups_for_ui,
+                inputs=inline_group_save_inputs,
+                outputs=[experiment_group_status, experiment_groups_state, experiment_status],
+                show_progress="hidden",
+            )
             row[-1].click(
                 partial(remove_inline_experiment_group_for_ui, row_index),
                 inputs=[project_selector, experiment_questions_state,
@@ -6022,14 +6137,35 @@ def build_app() -> gr.Blocks:
                 experiment_project_state, experiment_project_groups_status,
             ],
         )
+        experiment_project_group_save_inputs = [experiment_project_state, *experiment_project_group_fields]
+        strategy_selectors = {row[3] for row in experiment_project_group_rows}
+        parameter_states = {row[7] for row in experiment_project_group_rows}
         for component in experiment_project_group_fields:
-            component.input(
+            if component not in strategy_selectors and component not in parameter_states:
+                component.input(
+                    save_experiment_project_inline_groups_for_ui,
+                    inputs=experiment_project_group_save_inputs,
+                    outputs=[experiment_project_state, experiment_project_groups_status],
+                    show_progress="hidden",
+                )
+        for row_index, row in enumerate(experiment_project_group_rows):
+            parameter_state = row[7]
+            parameter_controls = row[EXPERIMENT_GROUP_FIELDS:-1]
+            parameter_sync_inputs = [row[3], row[0], *parameter_controls]
+            parameter_sync_outputs = [parameter_state, *parameter_controls]
+            for trigger in [row[0], row[3], *parameter_controls]:
+                trigger.change(
+                    _sync_experiment_strategy_parameter_controls,
+                    inputs=parameter_sync_inputs,
+                    outputs=parameter_sync_outputs,
+                    show_progress="hidden",
+                )
+            parameter_state.change(
                 save_experiment_project_inline_groups_for_ui,
-                inputs=[experiment_project_state, *experiment_project_group_fields],
+                inputs=experiment_project_group_save_inputs,
                 outputs=[experiment_project_state, experiment_project_groups_status],
                 show_progress="hidden",
             )
-        for row_index, row in enumerate(experiment_project_group_rows):
             row[-1].click(
                 partial(remove_experiment_project_inline_group_for_ui, row_index),
                 inputs=[experiment_project_state, experiment_llm_service_state,
