@@ -5159,7 +5159,7 @@ def build_app() -> gr.Blocks:
                 gr.Markdown("人工修改答案判定")
                 for index, item in enumerate(results):
                     with gr.Row():
-                        gr.Markdown(f"題目 {item.get('number', index + 1)}｜{item.get('question', '')}", scale=5)
+                        gr.Markdown(f"題目 {item.get('number', index + 1)}｜{item.get('question', '')}")
                         score = gr.Dropdown(
                             choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
                             value=_result_score(item), label="答案判定",
@@ -5320,7 +5320,7 @@ def build_app() -> gr.Blocks:
                 gr.Markdown("人工修改答案判定")
                 for index, item in enumerate(results):
                     with gr.Row():
-                        gr.Markdown(f"{item.get('group_name', '')}｜題目 {item.get('number', index + 1)}｜{item.get('question', '')}", scale=5)
+                        gr.Markdown(f"{item.get('group_name', '')}｜題目 {item.get('number', index + 1)}｜{item.get('question', '')}")
                         score = gr.Dropdown(
                             choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
                             value=_result_score(item), label="答案判定",
@@ -5493,7 +5493,7 @@ def build_app() -> gr.Blocks:
                 gr.Markdown("人工修改答案判定")
                 for index, item in enumerate(results):
                     with gr.Row():
-                        gr.Markdown(f"{item.get('group_name', '')}｜{item.get('source_project_name', '')}｜題目 {item.get('number', index + 1)}｜{item.get('question', '')}", scale=5)
+                        gr.Markdown(f"{item.get('group_name', '')}｜{item.get('source_project_name', '')}｜題目 {item.get('number', index + 1)}｜{item.get('question', '')}")
                         score = gr.Dropdown(
                             choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
                             value=_result_score(item), label="答案判定",
