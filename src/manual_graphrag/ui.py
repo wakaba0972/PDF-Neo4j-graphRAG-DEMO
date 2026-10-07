@@ -2434,9 +2434,8 @@ def update_manual_evaluation_score_for_ui(
 
 
 def manual_result_editability_for_ui(enabled: bool) -> dict[str, Any]:
-    """Keep the display table locked; per-row score dropdowns use this flag."""
-    del enabled
-    return gr.update(interactive=False)
+    """Unlock the answer-score cell in the result table when requested."""
+    return gr.update(interactive=bool(enabled))
 
 
 def experiment_table_editability_for_ui(enabled: bool) -> dict[str, Any]:
@@ -5320,38 +5319,18 @@ def build_app() -> gr.Blocks:
             gr.Markdown("#### 測試結果")
             evaluation_manual_edit_enabled = gr.Checkbox(
                 value=False, label="啟用答案結果人工修改",
-                info="勾選後會在結果表格下方為每題顯示下拉選單，可選 0 錯誤、1 部分正確或 2 全對。",
+                info="勾選後可直接在表格的答案判定欄輸入 0、1 或 2。",
             )
             evaluation_results_table = gr.Dataframe(
                 headers=["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
                 datatype=["number", "str", "str", "str", "str", "number", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7], wrap=True,
+                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 6, 7], wrap=True,
                 elem_classes=["evaluation-table", "evaluation-results-table"],
             )
             with gr.Group(elem_classes="evaluation-metrics-box"):
                 evaluation_status = gr.Markdown(
                     "請先載入專案並解析 PDF。", elem_classes="evaluation-metrics"
                 )
-            @gr.render(inputs=[evaluation_state, evaluation_manual_edit_enabled])
-            def render_evaluation_score_dropdowns(evaluation, editing_enabled):
-                results = (evaluation or {}).get("results") or []
-                if not results:
-                    return
-                gr.Markdown("人工修改答案判定")
-                for index, item in enumerate(results):
-                    with gr.Row():
-                        gr.Markdown(f"題目 {item.get('number', index + 1)}｜{item.get('question', '')}")
-                        score = gr.Dropdown(
-                            choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
-                            value=_result_score(item), label="答案判定",
-                            interactive=bool(editing_enabled), scale=1,
-                        )
-                        score.change(
-                            update_manual_evaluation_score_for_ui,
-                            inputs=[project_selector, gr.State(index), score, evaluation_state],
-                            outputs=[evaluation_status, evaluation_results_table, evaluation_state],
-                        )
-
         with gr.Tab("1-6 匯入問題集", interactive=False) as project_question_import_tab:
             gr.Markdown(
                 "在目前載入的專案匯入專屬題目集。題目集會儲存在該專案，"

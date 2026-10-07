@@ -781,7 +781,7 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     results_table = components[result_table_index]
     assert results_table["props"]["interactive"] is False
     assert results_table["props"]["datatype"][5] == "number"
-    assert 5 in results_table["props"]["static_columns"]
+    assert 5 not in results_table["props"]["static_columns"]
     judge_button = next(
         component for component in components
         if component.get("props", {}).get("value") == "進行評測"
@@ -2438,7 +2438,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     app = build_app()
     components = app.config["components"]
     renderable_names = {renderable.fn.__name__ for renderable in app.renderables}
-    assert "render_evaluation_score_dropdowns" in renderable_names
+    assert "render_evaluation_score_dropdowns" not in renderable_names
     assert "render_experiment_score_dropdowns" not in renderable_names
     assert "render_experiment_project_score_dropdowns" not in renderable_names
     assert any(
@@ -2448,6 +2448,11 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     assert not any(component.get("props", {}).get("headers") == [
         "實驗組", "回答模型", "評測模型", "檢索模式", "Top K", "Reranker", "擴展圖譜證據",
     ] for component in components)
+    evaluation_table = next(
+        component for component in components
+        if component.get("props", {}).get("headers", [])[:3] == ["編號", "問題", "標準答案"]
+    )
+    assert 5 not in evaluation_table["props"]["static_columns"]
     assert sum(
         component.get("props", {}).get("choices") == [
             ("基本向量檢索", "基本向量檢索"), ("混合檢索", "混合檢索"),
