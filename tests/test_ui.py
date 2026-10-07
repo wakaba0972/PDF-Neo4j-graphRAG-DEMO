@@ -2401,8 +2401,12 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     assert len(experiment_tables) == 2
     assert experiment_tables[0]["props"]["interactive"] is False
     assert 7 not in experiment_tables[0]["props"]["static_columns"]
+    single_widths = experiment_tables[0]["props"]["column_widths"]
+    assert single_widths[3] < single_widths[6]
     assert experiment_tables[1]["props"]["interactive"] is False
     assert 8 not in experiment_tables[1]["props"]["static_columns"]
+    cross_widths = experiment_tables[1]["props"]["column_widths"]
+    assert cross_widths[4] < cross_widths[7]
     assert ui.experiment_table_editability_for_ui(True)["interactive"] is True
     assert ui.experiment_table_editability_for_ui(False)["interactive"] is False
     answer_heading = next(

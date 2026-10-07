@@ -5364,7 +5364,7 @@ def build_app() -> gr.Blocks:
                 ],
                 datatype=["str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
                 type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 8, 9],
-                column_widths=[90, 60, 140, 300, 420, 420, 120, 150, 300, 120],
+                column_widths=[90, 60, 140, 160, 420, 380, 300, 150, 220, 120],
                 wrap=True, elem_classes=["evaluation-table", "evaluation-results-table"],
             )
             with gr.Row():
@@ -5523,6 +5523,7 @@ def build_app() -> gr.Blocks:
                 headers=["實驗組", "成員專案", "題號", "來源文件", "題目集", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
                 datatype=["str", "str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
                 type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 9, 10],
+                column_widths=[90, 120, 60, 140, 160, 380, 360, 300, 150, 220, 120],
                 wrap=True,
             )
             experiment_project_manual_edit = gr.Checkbox(
