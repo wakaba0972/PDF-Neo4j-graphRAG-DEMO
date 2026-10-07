@@ -53,6 +53,16 @@ def test_retrieval_config_rejects_incomplete_new_shape() -> None:
         })
 
 
+def test_retrieval_config_repairs_stale_candidate_budget_when_loading() -> None:
+    stored = RetrievalConfig.from_ui("混合檢索", 8, "停用", "停用").to_dict()
+    stored["top_k"] = 10
+
+    loaded = RetrievalConfig.from_dict(stored)
+
+    assert loaded.top_k == 10
+    assert loaded.params["candidate_top_k"] == 10
+
+
 def test_retrieval_config_rejects_unsupported_strategy_parameters() -> None:
     config = RetrievalConfig(strategy_id="vector", params={"ranker": "naive"})
 

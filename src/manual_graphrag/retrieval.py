@@ -310,10 +310,24 @@ class RetrievalConfig:
             "strategy_id", "top_k", "params", "reranker", "expansion",
         }:
             raise ValueError("專案未使用新的 retrieval_config 格式；請在新專案中重新設定檢索參數")
+        params = dict(value["params"]) if isinstance(value["params"], dict) else value["params"]
+        # candidate_top_k is an internal retrieval budget (not a user-facing
+        # setting). Older persisted settings can contain a value below the
+        # current Top K after the user raises Top K; repair that derived value
+        # when loading instead of making the saved project unusable.
+        if (
+            isinstance(params, dict)
+            and isinstance(value["top_k"], int)
+            and not isinstance(value["top_k"], bool)
+            and isinstance(params.get("candidate_top_k"), int)
+            and not isinstance(params.get("candidate_top_k"), bool)
+            and params["candidate_top_k"] < value["top_k"]
+        ):
+            params["candidate_top_k"] = value["top_k"]
         config = cls(
             strategy_id=value["strategy_id"],
             top_k=value["top_k"],
-            params=value["params"],
+            params=params,
             reranker=value["reranker"],
             expansion=value["expansion"],
         )
