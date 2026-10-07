@@ -42,6 +42,23 @@ def test_gradio_callbacks_receive_actor_in_isolated_context():
     assert current_actor() is None
 
 
+def test_shared_gradio_callback_only_receives_one_actor_input():
+    app = _App()
+    original_function = app.fns[0]
+    app.fns[1] = app.fns[0]
+    app.config["dependencies"].append({"id": 1, "inputs": [8]})
+    actor_state = _ActorState()
+
+    bind_gradio_callbacks_to_actor(app, actor_state)
+
+    assert len(app.fns[0].inputs) == 2
+    assert app.fns[0].inputs[-1] is actor_state
+    assert [dependency["inputs"] for dependency in app.config["dependencies"]] == [
+        [7, 42], [8, 42],
+    ]
+    assert original_function.fn("payload", "Zhao", "Zhao") == ("Zhao", "payload")
+
+
 def test_partial_gradio_callback_keeps_annotation_module_for_api_schema():
     def callback(_action: str, value: Any) -> Any:
         return value

@@ -52,14 +52,23 @@ class actor_context:
 def bind_gradio_callbacks_to_actor(app: Any, actor_state: Any) -> None:
     """Append per-session user state to callbacks and scope it as audit context."""
     dependencies = app.config.get("dependencies", [])
+    bound_callbacks: set[int] = set()
+    bound_block_functions: set[int] = set()
     for dependency in dependencies:
         function_id = dependency.get("id")
         block_function = app.fns.get(function_id)
         if block_function is None or block_function.fn is None:
             continue
-        block_function.inputs.append(actor_state)
         dependency["inputs"].append(actor_state._id)
         original = block_function.fn
+        callback_identity = id(original)
+        if callback_identity in bound_callbacks:
+            continue
+        bound_callbacks.add(callback_identity)
+        block_function_identity = id(block_function)
+        if block_function_identity not in bound_block_functions:
+            block_function.inputs.append(actor_state)
+            bound_block_functions.add(block_function_identity)
         annotation_source = original
         while isinstance(annotation_source, partial):
             annotation_source = annotation_source.func
