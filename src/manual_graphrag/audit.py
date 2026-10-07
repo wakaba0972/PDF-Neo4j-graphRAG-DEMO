@@ -16,6 +16,16 @@ _AUDIT_EVENTS_IN_CALLBACK: ContextVar[int] = ContextVar("manual_graphrag_audit_c
 _AUDIT_LOCK = Lock()
 
 
+def _is_safe_project_id(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= 60
+        and value not in {".", ".."}
+        and "/" not in value
+        and "\\" not in value
+    )
+
+
 def current_actor() -> str | None:
     return _CURRENT_ACTOR.get()
 
@@ -136,16 +146,16 @@ def _record_callback_event(
         if isinstance(value, dict):
             project_id = value.get("project_id")
             experiment_id = value.get("experiment_project_id")
-            if isinstance(project_id, str):
+            if _is_safe_project_id(project_id):
                 project_ids.add(project_id)
-            if isinstance(experiment_id, str):
+            if _is_safe_project_id(experiment_id):
                 experiment_ids.add(experiment_id)
             for nested in value.values():
                 visit(nested)
         elif isinstance(value, (list, tuple)):
             for nested in value:
                 visit(nested)
-        elif isinstance(value, str):
+        elif _is_safe_project_id(value):
             candidate = Path(value)
             if candidate.name == value and (Path(PROJECTS_DIR) / value / "project.json").is_file():
                 project_ids.add(value)

@@ -6,6 +6,7 @@ from gradio.utils import get_function_params
 from manual_graphrag.audit import (
     bind_gradio_callbacks_to_actor,
     current_actor,
+    _record_callback_event,
 )
 
 
@@ -91,3 +92,24 @@ def test_partial_gradio_callback_keeps_annotation_module_for_api_schema():
         "_action": str, "value": Any, "return": Any,
     }
     assert get_function_params(wrapped)
+
+
+def test_audit_ignores_long_document_text_when_finding_project_ids(tmp_path, monkeypatch):
+    from manual_graphrag import experiment_project_store, project_store
+
+    projects_dir = tmp_path / "projects"
+    experiments_dir = tmp_path / "experiments"
+    project_dir = projects_dir / "project-a"
+    project_dir.mkdir(parents=True)
+    (project_dir / "project.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(project_store, "PROJECTS_DIR", projects_dir)
+    monkeypatch.setattr(experiment_project_store, "EXPERIMENT_PROJECTS_DIR", experiments_dir)
+
+    long_document_text = "個人履歷內容\n" * 2_000
+    _record_callback_event(
+        "neo4j_import", (long_document_text, {"project_id": "project-a"}), {},
+    )
+
+    audit_log = project_dir / "activity.log"
+    assert audit_log.is_file()
+    assert '"action": "neo4j_import"' in audit_log.read_text(encoding="utf-8")
