@@ -8,6 +8,7 @@ import pytest
 
 from manual_graphrag import service_settings as settings
 from manual_graphrag import ui
+from manual_graphrag.audit import actor_context
 from manual_graphrag.chunking import PageText, TextChunk
 from manual_graphrag.ui import build_app, connection_summary, persist_env_settings
 
@@ -388,7 +389,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
         for tab in experiment_tabs
     }
     assert experiment_tab_states == {
-        "2-0 實驗專案": True,
+        "2-0 實驗專案": False,
         "2-1 成員專案連線測試": False,
         "2-2 問題集準備": False,
         "2-3 自動實驗測試": False,
@@ -549,7 +550,7 @@ def test_delete_button_uses_browser_confirmation() -> None:
     )
     assert "window.confirm" in dependency["js"]
     assert "throw new Error" in dependency["js"]
-    assert len(dependency["inputs"]) == 1
+    assert len(dependency["inputs"]) == 2
     assert any(
         str(item.get("api_name", "")).startswith("refresh_projects_after_delete_for_ui")
         and item.get("trigger_after") == dependency["id"]
@@ -810,14 +811,72 @@ def test_global_api_credentials_exist_only_on_page_zero() -> None:
     components = app.config["components"]
     labels = [component.get("props", {}).get("label") for component in components]
 
-    assert "0-0 API Key 設定" in labels
+    assert "0-0 使用者" in labels
+    assert "0-1 API Key 設定" in labels
     assert labels.count("OpenAI API Key") == 1
     assert labels.count("OpenAI API Base URL") == 1
     assert not any("API Key" in str(label) for label in labels if label not in {
-        "0-0 API Key 設定", "OpenAI API Key",
+        "0-1 API Key 設定", "OpenAI API Key",
     })
     assert {"1-0 專案設定", "1-1 連線設定", "1-6 單一專案實驗",
             "2-0 實驗專案", "2-3 自動實驗測試"} <= set(labels)
+
+
+def test_user_selection_unlocks_roots_and_names_audited_projects(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    app = build_app()
+    user_dropdown = next(
+        component for component in app.config["components"]
+        if component.get("props", {}).get("label") == "目前使用者"
+    )
+    assert user_dropdown["props"]["choices"] == [
+        ("請選擇使用者", ""),
+        *((name, name) for name in ("Jay", "Christine", "Swallow", "Tai", "Zhao")),
+    ]
+    assert user_dropdown["props"]["value"] == ""
+    initial_tabs = {
+        component.get("props", {}).get("label"): component.get("props", {}).get("interactive")
+        for component in app.config["components"]
+        if component.get("props", {}).get("label") in {
+            "0-1 API Key 設定", "1-0 專案設定", "2-0 實驗專案",
+        }
+    }
+    assert initial_tabs == {
+        "0-1 API Key 設定": False,
+        "1-0 專案設定": False,
+        "2-0 實驗專案": False,
+    }
+    assert all(update["interactive"] is False for update in ui.user_access_tabs_for_ui(None))
+    selection = ui.select_user_for_ui("Zhao")
+    assert "Zhao" in selection[0]
+    assert all(update["interactive"] is True for update in selection[1:])
+
+    project_dependency = next(
+        dependency for dependency in app.config["dependencies"]
+        if str(dependency.get("api_name", "")).startswith("create_project_for_ui")
+    )
+    project_result = app.fns[project_dependency["id"]].fn("s25", "Zhao")
+    assert project_result[1]["name"] == "Zhao | s25"
+    project_events = (
+        tmp_path / "data" / "projects" / project_result[1]["project_id"] / "activity.log"
+    ).read_text(encoding="utf-8")
+    project_event = json.loads(project_events.splitlines()[0])
+    assert project_event["user"] == "Zhao"
+    assert project_event["action"] == "create_project_for_ui"
+
+    experiment_dependency = next(
+        dependency for dependency in app.config["dependencies"]
+        if str(dependency.get("api_name", "")).startswith("create_experiment_project_for_ui")
+    )
+    experiment_result = app.fns[experiment_dependency["id"]].fn("s25", "Zhao")
+    assert experiment_result[1]["name"] == "Zhao | s25"
+    experiment_events = (
+        tmp_path / "data" / "experiment_projects"
+        / experiment_result[1]["experiment_project_id"] / "activity.log"
+    ).read_text(encoding="utf-8")
+    experiment_event = json.loads(experiment_events.splitlines()[0])
+    assert experiment_event["user"] == "Zhao"
+    assert experiment_event["action"] == "create_experiment_project_for_ui"
 
 
 def test_answer_display_is_plain_text_not_markdown() -> None:
@@ -833,8 +892,10 @@ def test_answer_display_is_plain_text_not_markdown() -> None:
 
 def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _, created, status = ui.create_project_for_ui("手冊專案")
+    with actor_context("Zhao"):
+        _, created, status = ui.create_project_for_ui("手冊專案")
     assert status.startswith("✅")
+    assert created["name"] == "Zhao | 手冊專案"
     document = tmp_path / "manual.pdf"
     document.write_bytes(b"pdf")
     values = [
@@ -880,7 +941,8 @@ def test_load_project_ignores_legacy_model_credentials(tmp_path, monkeypatch) ->
         "NEO4J_USERNAME": "user",
         "NEO4J_PASSWORD": "password",
     })
-    _, created, _ = ui.create_project_for_ui("Legacy")
+    with actor_context("Tai"):
+        _, created, _ = ui.create_project_for_ui("Legacy")
     project_path = tmp_path / "data" / "projects" / created["project_id"] / "project.json"
     ui.write_json(project_path, {
         **created,
@@ -2118,7 +2180,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         dependency for dependency in app.config["dependencies"]
         if str(dependency.get("api_name", "")).startswith("evaluate_experiment_answers_with_services_for_ui")
     )
-    assert len(evaluation_dependency["inputs"]) == 8
+    assert len(evaluation_dependency["inputs"]) == 9
     assert any(
         str(dependency.get("api_name", "")).startswith("load_experiment_for_ui")
         for dependency in app.config["dependencies"]
@@ -3137,7 +3199,7 @@ def test_project_list_refreshes_on_page_load_and_tab_select_without_focus_rerend
     triggers = {
         target[1] for dependency in dependencies for target in dependency["targets"]
     }
-    assert all(len(dependency["inputs"]) == 1 for dependency in dependencies)
+    assert all(len(dependency["inputs"]) == 2 for dependency in dependencies)
     assert triggers == {"load", "select"}
     assert "focus" not in triggers
     assert all(dependency["outputs"] == [selector["id"]] for dependency in dependencies)

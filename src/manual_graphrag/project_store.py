@@ -15,6 +15,7 @@ from threading import RLock
 from typing import Any
 from uuid import uuid4
 
+from .audit import append_audit_event, current_action, current_actor
 from .storage import read_json, write_json
 
 PROJECTS_DIR = Path("data/projects")
@@ -56,7 +57,9 @@ def list_projects(root: str | Path = PROJECTS_DIR) -> list[tuple[str, str]]:
     return sorted(projects, key=lambda item: item[0].casefold())
 
 
-def create_project(name: str, root: str | Path = PROJECTS_DIR) -> dict[str, Any]:
+def create_project(
+    name: str, root: str | Path = PROJECTS_DIR, *, actor: str | None = None,
+) -> dict[str, Any]:
     clean_name = name.strip()
     if not clean_name:
         raise ValueError("請輸入專案名稱")
@@ -80,6 +83,9 @@ def create_project(name: str, root: str | Path = PROJECTS_DIR) -> dict[str, Any]
         "questions": [],
     }
     write_json(target / "project.json", project)
+    append_audit_event(
+        target / "activity.log", current_action() or "project_created", actor=actor,
+    )
     return project
 
 
@@ -113,6 +119,7 @@ def load_project(project_id: str, root: str | Path = PROJECTS_DIR) -> dict[str, 
 def delete_project(project_id: str, root: str | Path = PROJECTS_DIR) -> str:
     project = load_project(project_id, root)
     target = Path(root) / project_id
+    append_audit_event(target / "activity.log", current_action() or "project_deleted")
     shutil.rmtree(target)
     return str(project["name"])
 
@@ -124,7 +131,13 @@ def save_project(
     root: str | Path = PROJECTS_DIR,
 ) -> dict[str, Any]:
     with _PROJECT_WRITE_LOCK:
-        return _save_project_unlocked(project_id, payload, document_paths, root)
+        saved = _save_project_unlocked(project_id, payload, document_paths, root)
+        append_audit_event(
+            Path(root) / project_id / "activity.log",
+            current_action() or "project_updated",
+            details={"fields": sorted(payload)},
+        )
+        return saved
 
 
 def export_project_archive(
@@ -157,6 +170,9 @@ def export_project_archive(
                     raise ValueError("專案資料夾包含不支援匯出的符號連結")
                 if path.is_file():
                     archive.write(path, Path("project") / path.relative_to(project_dir))
+        append_audit_event(
+            project_dir / "activity.log", current_action() or "project_exported",
+        )
         return Path(archive_name)
     except Exception:
         Path(archive_name).unlink(missing_ok=True)
@@ -204,6 +220,9 @@ def import_project_archive(
             raise ValueError("專案封裝檔中的 project.json 格式錯誤")
         original_name = str(project_payload.get("name") or manifest.get("project_name") or "匯入專案").strip()
         base_name = original_name or "匯入專案"
+        actor = current_actor()
+        if actor and not base_name.startswith(f"{actor} | "):
+            base_name = f"{actor} | {base_name}"
         clean_name = base_name
         suffix = 2
         while _project_id(clean_name) in {project_id for _, project_id in list_projects(base)}:
@@ -249,6 +268,10 @@ def import_project_archive(
                 graph_state["neo4j_imported"] = False
                 graph_state["neo4j_error"] = "匯入封裝不包含外部 Neo4j Database；請重新執行 Embedding 並匯入 Neo4j。"
             write_json(target / "project.json", project_payload)
+            append_audit_event(
+                target / "activity.log", current_action() or "project_imported",
+                actor=actor,
+            )
         except Exception:
             shutil.rmtree(target, ignore_errors=True)
             raise

@@ -1,8 +1,11 @@
 from pathlib import Path
 import hashlib
+import json
+from datetime import datetime
 
 import pytest
 
+from manual_graphrag.audit import actor_context
 from manual_graphrag.project_store import (
     append_question,
     create_project,
@@ -37,6 +40,22 @@ def test_each_project_gets_a_stable_unique_database(tmp_path) -> None:
 
     assert first["neo4j_database"] == load_project(first["project_id"], tmp_path)["neo4j_database"]
     assert first["neo4j_database"] != second["neo4j_database"]
+
+
+def test_project_activity_log_records_actor_local_time_and_operation(tmp_path) -> None:
+    project = create_project("Zhao | Manual", tmp_path, actor="Zhao")
+    with actor_context("Christine", "save_project_for_ui"):
+        save_project(project["project_id"], {"settings": {"top_k": 8}}, root=tmp_path)
+
+    events = [
+        json.loads(line)
+        for line in (tmp_path / project["project_id"] / "activity.log").read_text().splitlines()
+    ]
+
+    assert [event["user"] for event in events] == ["Zhao", "Christine"]
+    assert events[1]["action"] == "save_project_for_ui"
+    assert events[1]["details"]["fields"] == ["settings"]
+    assert all(datetime.fromisoformat(event["timestamp"]).utcoffset() is not None for event in events)
 
 
 def test_save_project_copies_documents(tmp_path) -> None:

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from .audit import append_audit_event, current_action
 from .storage import read_json, write_json
 
 EXPERIMENT_PROJECTS_DIR = Path("data/experiment_projects")
@@ -32,7 +33,7 @@ def list_experiment_projects(root: str | Path = EXPERIMENT_PROJECTS_DIR) -> list
 
 
 def create_experiment_project(
-    name: str, root: str | Path = EXPERIMENT_PROJECTS_DIR,
+    name: str, root: str | Path = EXPERIMENT_PROJECTS_DIR, *, actor: str | None = None,
 ) -> dict[str, Any]:
     clean_name = name.strip()
     if not clean_name:
@@ -55,6 +56,10 @@ def create_experiment_project(
         "detail_rows": [],
     }
     write_json(directory / "experiment.json", data)
+    append_audit_event(
+        directory / "activity.log", current_action() or "experiment_project_created",
+        actor=actor,
+    )
     return data
 
 
@@ -87,6 +92,11 @@ def save_experiment_project(
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     write_json(Path(root) / project_id / "experiment.json", updated)
+    append_audit_event(
+        Path(root) / project_id / "activity.log",
+        current_action() or "experiment_project_updated",
+        details={"fields": sorted(payload)},
+    )
     return updated
 
 
@@ -94,5 +104,9 @@ def delete_experiment_project(
     project_id: str, root: str | Path = EXPERIMENT_PROJECTS_DIR,
 ) -> str:
     data = load_experiment_project(project_id, root)
-    shutil.rmtree(Path(root) / project_id)
+    directory = Path(root) / project_id
+    append_audit_event(
+        directory / "activity.log", current_action() or "experiment_project_deleted",
+    )
+    shutil.rmtree(directory)
     return str(data["name"])

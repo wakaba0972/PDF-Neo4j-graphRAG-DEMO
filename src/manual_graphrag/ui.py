@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import gradio as gr
 
+from .audit import bind_gradio_callbacks_to_actor, current_actor
 from .chunking import TextChunk, chunk_pages, preview_rows
 from .config import (
     public_settings,
@@ -94,6 +95,30 @@ DEFAULT_LLM_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_EVALUATION_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_MAX_CONCURRENT_REQUESTS = 10
+KNOWN_USERS = ("Jay", "Christine", "Swallow", "Tai", "Zhao")
+
+
+def current_user_banner_for_ui(user: str | None) -> str:
+    return f"### 👤 目前使用者：{user}" if user in KNOWN_USERS else "### 👤 目前使用者：尚未選擇"
+
+
+def user_access_tabs_for_ui(user: str | None) -> tuple[dict[str, Any], ...]:
+    enabled = user in KNOWN_USERS
+    return tuple(gr.update(interactive=enabled) for _ in range(3))
+
+
+def select_user_for_ui(user: str | None) -> tuple[Any, ...]:
+    return current_user_banner_for_ui(user), *user_access_tabs_for_ui(user)
+
+
+def _user_prefixed_name(name: str, user: str | None) -> str:
+    clean_name = str(name or "").strip()
+    if user not in KNOWN_USERS:
+        raise ValueError("請先在 0-0 選擇使用者")
+    if not clean_name:
+        raise ValueError("請輸入專案名稱")
+    prefix = f"{user} | "
+    return clean_name if clean_name.startswith(prefix) else f"{prefix}{clean_name}"
 
 
 def _model_choices_with_fallback(
@@ -213,7 +238,8 @@ def connection_summary(
 
 
 def check_neo4j_for_ui(
-    uri: str, database: str, username: str, password: str
+    uri: str, database: str, username: str, password: str,
+    project_id: str | None = None,
 ) -> tuple[str, bool]:
     try:
         ensure_project_database(uri, database, username, password)
@@ -559,8 +585,9 @@ def _project_choices() -> list[tuple[str, str]]:
 
 def create_project_for_ui(name: str) -> tuple[dict[str, Any], dict[str, Any], str]:
     try:
-        project = create_project(name)
-    except ValueError as exc:
+        user = current_actor()
+        project = create_project(_user_prefixed_name(name, user), actor=user)
+    except (OSError, ValueError) as exc:
         return gr.update(), {}, f"❌ {exc}"
     return gr.update(choices=_project_choices(), value=project["project_id"]), project, f"✅ 已建立專案「{project['name']}」。"
 
@@ -1131,7 +1158,8 @@ def experiment_project_choices_for_ui() -> list[tuple[str, str]]:
 
 def create_experiment_project_for_ui(name: str) -> tuple[Any, dict[str, Any], str]:
     try:
-        project = create_experiment_project(name)
+        user = current_actor()
+        project = create_experiment_project(_user_prefixed_name(name, user), actor=user)
     except (OSError, ValueError) as exc:
         return gr.update(), {}, f"❌ {exc}"
     choices = experiment_project_choices_for_ui()
@@ -4374,6 +4402,7 @@ def build_app() -> gr.Blocks:
         .project-workspace-action button {height:38px !important;min-height:38px !important;}
         </style>""")
         current_project_banner = gr.Markdown(_current_project_banner({}))
+        current_user_banner = gr.Markdown(current_user_banner_for_ui(None))
         llm_service_state = gr.State(llm_settings)
         experiment_llm_service_state = gr.State(experiment_llm_settings)
         embedding_service_state = gr.State(embedding_settings)
@@ -4393,7 +4422,7 @@ def build_app() -> gr.Blocks:
         experiment_project_connection_state = gr.State({})
         experiment_project_pending_answers_state = gr.State([])
         experiment_project_results_state = gr.State([])
-        # Internal service states are shared by workflows; credentials are editable only on 0-0.
+        # Internal service states are shared by workflows; credentials are editable only on 0-1.
         llm_provider = gr.State("OpenAI")
         model_endpoint = gr.State(llm_profile["base_url"])
         api_key = gr.State(llm_profile["api_key"])
@@ -4409,7 +4438,15 @@ def build_app() -> gr.Blocks:
         embedding_models_table = gr.State([])
         embedding_connection_status = gr.State(embedding_profile["status"])
 
-        with gr.Tab("0-0 API Key 設定"):
+        with gr.Tab("0-0 使用者"):
+            gr.Markdown("請先選擇目前操作使用者，選擇後才能開啟專案與其他設定頁面。")
+            current_user_dropdown = gr.Dropdown(
+                choices=[("請選擇使用者", ""), *((name, name) for name in KNOWN_USERS)],
+                value="", label="目前使用者",
+                interactive=True,
+            )
+
+        with gr.Tab("0-1 API Key 設定", interactive=False) as api_settings_tab:
             gr.Markdown("所有模型與 Embedding 呼叫共用同一組 OpenAI API 設定，並寫入本機 `.env`。")
             with gr.Row():
                 global_api_endpoint = gr.Textbox(label="OpenAI API Base URL", value=llm_profile["base_url"])
@@ -4419,7 +4456,7 @@ def build_app() -> gr.Blocks:
                 reload_button = gr.Button("重新讀取 .env")
             global_api_status = gr.Markdown("API 設定修改後會自動儲存。連線測試僅供診斷，不是後續操作的前置條件。")
 
-        with gr.Tab("1-0 專案設定") as project_tab:
+        with gr.Tab("1-0 專案設定", interactive=False) as project_tab:
             gr.Markdown("### 專案工作區\n建立或載入專案後，可保存本頁面所有連線、模型、參數、Chunk、文件、建圖狀態與問答紀錄。")
             with gr.Row():
                 project_selector = gr.Dropdown(
@@ -4457,7 +4494,7 @@ def build_app() -> gr.Blocks:
                     neo4j_password = gr.Textbox(label="Password", value=env["NEO4J_PASSWORD"], type="password")
                     neo4j_test_button = gr.Button("測試 Neo4j 連線", variant="primary")
                     neo4j_connection_status = gr.Markdown()
-            gr.Markdown("Neo4j 連線設定保存在此頁。模型與 Embedding API 請至 0-0 API Key 設定管理。")
+            gr.Markdown("Neo4j 連線設定保存在此頁。模型與 Embedding API 請至 0-1 API Key 設定管理。")
             env_status = gr.Markdown("Neo4j 設定欄位修改後會自動儲存。")
 
         with gr.Tab("1-2 PDF 與參數", interactive=False) as pdf_tab:
@@ -4972,7 +5009,7 @@ def build_app() -> gr.Blocks:
                 experiment_compact_export_file = gr.File(label="簡潔指標結果 JSON", interactive=False)
             experiment_export_status = gr.Markdown()
 
-        with gr.Tab("2-0 實驗專案", interactive=True) as experiment_project_tab:
+        with gr.Tab("2-0 實驗專案", interactive=False) as experiment_project_tab:
             gr.Markdown("建立實驗專案，並加入多個已完成建圖的 1 系列專案。各成員專案的 Neo4j Database 仍彼此獨立。")
             with gr.Row():
                 available_experiment_projects = experiment_project_choices_for_ui()
@@ -5006,14 +5043,14 @@ def build_app() -> gr.Blocks:
             )
 
         with gr.Tab("2-1 成員專案連線測試", interactive=False) as experiment_connection_tab:
-            gr.Markdown("使用 1-1 的 Neo4j URI／帳密，逐一測試實驗專案內各成員專案自己的 Database；回答與 Embedding 模型共用 0-0 的 OpenAI 設定。")
+            gr.Markdown("使用 1-1 的 Neo4j URI／帳密，逐一測試實驗專案內各成員專案自己的 Database；回答與 Embedding 模型共用 0-1 的 OpenAI 設定。")
             test_experiment_connections_button = gr.Button("測試所有成員專案連線", variant="primary")
             experiment_connection_status = gr.Markdown("請先在 2-0 載入實驗專案。")
             experiment_connection_table = gr.Dataframe(
                 headers=["專案", "專案 ID", "Neo4j Database", "連線結果"],
                 datatype=["str", "str", "str", "str"], interactive=False, wrap=True,
             )
-            gr.Markdown("回答模型服務共用 0-0 的 OpenAI 設定。")
+            gr.Markdown("回答模型服務共用 0-1 的 OpenAI 設定。")
 
         with gr.Tab("2-2 問題集準備", interactive=False) as experiment_questions_tab:
             gr.Markdown("為實驗專案中的每個成員專案分別匯入問題集；題目會在該專案自己的圖譜上檢索與評測。")
@@ -5677,6 +5714,12 @@ def build_app() -> gr.Blocks:
                 save_project_for_ui, inputs=project_setting_inputs,
                 outputs=[project_state, project_status], show_progress="hidden",
             )
+        current_user_dropdown.change(
+            select_user_for_ui,
+            inputs=current_user_dropdown,
+            outputs=[current_user_banner, api_settings_tab, project_tab, experiment_project_tab],
+            show_progress="hidden",
+        )
         project_tab.select(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
         app.load(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
         project_selector.input(
@@ -5800,7 +5843,7 @@ def build_app() -> gr.Blocks:
 
         neo4j_test_event = neo4j_test_button.click(
             check_neo4j_for_ui,
-            inputs=[neo4j_uri, neo4j_database, neo4j_username, neo4j_password],
+            inputs=[neo4j_uri, neo4j_database, neo4j_username, neo4j_password, project_selector],
             outputs=[neo4j_connection_status, neo4j_connected_state],
         )
         neo4j_test_event.then(
@@ -6118,4 +6161,5 @@ def build_app() -> gr.Blocks:
             ],
             outputs=[answer_status, answer, answer_sources],
         )
+    bind_gradio_callbacks_to_actor(app, current_user_dropdown)
     return app
