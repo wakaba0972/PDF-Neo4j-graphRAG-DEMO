@@ -3134,20 +3134,20 @@ def _single_experiment_summary_rows(
 
 def _single_experiment_detail_rows(results: list[dict[str, Any]]) -> list[list[object]]:
     return [[
-        item["group_name"], item["number"], item.get("document", ""), item["question"],
+        item["group_name"], item["number"], item.get("document", ""),
+        item.get("question_set_name", ""), item["question"],
         item["expected_answer"], item.get("actual_answer", ""),
         _display_score(item), item.get("verification_changed"), item.get("reason", ""),
-        item.get("question_set_name", ""),
     ] for item in results]
 
 
 def _experiment_project_detail_rows(results: list[dict[str, Any]]) -> list[list[object]]:
     return [[
         item["group_name"], item["source_project_name"], item["number"],
-        item.get("document", ""), item["question"], item["expected_answer"],
+        item.get("document", ""), item.get("question_set_name", ""),
+        item["question"], item["expected_answer"],
         item.get("actual_answer", ""), _display_score(item),
         item.get("verification_changed"), item.get("reason", ""),
-        item.get("question_set_name", ""),
     ] for item in results]
 
 
@@ -3359,10 +3359,10 @@ def update_manual_experiment_result_for_ui(
             if len(row) < 8:
                 raise ValueError("逐題結果欄位不完整")
             try:
-                score = int(row[6])
+                score = int(row[7])
             except (TypeError, ValueError, OverflowError) as exc:
                 raise ValueError("答案判定只能選 0、1 或 2") from exc
-            if score not in (0, 1, 2) or float(row[6]) != score:
+            if score not in (0, 1, 2) or float(row[7]) != score:
                 raise ValueError("答案判定只能選 0、1 或 2")
             if score != _result_score(item):
                 item["score"] = score
@@ -3397,7 +3397,7 @@ def update_manual_experiment_score_for_ui(
     rows = _single_experiment_detail_rows(results or [])
     if index < 0 or index >= len(rows):
         return "❌ 題次編號無效。", [], rows, results or []
-    rows[index][6] = score
+    rows[index][7] = score
     return update_manual_experiment_result_for_ui(project_id, rows, results)
 
 
@@ -3881,10 +3881,10 @@ def update_manual_experiment_project_result_for_ui(
             if len(row) < 8:
                 raise ValueError("逐題結果欄位不完整")
             try:
-                score = int(row[7])
+                score = int(row[8])
             except (TypeError, ValueError, OverflowError) as exc:
                 raise ValueError("答案判定只能選 0、1 或 2") from exc
-            if score not in (0, 1, 2) or float(row[7]) != score:
+            if score not in (0, 1, 2) or float(row[8]) != score:
                 raise ValueError("答案判定只能選 0、1 或 2")
             if score != _result_score(item):
                 item["score"] = score
@@ -3912,7 +3912,7 @@ def update_manual_experiment_project_score_for_ui(
     rows = _experiment_project_detail_rows(results or [])
     if index < 0 or index >= len(rows):
         return "❌ 題次編號無效。", [], rows, project or {}, results or []
-    rows[index][7] = score
+    rows[index][8] = score
     status, summary, details, updated = update_manual_experiment_project_result_for_ui(project, rows, results)
     return status, summary, details, updated, updated.get("results", results or [])
 
@@ -5304,11 +5304,11 @@ def build_app() -> gr.Blocks:
             )
             experiment_details_table = gr.Dataframe(
                 headers=[
-                    "實驗組", "題號", "來源文件", "題目", "正確答案", "實際答案",
-                    "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由",
-                    "題目集",
+                    "實驗組", "題號", "來源文件", "題目集", "題目", "正確答案",
+                    "實際答案", "答案判定（0錯誤／1部分正確／2全對）",
+                    "複核後判定有變更", "評判理由",
                 ],
-                datatype=["str", "number", "str", "str", "str", "str", "number", "bool", "str", "str"],
+                datatype=["str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
                 type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
                 column_widths=[90, 60, 140, 300, 420, 420, 120, 150, 300, 120],
                 wrap=True, elem_classes=["evaluation-table", "evaluation-results-table"],
@@ -5480,8 +5480,8 @@ def build_app() -> gr.Blocks:
                 interactive=False, wrap=True,
             )
             experiment_project_details_table = gr.Dataframe(
-                headers=["實驗組", "成員專案", "題號", "來源文件", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由", "題目集"],
-                datatype=["str", "str", "number", "str", "str", "str", "str", "number", "bool", "str", "str"],
+                headers=["實驗組", "成員專案", "題號", "來源文件", "題目集", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
+                datatype=["str", "str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
                 type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                 wrap=True,
             )

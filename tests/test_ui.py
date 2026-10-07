@@ -2212,7 +2212,7 @@ def test_generate_experiment_answers_populates_table_without_judging(monkeypatch
     assert status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
     assert pending[0]["actual_answer"] == "隱藏答案"
     assert results == summaries == []
-    assert details == [["G", 1, "", "Q", "A", "隱藏答案", None, None, "", "未分類題目集"]]
+    assert details == [["G", 1, "", "未分類題目集", "Q", "A", "隱藏答案", None, None, ""]]
     assert captured["experiment"]["pending_answers"] == pending
     assert captured["experiment"]["results"] == []
     assert captured["experiment"]["detail_rows"] == details
@@ -2240,9 +2240,9 @@ def test_evaluate_experiment_answers_and_manual_edit_recompute_summary(monkeypat
 
     assert status.startswith("✅ 評測完成")
     assert summaries[0][6:9] == ["1 / 1", 0, "100.0%"]
-    assert details[0][6] == 2
+    assert details[0][7] == 2
     edited = [list(details[0])]
-    edited[0][6] = 1
+    edited[0][7] = 1
     manual_status, manual_summary, manual_details, updated = ui.update_manual_experiment_result_for_ui(
         "project", edited, results,
     )
@@ -2251,7 +2251,7 @@ def test_evaluate_experiment_answers_and_manual_edit_recompute_summary(monkeypat
     assert manual_status.startswith("✅ 評測完成｜")
     assert "完全正確 0、部分正確 1 / 1 題" in manual_status
     assert manual_summary[0][6:9] == ["0 / 1", 1, "50.0%"]
-    assert manual_details[0][6] == 1
+    assert manual_details[0][7] == 1
     assert updated[0]["reason"] == "人工評判"
     assert saved["experiment"]["results"] == updated
 
@@ -2383,10 +2383,10 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         if item.get("props", {}).get("headers", [None, None])[0:2] == ["實驗組", "題號"]
     )
     assert result_table["props"]["interactive"] is False
-    assert result_table["props"]["datatype"][6] == "number"
+    assert result_table["props"]["datatype"][7] == "number"
     assert "回答模型" not in result_table["props"]["headers"]
     assert "評測模型" not in result_table["props"]["headers"]
-    assert result_table["props"]["headers"][1:4] == ["題號", "來源文件", "題目"]
+    assert result_table["props"]["headers"][1:5] == ["題號", "來源文件", "題目集", "題目"]
     assert "答案來源排名" not in result_table["props"]["headers"]
     assert len(result_table["props"]["headers"]) == 10
     column_widths = [int(str(width).removesuffix("px")) for width in result_table["props"]["column_widths"]]
@@ -2394,7 +2394,13 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     assert column_widths[1] < column_widths[4] and column_widths[1] < column_widths[5]
     assert column_widths[2] < column_widths[4] and column_widths[2] < column_widths[5]
     assert column_widths[6] < column_widths[4] and column_widths[6] < column_widths[5]
-    assert 6 in result_table["props"]["static_columns"]
+    assert 7 in result_table["props"]["static_columns"]
+    experiment_project_table = next(
+        item for item in components
+        if item.get("props", {}).get("headers", [])[:3] == ["實驗組", "成員專案", "題號"]
+    )
+    assert experiment_project_table["props"]["headers"][3:6] == ["來源文件", "題目集", "題目"]
+    assert experiment_project_table["props"]["datatype"][8] == "number"
     assert any(
         component.get("props", {}).get("label") == "啟用答案結果人工修改"
         and component.get("props", {}).get("value") is False
@@ -2538,7 +2544,7 @@ def test_export_experiment_results_syncs_latest_manual_judgment(tmp_path, monkey
         "summary_rows": [["向量組", "model-a", "judge-a", 1, "1 / 1", "100.0%", "100.0%", "100.0%", "1.000"]],
     }})
     edited_rows = ui._single_experiment_detail_rows([result])
-    edited_rows[0][6] = 1
+    edited_rows[0][7] = 1
 
     status, file_path, compact_file_path = ui.export_experiment_results_for_ui(project["project_id"], edited_rows)
     exported = json.loads(Path(file_path).read_text(encoding="utf-8"))
@@ -3784,7 +3790,7 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     assert generated_status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
     assert len(pending) == 1 and pending[0]["actual_answer"] == "A"
     assert summaries == []
-    assert details == [["G", "跨專案成員", 1, "manual.pdf", "Q", "A", "A", None, None, "", "實驗專案舊版題目集"]]
+    assert details == [["G", "跨專案成員", 1, "manual.pdf", "實驗專案舊版題目集", "Q", "A", "A", None, None, ""]]
     assert saved["pending_answers"] == pending
     assert saved["detail_rows"] == details
 
@@ -3797,7 +3803,7 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     assert summaries[0][6] == "1 / 1"
     assert details[0][1:3] == ["跨專案成員", 1]
 
-    details[0][7] = 1
+    details[0][8] = 1
     edited_status, summaries, _details, saved = ui.update_manual_experiment_project_result_for_ui(
         saved, details, results,
     )
