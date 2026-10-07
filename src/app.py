@@ -10,6 +10,10 @@ def launch_settings() -> dict[str, object]:
         "share": False,
         "inbrowser": os.getenv("GRADIO_INBROWSER", "true").lower()
         in {"1", "true", "yes"},
+        # Gradio's localhost HEAD probe can time out while the large API schema
+        # is generated on the first page request. The startup-events GET check
+        # still runs, so skip only that redundant frontend reachability probe.
+        "_frontend": False,
     }
 
 

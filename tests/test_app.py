@@ -11,6 +11,7 @@ def test_launch_settings_bind_all_interfaces_at_port_8080(monkeypatch) -> None:
         "server_port": 8080,
         "share": False,
         "inbrowser": True,
+        "_frontend": False,
     }
 
 
