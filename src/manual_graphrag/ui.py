@@ -1225,11 +1225,11 @@ def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
     except (OSError, ValueError) as exc:
         return unchanged(
             f"❌ {exc}",
-            gr.update(choices=experiment_project_choices_for_ui(), value=project_id),
+            gr.update(choices=experiment_project_choices_for_ui(), value=project_id, interactive=True),
         )
     status = f"✅ 已刪除實驗專案「{deleted_name}」；其成員車型專案及 Neo4j 資料庫不受影響。"
     return (
-        gr.update(choices=experiment_project_choices_for_ui(), value=None), {}, [],
+        gr.update(choices=experiment_project_choices_for_ui(), value=None, interactive=True), {}, [],
         gr.update(choices=_built_project_choices(), value=[]), status,
         [], {}, "請先在 2-0 載入實驗專案。",
         *_inline_group_updates([], _configured_service_choice_items(load_service_settings("experiment_llm"))),
@@ -1242,18 +1242,21 @@ def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
 
 def request_experiment_project_deletion_for_ui(
     project_id: str | None,
-) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
+) -> tuple[str, dict[str, Any], dict[str, Any], dict[str, Any]]:
     if not isinstance(project_id, str) or not project_id:
-        return "", "請先選擇要刪除的實驗專案。", gr.update(visible=True), gr.update(interactive=False)
+        return (
+            "請先選擇要刪除的實驗專案。", gr.update(visible=True),
+            gr.update(interactive=False), gr.update(interactive=True),
+        )
     return (
-        project_id,
         f"確定刪除實驗專案「{project_id}」？只會刪除實驗設定與結果，不會刪除成員專案或 Neo4j 資料庫。",
         gr.update(visible=True), gr.update(interactive=True),
+        gr.update(interactive=False),
     )
 
 
-def cancel_experiment_project_deletion_for_ui() -> tuple[str, dict[str, Any], dict[str, Any]]:
-    return "", gr.update(visible=False), gr.update(interactive=False)
+def cancel_experiment_project_deletion_for_ui() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    return gr.update(visible=False), gr.update(interactive=False), gr.update(interactive=True)
 
 
 def delete_confirmed_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
@@ -5203,7 +5206,6 @@ def build_app() -> gr.Blocks:
                 delete_experiment_project_button = gr.Button(
                     "刪除實驗專案", variant="stop", elem_classes="project-workspace-action",
                 )
-            experiment_project_delete_pending = gr.State("")
             with gr.Row(visible=False) as experiment_project_delete_confirmation:
                 experiment_project_delete_confirmation_status = gr.Markdown()
                 confirm_delete_experiment_project_button = gr.Button(
@@ -5641,21 +5643,17 @@ def build_app() -> gr.Blocks:
             request_experiment_project_deletion_for_ui,
             inputs=[experiment_project_selector],
             outputs=[
-                experiment_project_delete_pending,
                 experiment_project_delete_confirmation_status,
                 experiment_project_delete_confirmation,
                 confirm_delete_experiment_project_button,
+                experiment_project_selector,
             ],
             show_progress="hidden",
         )
         confirm_delete_experiment_project_button.click(
             delete_confirmed_experiment_project_for_ui,
-            inputs=[experiment_project_delete_pending],
-            outputs=[
-                *experiment_project_delete_outputs,
-                experiment_project_delete_pending,
-                experiment_project_delete_confirmation,
-            ],
+            inputs=[experiment_project_selector],
+            outputs=[*experiment_project_delete_outputs, experiment_project_delete_confirmation],
         ).then(
             activate_workspace_for_ui,
             inputs=[experiment_workspace_mode, experiment_project_state,
@@ -5669,9 +5667,9 @@ def build_app() -> gr.Blocks:
         cancel_delete_experiment_project_button.click(
             cancel_experiment_project_deletion_for_ui,
             outputs=[
-                experiment_project_delete_pending,
                 experiment_project_delete_confirmation,
                 confirm_delete_experiment_project_button,
+                experiment_project_selector,
             ],
             show_progress="hidden",
         )

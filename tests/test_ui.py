@@ -85,25 +85,25 @@ def test_cancel_experiment_project_deletion_does_not_clear_or_delete(monkeypatch
 
 
 def test_request_experiment_project_deletion_shows_confirmation() -> None:
-    pending_id, message, row_update, button_update = (
+    message, row_update, button_update, selector_update = (
         ui.request_experiment_project_deletion_for_ui("exp-a")
     )
 
-    assert pending_id == "exp-a"
     assert "exp-a" in message
     assert "不會刪除成員專案" in message
     assert row_update["visible"] is True
     assert button_update["interactive"] is True
+    assert selector_update["interactive"] is False
 
 
 def test_cancel_experiment_project_deletion_hides_confirmation() -> None:
-    pending_id, row_update, button_update = (
+    row_update, button_update, selector_update = (
         ui.cancel_experiment_project_deletion_for_ui()
     )
 
-    assert pending_id == ""
     assert row_update["visible"] is False
     assert button_update["interactive"] is False
+    assert selector_update["interactive"] is True
 
 
 def test_experiment_project_delete_button_requires_confirmation() -> None:
@@ -129,6 +129,12 @@ def test_experiment_project_delete_button_requires_confirmation() -> None:
     assert dependency.get("js") is None
     assert dependency["api_name"] == "request_experiment_project_deletion_for_ui"
     assert confirm_dependency["api_name"] == "delete_confirmed_experiment_project_for_ui"
+    api_parameters = app.get_api_info()["named_endpoints"][
+        "/delete_confirmed_experiment_project_for_ui"
+    ]["parameters"]
+    parameter_names = [parameter["parameter_name"] for parameter in api_parameters]
+    assert "project_id" in parameter_names
+    assert all(not name.isdigit() for name in parameter_names)
 
 
 def test_build_app_wires_project_state_change_to_banner() -> None:
