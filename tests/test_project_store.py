@@ -18,6 +18,7 @@ from manual_graphrag.project_store import (
     remove_document,
     save_project,
 )
+from manual_graphrag.question_set_store import create_question_set, set_project_question_set_bindings
 
 
 def test_project_round_trip_and_listing(tmp_path) -> None:
@@ -216,7 +217,8 @@ def test_legacy_shared_graph_requires_reimport_to_project_database(tmp_path) -> 
     assert "請重新匯入" in loaded["graph_state"]["neo4j_error"]
 
 
-def test_project_archive_round_trip_preserves_local_data_and_rebases_paths(tmp_path) -> None:
+def test_project_archive_round_trip_preserves_local_data_and_rebases_paths(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
     root = tmp_path / "projects"
     project = create_project("車型 A", root)
     pdf = tmp_path / "manual.pdf"
@@ -235,6 +237,10 @@ def test_project_archive_round_trip_preserves_local_data_and_rebases_paths(tmp_p
         [str(pdf)],
         root,
     )
+    question_set = create_question_set("手冊題", [{"number": 1, "question": "Q", "expected_answer": "A"}])
+    set_project_question_set_bindings(
+        project["project_id"], [question_set["question_set_id"]], projects_root=root,
+    )
     exports_dir = root / project["project_id"] / "exports"
     exports_dir.mkdir()
     (exports_dir / "result.json").write_text('{"result": true}', encoding="utf-8")
@@ -249,6 +255,7 @@ def test_project_archive_round_trip_preserves_local_data_and_rebases_paths(tmp_p
     assert imported["questions"] == [{"question": "Q", "answer": "A"}]
     assert imported["evaluation"] == {"results": [{"correct": True}]}
     assert imported["experiment"] == {"groups": [{"name": "control"}]}
+    assert imported["question_set_ids"] == [question_set["question_set_id"]]
     assert imported["graph_state"]["neo4j_imported"] is False
     assert "不包含外部" in imported["graph_state"]["neo4j_error"]
     restored_pdf = Path(imported["documents"][0]["path"])

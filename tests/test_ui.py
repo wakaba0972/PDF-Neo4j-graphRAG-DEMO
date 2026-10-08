@@ -436,7 +436,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     app = build_app()
     protected_labels = {
         "1-2 PDF 與參數", "1-3 建圖",
-        "1-4 問答測試", "1-5 自動問答測試", "1-6 匯入問題集",
+        "1-4 問答測試", "1-5 自動問答測試",
         "1-7 單一專案實驗",
     }
     tabs = [
@@ -451,7 +451,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
         }
     ]
 
-    assert len(tabs) == 6
+    assert len(tabs) == 5
     assert len(experiment_tabs) == 3
     experiment_tab_states = {
         tab["props"]["label"]: tab["props"]["interactive"]
@@ -513,7 +513,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     }
     assert {
         "1-0 專案設定", "1-1 連線設定", "1-2 PDF 與參數", "1-3 建圖",
-        "1-4 問答測試", "1-5 自動問答測試", "1-6 匯入問題集", "1-7 單一專案實驗",
+        "1-4 問答測試", "1-5 自動問答測試", "1-7 單一專案實驗",
         "2-0 實驗專案", "2-1 成員專案連線測試",
         "2-2 自動實驗測試",
     } <= page_labels
@@ -522,7 +522,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
         if str(dependency.get("api_name", "")).startswith("workflow_tabs_for_ui")
     ]
     assert len(gate_dependencies) >= 5
-    assert all(len(dependency["outputs"]) == 7 for dependency in gate_dependencies)
+    assert all(len(dependency["outputs"]) == 6 for dependency in gate_dependencies)
     experiment_gate_dependencies = [
         dependency for dependency in app.config["dependencies"]
         if str(dependency.get("api_name", "")).startswith("experiment_workflow_tabs_for_ui")
@@ -683,7 +683,7 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     assert "從 PDF 建立題目與答案" in values
     assert values.count("檢索並生成回答") == 3
     assert "進行評測" in values
-    assert "刪除選取題目集" in values
+    assert "匯入中央題庫" in values
     assert "匯入題目" in values
     assert "儲存題目" not in values
     assert "匯出題目" in values
@@ -714,6 +714,8 @@ def test_build_app_has_automatic_evaluation_page() -> None:
         component for component in components
         if component.get("props", {}).get("headers")
         == ["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"]
+        and component["id"] > next(item["id"] for item in components
+                                   if item.get("props", {}).get("value") == "#### 測試題目")
     )
     question_table_index = components.index(question_table)
     assert questions_heading_index < question_table_index < answer_heading_index < judge_heading_index < result_heading_index
@@ -745,8 +747,8 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     ]
     assert labels.index("1-0 專案設定") < labels.index("1-1 連線設定")
     assert labels.index("1-4 問答測試") < labels.index("1-5 自動問答測試")
-    assert labels.index("1-5 自動問答測試") < labels.index("1-6 匯入問題集")
-    assert labels.index("1-6 匯入問題集") < labels.index("1-7 單一專案實驗")
+    assert "1-6 匯入問題集" not in labels
+    assert labels.index("1-5 自動問答測試") < labels.index("1-7 單一專案實驗")
     assert labels.index("1-7 單一專案實驗") < labels.index("2-0 實驗專案")
     assert labels.index("2-0 實驗專案") < labels.index("2-1 成員專案連線測試")
     assert "2-3 問題集準備" not in labels
@@ -929,14 +931,95 @@ def test_global_api_credentials_exist_only_on_page_zero() -> None:
     labels = [component.get("props", {}).get("label") for component in components]
 
     assert "0-0 使用者" in labels
-    assert "0-1 API Key 設定" in labels
+    assert {"0-2 管理題目集", "0-3 綁定題目集", "0-4 API Key 設定"} <= set(labels)
     assert labels.count("OpenAI API Key") == 1
     assert labels.count("OpenAI API Base URL") == 1
     assert not any("API Key" in str(label) for label in labels if label not in {
-        "0-1 API Key 設定", "OpenAI API Key",
+        "0-4 API Key 設定", "OpenAI API Key",
     })
-    assert {"1-0 專案設定", "1-1 連線設定", "1-6 匯入問題集", "1-7 單一專案實驗",
+    assert {"1-0 專案設定", "1-1 連線設定", "1-7 單一專案實驗",
             "2-0 實驗專案", "2-2 自動實驗測試"} <= set(labels)
+
+
+def test_question_set_manager_imports_centrally_and_binding_is_project_scoped(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("綁定測試")
+    source = tmp_path / "guide.json"
+    source.write_text(json.dumps({"questions": [{
+        "number": 1, "question": "Q", "expected_answer": "A",
+    }]}), encoding="utf-8")
+
+    status, selector, _rows, _clear = ui.import_central_question_set_for_ui(str(source), "中央測試集")
+    question_set_id = selector["value"]
+    assert status.startswith("✅")
+    assert len(ui.list_question_sets()) == 1
+
+    _status, _choices = ui.project_question_set_bindings_for_ui(project["project_id"])
+    saved_status = ui.save_project_question_set_bindings_for_ui(project["project_id"], [question_set_id])
+    project_after = ui.load_project(project["project_id"])
+    assert saved_status.startswith("✅")
+    assert project_after["question_set_ids"] == [question_set_id]
+    assert ui.bound_question_sets(project_after)[0]["name"] == "中央測試集"
+
+    components = build_app().config["components"]
+    assert not any(component.get("props", {}).get("value") == "刪除中央題目集" for component in components)
+
+
+def test_temporary_question_set_is_session_only(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("臨時題集測試")
+    source = tmp_path / "temporary.json"
+    source.write_text(json.dumps({"questions": [{
+        "number": 1, "question": "Temporary", "expected_answer": "A",
+    }]}), encoding="utf-8")
+
+    result = ui.import_temporary_question_set_for_ui(str(source), project["project_id"])
+
+    assert result[0].startswith("✅")
+    assert result[1]["question_set_id"].startswith("temporary-")
+    assert result[3][0]["question"] == "Temporary"
+    assert ui.list_question_sets() == []
+    assert ui.load_project(project["project_id"]).get("question_set_ids", []) == []
+
+
+def test_single_experiment_can_select_bound_sets_without_falling_back_to_all(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("選擇題庫")
+    first = ui.create_question_set("題集 A", [{"number": 1, "question": "A", "expected_answer": "a"}])
+    second = ui.create_question_set("題集 B", [{"number": 2, "question": "B", "expected_answer": "b"}])
+    ui.set_project_question_set_bindings(
+        project["project_id"], [first["question_set_id"], second["question_set_id"]],
+    )
+
+    selected, message = ui.select_experiment_question_source_for_ui(
+        project["project_id"], "已綁定題目集", [second["question_set_id"]], None,
+    )
+    empty, empty_message = ui.select_experiment_question_source_for_ui(
+        project["project_id"], "已綁定題目集", [], None,
+    )
+
+    assert [item["question"] for item in selected] == ["B"]
+    assert "題集 B" in message
+    assert empty == []
+    assert "尚未選擇" in empty_message
+
+
+def test_bound_central_questions_attach_current_project_document_ids(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("文件 ID 對應")
+    ui.save_project(project["project_id"], {"documents_meta": [{
+        "file_name": "guide.pdf", "document_id": "current-document-id",
+    }]})
+    question_set = ui.create_question_set("手冊題", [{
+        "number": 1, "question": "Q", "expected_answer": "A",
+        "answer_sources": [{"document_id": "", "document_name": "guide.pdf", "pages": [3]}],
+    }])
+    ui.set_project_question_set_bindings(project["project_id"], [question_set["question_set_id"]])
+
+    bound = ui._project_question_sets(ui.load_project(project["project_id"]), project["project_id"])
+
+    assert bound[0]["questions"][0]["answer_sources"][0]["document_id"] == "current-document-id"
+    assert question_set["questions"][0]["answer_sources"][0]["document_id"] == ""
 
 
 def test_user_selection_unlocks_roots_and_names_audited_projects(tmp_path, monkeypatch) -> None:
@@ -955,11 +1038,14 @@ def test_user_selection_unlocks_roots_and_names_audited_projects(tmp_path, monke
         component.get("props", {}).get("label"): component.get("props", {}).get("interactive")
         for component in app.config["components"]
         if component.get("props", {}).get("label") in {
-            "0-1 API Key 設定", "1-0 專案設定", "2-0 實驗專案",
+            "0-2 管理題目集", "0-3 綁定題目集", "0-4 API Key 設定",
+            "1-0 專案設定", "2-0 實驗專案",
         }
     }
     assert initial_tabs == {
-        "0-1 API Key 設定": False,
+        "0-2 管理題目集": False,
+        "0-3 綁定題目集": False,
+        "0-4 API Key 設定": False,
         "1-0 專案設定": False,
         "2-0 實驗專案": False,
     }
@@ -2539,7 +2625,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         if item.get("props", {}).get("value") == "#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）"
     )
     assert not any(item.get("props", {}).get("value") == "匯入實驗題目集" for item in components)
-    import_button = next(item for item in components if item.get("props", {}).get("value") == "匯入此專案題目集")
+    import_button = next(item for item in components if item.get("props", {}).get("value") == "載入臨時題目集")
     question_table = next(
         item for item in components
         if item.get("props", {}).get("headers")
@@ -3791,7 +3877,9 @@ def test_legacy_experiment_question_sets_move_to_each_member_project(tmp_path, m
     assert status.startswith("✅")
     assert len(rows) == 1
     stored_member = ui.load_project(member["project_id"])
-    assert stored_member["question_sets"][0]["questions"] == [question]
+    assert stored_member["question_set_ids"]
+    migrated = ui.bound_question_sets(stored_member)
+    assert migrated[0]["questions"] == [question]
     assert "questions" not in stored_member.get("evaluation", {})
     assert rows[0][5] == 1
 

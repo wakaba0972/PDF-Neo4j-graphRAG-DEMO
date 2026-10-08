@@ -47,13 +47,24 @@ def build_project_summary(project: dict[str, Any]) -> dict[str, Any]:
     document_count = len({name for name in document_names if name})
     if not document_count:
         document_count = len(project.get("documents") or [])
+    bound_question_count = None
+    if "question_set_ids" in project:
+        bound_question_count = 0
+        for question_set_id in project.get("question_set_ids") or []:
+            if not isinstance(question_set_id, str) or Path(question_set_id).name != question_set_id:
+                continue
+            try:
+                question_set = read_json(Path("data/question_sets") / f"{question_set_id}.json")
+                bound_question_count += len(question_set.get("questions") or [])
+            except (OSError, ValueError, TypeError):
+                continue
     return {
         "project_id": project.get("project_id", ""),
         "name": project.get("name", ""),
         "created_by": project.get("created_by") or "未知（舊專案）",
         "document_count": document_count,
         "chunk_count": len(project.get("chunks") or []),
-        "question_count": (
+        "question_count": bound_question_count if bound_question_count is not None else (
             sum(len(item.get("questions") or []) for item in project.get("question_sets") or [])
             if project.get("question_sets") else
             (
@@ -222,6 +233,7 @@ def export_project_archive(
                 "archive_version": PROJECT_ARCHIVE_VERSION,
                 "project_name": project.get("name", project_id),
                 "neo4j_database_included": False,
+                "question_set_ids": list(project.get("question_set_ids") or []),
             }
             archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             for path in sorted(project_dir.rglob("*")):
@@ -229,6 +241,12 @@ def export_project_archive(
                     raise ValueError("專案資料夾包含不支援匯出的符號連結")
                 if path.is_file():
                     archive.write(path, Path("project") / path.relative_to(project_dir))
+            for question_set_id in project.get("question_set_ids") or []:
+                if not isinstance(question_set_id, str) or Path(question_set_id).name != question_set_id:
+                    continue
+                question_set_path = Path("data/question_sets") / f"{question_set_id}.json"
+                if question_set_path.is_file():
+                    archive.write(question_set_path, Path("project/central_question_sets") / question_set_path.name)
         append_audit_event(
             project_dir / "activity.log", current_action() or "project_exported",
         )
@@ -293,8 +311,34 @@ def import_project_archive(
             raise ValueError("無法為匯入專案配置唯一識別碼")
         target.mkdir(parents=True)
         try:
+            question_set_ids = list(project_payload.get("question_set_ids") or [])
+            restored_question_set_ids: dict[str, str] = {}
             for member, relative in safe_members:
                 if member.is_dir():
+                    continue
+                if len(relative.parts) == 3 and relative.parts[1] == "central_question_sets":
+                    identifier = relative.parts[2][:-5] if relative.parts[2].endswith(".json") else ""
+                    if not identifier or Path(identifier).name != identifier:
+                        raise ValueError("專案封裝中的題目集 ID 無效")
+                    if identifier not in question_set_ids:
+                        raise ValueError("專案封裝包含未綁定的題目集")
+                    item = json.loads(archive.read(member))
+                    if not isinstance(item, dict) or not isinstance(item.get("questions"), list):
+                        raise ValueError("專案封裝中的題目集格式錯誤")
+                    set_root = Path("data/question_sets")
+                    set_root.mkdir(parents=True, exist_ok=True)
+                    candidate_id = identifier
+                    existing_path = set_root / f"{candidate_id}.json"
+                    if existing_path.is_file():
+                        existing = read_json(existing_path)
+                        if existing.get("questions") != item.get("questions"):
+                            candidate_id = uuid4().hex
+                        else:
+                            restored_question_set_ids[identifier] = candidate_id
+                            continue
+                    item["question_set_id"] = candidate_id
+                    write_json(set_root / f"{candidate_id}.json", item)
+                    restored_question_set_ids[identifier] = candidate_id
                     continue
                 output_path = target.joinpath(*relative.parts[1:])
                 output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -311,6 +355,11 @@ def import_project_archive(
                 "created_at": now,
                 "updated_at": now,
             })
+            if question_set_ids:
+                project_payload["question_set_ids"] = [
+                    restored_question_set_ids.get(identifier, identifier)
+                    for identifier in question_set_ids
+                ]
             project_payload["settings"] = _without_model_credentials(project_payload.get("settings", {}))
             if isinstance(project_payload["settings"], dict):
                 project_payload["settings"]["neo4j_database"] = project_database_name(project_id)

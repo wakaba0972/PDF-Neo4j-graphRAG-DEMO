@@ -120,7 +120,9 @@ def migrate_project_question_sets(
     """
     project = load_project(project_id, projects_root)
     if project.get("question_sets_migrated"):
-        return bound_question_sets(project, question_sets_root)
+        current_bindings = bound_question_sets(project, question_sets_root)
+        if len(current_bindings) == len(project.get("question_set_ids") or []):
+            return current_bindings
 
     legacy_sets = list(project.get("question_sets") or [])
     evaluation = project.get("evaluation") or {}
@@ -136,7 +138,10 @@ def migrate_project_question_sets(
 
     central = list_question_sets(question_sets_root)
     fingerprints = {_fingerprint(item.get("questions") or []): item for item in central}
-    identifiers: list[str] = []
+    identifiers: list[str] = [
+        str(identifier) for identifier in (project.get("question_set_ids") or [])
+        if str(identifier) in {item["question_set_id"] for item in central}
+    ]
     for index, legacy in enumerate(legacy_sets):
         if not isinstance(legacy, dict) or not legacy.get("questions"):
             continue
@@ -145,9 +150,12 @@ def migrate_project_question_sets(
         existing = fingerprints.get(fingerprint)
         if existing is None:
             old_id = str(legacy.get("question_set_id") or f"legacy-{index}")
-            candidate_id = f"migrated-{project_id}-{old_id}"
-            # IDs become filenames; hash the potentially user-controlled legacy ID.
-            safe_id = "migrated-" + hashlib.sha256(candidate_id.encode()).hexdigest()[:24]
+            if old_id and Path(old_id).name == old_id and not (Path(question_sets_root) / f"{old_id}.json").exists():
+                safe_id = old_id
+            else:
+                candidate_id = f"migrated-{project_id}-{old_id}"
+                # IDs become filenames; hash the potentially user-controlled legacy ID.
+                safe_id = "migrated-" + hashlib.sha256(candidate_id.encode()).hexdigest()[:24]
             existing = create_question_set(
                 str(legacy.get("name") or f"{project.get('name', project_id)} 題目集 {index + 1}"),
                 questions, source_file=str(legacy.get("source_file") or ""),
