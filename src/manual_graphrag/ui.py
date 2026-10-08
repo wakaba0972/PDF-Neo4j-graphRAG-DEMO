@@ -5306,7 +5306,7 @@ def build_app() -> gr.Blocks:
                 )
                 gr.Markdown("預設全選；每份勾選的 PDF 都會讀取整份文件。")
                 plan_schema_button = gr.Button(
-                    "分析文件並規劃 Schema", variant="primary"
+                    "分析文件並規劃 Schema（可選）", variant="primary"
                 )
                 plan_status = gr.Markdown("請先在 PDF 頁面解析並產生 chunks。")
                 gr.HTML(

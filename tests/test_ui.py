@@ -292,7 +292,7 @@ def test_plan_schema_button_uses_primary_variant() -> None:
     button = next(
         component
         for component in app.config["components"]
-        if component.get("props", {}).get("value") == "分析文件並規劃 Schema"
+        if component.get("props", {}).get("value") == "分析文件並規劃 Schema（可選）"
     )
 
     assert button["props"]["variant"] == "primary"
