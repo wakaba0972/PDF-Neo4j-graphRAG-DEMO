@@ -1497,27 +1497,15 @@ def save_project_question_set_bindings_for_ui(project_id: str | None, selected_i
     if not project_id:
         return "❌ 請先選擇專案。"
     try:
-        project = set_project_question_set_bindings(project_id, list(selected_ids or []))
-        return f"✅ 已保存「{project['name']}」的 {len(project.get('question_set_ids') or [])} 份題目集綁定。"
+        requested = list(dict.fromkeys(str(item) for item in (selected_ids or [])))
+        project = set_project_question_set_bindings(project_id, requested)
+        persisted = load_project(project_id)
+        actual = list(persisted.get("question_set_ids") or [])
+        if actual != requested:
+            raise ValueError("重新讀取後的綁定與選取內容不一致，請重試")
+        return f"✅ 已保存並驗證「{project['name']}」的 {len(actual)} 份題目集綁定。"
     except (OSError, ValueError) as exc:
         return f"❌ 儲存綁定失敗：{exc}"
-
-
-def import_temporary_question_set_for_ui(file_path: str | None, project_id: str | None) -> tuple[Any, ...]:
-    if not file_path:
-        return "❌ 請選擇 JSON 或 CSV 題目集。", None, [], [], "尚未載入臨時題目集。", gr.update(), gr.update()
-    try:
-        questions = _questions_from_file(file_path)
-        if project_id:
-            questions = _attach_project_document_ids(questions, project_id)
-        item = {"question_set_id": f"temporary-{uuid4().hex}", "name": Path(file_path).stem or "臨時題目集", "questions": questions}
-        flattened = _flatten_question_sets([item])
-        return (f"✅ 已載入臨時題目集「{item['name']}」，共 {len(questions)} 題；不會寫入中央題庫。",
-                item, _evaluation_question_rows(questions), flattened,
-                f"目前使用臨時題目集「{item['name']}」，共 {len(questions)} 題。",
-                gr.update(value="臨時匯入"), gr.update(value=None))
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        return "❌ 臨時題目集匯入失敗：" + str(exc), None, [], [], "臨時題目集載入失敗。", gr.update(), gr.update()
 
 
 def bound_question_set_choices_for_ui(project_id: str | None) -> Any:
@@ -1536,13 +1524,10 @@ def refresh_binding_project_choices_for_ui(project_id: str | None) -> Any:
     return gr.update(choices=choices, value=selected)
 
 
-def select_experiment_question_source_for_ui(
-    project_id: str | None, source: str | None, selected_ids: list[str] | None,
-    temporary: dict[str, Any] | None,
+def select_experiment_question_sets_for_ui(
+    project_id: str | None, selected_ids: list[str] | None,
 ) -> tuple[list[dict[str, Any]], str]:
-    if source == "臨時匯入":
-        sets = [temporary] if temporary else []
-    elif project_id:
+    if project_id:
         available = _project_question_sets(load_project(project_id), project_id)
         selected = set(selected_ids or [])
         sets = [item for item in available if item["question_set_id"] in selected]
@@ -2346,8 +2331,7 @@ def experiment_answer_progress_for_ui(run_control: RunControl) -> dict[str, Any]
 
 def load_experiment_for_ui(
     project_id: str, llm_state: dict[str, Any],
-    question_source: str | None = None, selected_question_set_ids: list[str] | None = None,
-    temporary_question_set: dict[str, Any] | None = None,
+    selected_question_set_ids: list[str] | None = None,
 ) -> tuple[Any, ...]:
     project: dict[str, Any] = {}
     try:
@@ -2360,9 +2344,7 @@ def load_experiment_for_ui(
         status = f"❌ 實驗資料載入失敗：{exc}"
     else:
         status = data.get("status", "請選擇題目集並設定實驗組。")
-    if question_source == "臨時匯入":
-        question_sets = [temporary_question_set] if temporary_question_set else []
-    elif project:
+    if project:
         project_sets = _project_question_sets(
             project, project_id if project.get("project_id") else None,
         )
@@ -3356,7 +3338,7 @@ def run_experiment_groups_for_ui(
     if not project_id:
         return "❌ 請先建立或載入專案。", [], [], []
     if not questions:
-        return "❌ 請先在 1-7 選擇已綁定或臨時匯入的題目集。", [], [], []
+        return "❌ 請先在 0-3 為此專案綁定題目集，再回到 1-7 選擇。", [], [], []
     if not groups:
         return "❌ 請至少加入一個實驗組。", [], [], []
     try:
@@ -3584,7 +3566,7 @@ def generate_experiment_answers_for_ui(
     if not project_id:
         return "❌ 請先建立或載入專案。", [], [], [], []
     if not questions:
-        return "❌ 請先在 1-7 選擇已綁定或臨時匯入的題目集。", [], [], [], []
+        return "❌ 請先在 0-3 為此專案綁定題目集，再回到 1-7 選擇。", [], [], [], []
     if not groups:
         return "❌ 請至少加入一個實驗組。", [], [], [], []
     try:
@@ -5613,28 +5595,14 @@ def build_app() -> gr.Blocks:
                 )
         with gr.Tab("1-7 單一專案實驗", interactive=False) as experiment_tab:
             gr.Markdown(
-                "可使用專案已綁定題目集，或臨時匯入一份題目集；建立多個不同回答／檢索設定的實驗組，"
+                "使用 0-3 綁定至目前專案的題目集；建立多個不同回答／檢索設定的實驗組，"
                 "先生成各組回答，再獨立評測並比較答案正確率、Recall@5、Recall@10 與 MRR。"
             )
             experiment_questions_state = gr.State([])
-            temporary_question_set_state = gr.State(None)
             with gr.Group():
-                gr.Markdown("#### 題目集來源")
-                experiment_question_source = gr.Radio(
-                    choices=["已綁定題目集", "臨時匯入"], value="已綁定題目集", label="使用方式",
-                )
+                gr.Markdown("#### 使用已綁定題目集")
                 experiment_bound_question_sets = gr.CheckboxGroup(
                     choices=[], value=[], label="選擇此專案已綁定的題目集",
-                )
-                with gr.Row():
-                    temporary_question_file = gr.File(
-                        label="臨時題目集（JSON／CSV）", file_types=[".json", ".csv"], type="filepath",
-                    )
-                    import_temporary_question_button = gr.Button("載入臨時題目集")
-                temporary_question_status = gr.Markdown("臨時匯入只供目前 1-7 頁面使用，不會保存到中央題庫。")
-                temporary_question_table = gr.Dataframe(
-                    headers=["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"],
-                    datatype=["number", "str", "str", "str", "str"], interactive=False, wrap=True,
                 )
             experiment_groups_state = gr.State([])
             experiment_results_state = gr.State([])
@@ -5999,22 +5967,12 @@ def build_app() -> gr.Blocks:
             inputs=[binding_project_selector, binding_question_set_selector],
             outputs=[binding_question_set_status],
         )
-        import_temporary_question_button.click(
-            import_temporary_question_set_for_ui,
-            inputs=[temporary_question_file, project_selector],
-            outputs=[temporary_question_status, temporary_question_set_state,
-                     temporary_question_table, experiment_questions_state,
-                     experiment_question_status, experiment_question_source,
-                     temporary_question_file],
+        experiment_bound_question_sets.change(
+            select_experiment_question_sets_for_ui,
+            inputs=[project_selector, experiment_bound_question_sets],
+            outputs=[experiment_questions_state, experiment_question_status],
+            show_progress="hidden",
         )
-        for question_source_control in [experiment_question_source, experiment_bound_question_sets]:
-            question_source_control.change(
-                select_experiment_question_source_for_ui,
-                inputs=[project_selector, experiment_question_source,
-                        experiment_bound_question_sets, temporary_question_set_state],
-                outputs=[experiment_questions_state, experiment_question_status],
-                show_progress="hidden",
-            )
         experiment_question_choices_event = experiment_tab.select(
             bound_question_set_choices_for_ui,
             inputs=[project_selector], outputs=[experiment_bound_question_sets],
@@ -6022,8 +5980,7 @@ def build_app() -> gr.Blocks:
         )
         experiment_question_choices_event.then(
             load_experiment_for_ui,
-            inputs=[project_selector, llm_service_state, experiment_question_source,
-                    experiment_bound_question_sets, temporary_question_set_state],
+            inputs=[project_selector, llm_service_state, experiment_bound_question_sets],
             outputs=[
                 experiment_questions_state, experiment_question_status,
                 experiment_groups_state, experiment_results_state,

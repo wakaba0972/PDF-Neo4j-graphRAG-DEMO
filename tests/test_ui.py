@@ -960,26 +960,13 @@ def test_question_set_manager_imports_centrally_and_binding_is_project_scoped(tm
     assert saved_status.startswith("✅")
     assert project_after["question_set_ids"] == [question_set_id]
     assert ui.bound_question_sets(project_after)[0]["name"] == "中央測試集"
+    # Simulate leaving 0-3 and reopening it: selections must be read from project.json.
+    restored_status, restored_selector = ui.project_question_set_bindings_for_ui(project["project_id"])
+    assert restored_status.startswith("專案")
+    assert restored_selector["value"] == [question_set_id]
 
     components = build_app().config["components"]
     assert not any(component.get("props", {}).get("value") == "刪除中央題目集" for component in components)
-
-
-def test_temporary_question_set_is_session_only(tmp_path, monkeypatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = ui.create_project("臨時題集測試")
-    source = tmp_path / "temporary.json"
-    source.write_text(json.dumps({"questions": [{
-        "number": 1, "question": "Temporary", "expected_answer": "A",
-    }]}), encoding="utf-8")
-
-    result = ui.import_temporary_question_set_for_ui(str(source), project["project_id"])
-
-    assert result[0].startswith("✅")
-    assert result[1]["question_set_id"].startswith("temporary-")
-    assert result[3][0]["question"] == "Temporary"
-    assert ui.list_question_sets() == []
-    assert ui.load_project(project["project_id"]).get("question_set_ids", []) == []
 
 
 def test_single_experiment_can_select_bound_sets_without_falling_back_to_all(tmp_path, monkeypatch) -> None:
@@ -991,11 +978,11 @@ def test_single_experiment_can_select_bound_sets_without_falling_back_to_all(tmp
         project["project_id"], [first["question_set_id"], second["question_set_id"]],
     )
 
-    selected, message = ui.select_experiment_question_source_for_ui(
-        project["project_id"], "已綁定題目集", [second["question_set_id"]], None,
+    selected, message = ui.select_experiment_question_sets_for_ui(
+        project["project_id"], [second["question_set_id"]],
     )
-    empty, empty_message = ui.select_experiment_question_source_for_ui(
-        project["project_id"], "已綁定題目集", [], None,
+    empty, empty_message = ui.select_experiment_question_sets_for_ui(
+        project["project_id"], [],
     )
 
     assert [item["question"] for item in selected] == ["B"]
@@ -2597,6 +2584,8 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         for component in components
     ) == 2
     assert any(component.get("props", {}).get("value") == "新增實驗組" for component in components)
+    assert not any(component.get("props", {}).get("value") == "載入臨時題目集" for component in components)
+    assert not any(component.get("props", {}).get("label") == "臨時題目集（JSON／CSV）" for component in components)
     experiment_tables = [
         component for component in components
         if component.get("type") == "dataframe"
@@ -2625,13 +2614,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         if item.get("props", {}).get("value") == "#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）"
     )
     assert not any(item.get("props", {}).get("value") == "匯入實驗題目集" for item in components)
-    import_button = next(item for item in components if item.get("props", {}).get("value") == "載入臨時題目集")
-    question_table = next(
-        item for item in components
-        if item.get("props", {}).get("headers")
-        == ["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"]
-        and item["id"] > import_button["id"]
-    )
+    assert not any(item.get("props", {}).get("value") == "載入臨時題目集" for item in components)
     judge_heading = next(
         item for item in components
         if item.get("props", {}).get("value") == "#### 評測模型設定"
@@ -2640,8 +2623,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     summary_heading = next(
         item for item in components if item.get("props", {}).get("value") == "#### 實驗組摘要"
     )
-    assert import_button["id"] < question_table["id"]
-    assert question_table["id"] < answer_heading["id"] < judge_heading["id"] < summary_heading["id"]
+    assert answer_heading["id"] < judge_heading["id"] < summary_heading["id"]
     evaluate_button = next(item for item in components if item.get("props", {}).get("value") == "開始評測")
     assert evaluate_button["props"]["interactive"] is False
     assert "evaluation-judge-button" in evaluate_button["props"]["elem_classes"]
