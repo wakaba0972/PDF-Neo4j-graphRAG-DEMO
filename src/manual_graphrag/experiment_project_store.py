@@ -53,6 +53,7 @@ def create_experiment_project(
         "results": [],
         "summary_rows": [],
         "detail_rows": [],
+        "saved_runs": [],
     }
     write_json(directory / "experiment.json", data)
     append_audit_event(
@@ -74,6 +75,7 @@ def load_experiment_project(
     data.setdefault("members", [])
     data.setdefault("groups", [])
     data.setdefault("results", [])
+    data.setdefault("saved_runs", [])
     return data
 
 

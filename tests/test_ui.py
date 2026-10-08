@@ -1041,6 +1041,7 @@ def test_user_selection_unlocks_roots_and_names_audited_projects(tmp_path, monke
         if component.get("props", {}).get("label") in {
             "0-1 管理題目集", "0-2 綁定題目集", "0-3 API Key 設定",
             "1-0 專案設定", "2-0 實驗專案",
+            "3-0 人工評測抽樣", "3-1 人工評測", "4-0 AI／人工評測結果",
         }
     }
     assert initial_tabs == {
@@ -1049,6 +1050,9 @@ def test_user_selection_unlocks_roots_and_names_audited_projects(tmp_path, monke
         "0-3 API Key 設定": False,
         "1-0 專案設定": False,
         "2-0 實驗專案": False,
+        "3-0 人工評測抽樣": False,
+        "3-1 人工評測": False,
+        "4-0 AI／人工評測結果": False,
     }
     assert all(update["interactive"] is False for update in ui.user_access_tabs_for_ui(None))
     selection = ui.select_user_for_ui("Zhao")
@@ -3989,6 +3993,14 @@ def test_experiment_project_page_uses_inline_group_layout_and_start_evaluation_b
     runtime = ui.load_experiment_project_runtime_state_for_ui({"pending_answers": []})
     assert runtime[5]["interactive"] is False
     assert "value" not in runtime[5]
+    assert runtime[7]["interactive"] is False
+    labels = {component.get("props", {}).get("label") for component in components}
+    assert {"3-0 人工評測抽樣", "3-1 人工評測", "4-0 AI／人工評測結果"} <= labels
+    save_button = next(
+        component for component in components
+        if component.get("props", {}).get("value") == "保存實驗結果"
+    )
+    assert save_button["props"]["interactive"] is False
 
 
 def test_multi_project_experiment_runs_each_projects_own_database(tmp_path, monkeypatch):
@@ -4086,6 +4098,7 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     )
     assert "完全正確 1、部分正確 0 / 1 個跨專案實驗題次" in evaluated_status
     assert results[0]["passed"] is True
+    assert results[0]["ai_score"] == 2
     assert summaries[0][6] == "1 / 1"
     assert details[0][1:3] == ["跨專案成員", 1]
 
@@ -4097,6 +4110,92 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     assert "得分正確率 50.0%" in edited_status
     assert summaries[0][6] == "0 / 1"
     assert saved["results"][0]["reason"] == "人工評判"
+    assert saved["results"][0]["ai_score"] == 2
+
+
+def test_saved_experiment_run_is_sampled_distributed_and_compared_with_human_scores(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    experiment = ui.create_experiment_project("人工評測整合")
+    results = [
+        {
+            "group_name": "向量組", "group_index": 0,
+            "source_project_id": "vehicle-a", "source_project_name": "車型 A",
+            "question_set_id": "set-a", "question_set_name": "題目集 A",
+            "number": index + 1, "question": f"問題 {index + 1}",
+            "expected_answer": "標準答案", "actual_answer": f"回答 {index + 1}",
+            "score": index % 3, "passed": index % 3 == 2,
+            "reason": "AI 理由", "judge_model": "judge-model",
+        }
+        for index in range(5)
+    ]
+    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
+        "groups": [{"name": "向量組", "answer_model": "answer-model"}],
+        "members": ["vehicle-a"], "results": results,
+        "summary_rows": [["向量組", "AI 摘要"]],
+        "judge_model": "judge-model",
+    })
+
+    with actor_context("Zhao"):
+        saved_status, experiment = ui.save_experiment_project_run_for_ui(experiment)
+    assert saved_status.startswith("✅ 已保存實驗執行結果")
+    saved_run = experiment["saved_runs"][0]
+    assert saved_run["saved_by"] == "Zhao"
+    assert [item["ai_score"] for item in saved_run["results"]] == [0, 1, 2, 0, 1]
+    rows, run_selector, queue_status = ui.human_review_queue_for_ui()
+    assert len(rows) == 1 and "尚未抽樣" in rows[0][-1]
+    assert "1 筆" in queue_status
+
+    run_key = run_selector["value"]
+    with actor_context("Zhao"):
+        sample_status, _rows, _selector = ui.create_human_review_sample_for_ui(run_key, 5)
+    assert "已抽樣 5 題" in sample_status
+    experiment = ui.load_experiment_project(experiment["experiment_project_id"])
+    review = experiment["saved_runs"][0]["human_review"]
+    assert {task["assigned_to"] for task in review["tasks"]} == set(ui.KNOWN_USERS)
+    assert [ui.human_review_progress({"tasks": [
+        task for task in review["tasks"] if task["assigned_to"] == user
+    ]})[1] for user in ui.KNOWN_USERS] == [1] * 5
+
+    assigned_scores = {"Jay": 0, "Christine": 1, "Swallow": 2, "Tai": 1, "Zhao": 2}
+    for task in review["tasks"]:
+        with actor_context(task["assigned_to"]):
+            status, *_ = ui.submit_human_review_for_ui(
+                f"{experiment['experiment_project_id']}::{saved_run['run_id']}::{task['task_id']}",
+                assigned_scores[task["assigned_to"]],
+                f"{task['assigned_to']} 的人工註記",
+            )
+        assert status.startswith("✅")
+
+    experiment = ui.load_experiment_project(experiment["experiment_project_id"])
+    assert ui.human_review_complete(experiment["saved_runs"][0]["human_review"])
+    assert ui.human_review_queue_for_ui()[0] == []
+    choices, complete_status = ui.completed_human_review_runs_for_ui()
+    assert choices["value"] == run_key
+    assert "1 筆" in complete_status
+    result_status, summaries, details = ui.human_review_results_for_ui(run_key)
+    assert result_status.startswith("✅ 人工評測完成")
+    assert len(summaries) == 1
+    assert summaries[0][3] == 5
+    assert summaries[0][4] == "0.80"
+    assert summaries[0][5] == "1.20"
+    assert len(details) == 5
+    assert {row[12] for row in details} == set(ui.KNOWN_USERS)
+    assert all(row[10] == "AI 理由" for row in details)
+
+
+def test_saved_experiment_run_requires_completed_ai_judgments(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    experiment = ui.create_experiment_project("未評測")
+    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
+        "results": [{"question": "Q", "actual_answer": "A"}],
+    })
+
+    with actor_context("Jay"):
+        status, unchanged = ui.save_experiment_project_run_for_ui(experiment)
+
+    assert status.startswith("❌")
+    assert "尚未完成 AI 判定" in status
+    assert unchanged["saved_runs"] == []
 
 
 def test_experiment_project_inline_groups_preserve_saved_groups_on_empty_snapshot(tmp_path, monkeypatch):

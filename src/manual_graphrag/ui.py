@@ -4,6 +4,7 @@ import csv
 from copy import deepcopy
 import hashlib
 import json
+from datetime import datetime
 import re
 import zipfile
 from dataclasses import replace
@@ -46,6 +47,11 @@ from .graph_service import (
     extract_graph,
     plan_graph_schema,
     validate_schema,
+)
+from .human_review import (
+    create_human_review,
+    human_review_complete,
+    human_review_progress,
 )
 from .neo4j_service import (
     ensure_project_database,
@@ -114,6 +120,7 @@ DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_JUDGE_REASONING_EFFORT = "medium"
 DEFAULT_MAX_CONCURRENT_REQUESTS = 10
 KNOWN_USERS = ("Jay", "Christine", "Swallow", "Tai", "Zhao")
+_HUMAN_REVIEW_LOCK = Lock()
 
 
 def current_user_banner_for_ui(user: str | None) -> str:
@@ -122,7 +129,7 @@ def current_user_banner_for_ui(user: str | None) -> str:
 
 def user_access_tabs_for_ui(user: str | None) -> tuple[dict[str, Any], ...]:
     enabled = user in KNOWN_USERS
-    return tuple(gr.update(interactive=enabled) for _ in range(5))
+    return tuple(gr.update(interactive=enabled) for _ in range(8))
 
 
 def select_user_for_ui(user: str | None) -> tuple[Any, ...]:
@@ -1920,7 +1927,7 @@ def load_experiment_project_setup_for_ui(
 
 def load_experiment_project_runtime_state_for_ui(
     project: dict[str, Any] | None, experiment_llm_state: dict[str, Any] | None = None,
-) -> tuple[Any, Any, int, list[dict[str, Any]], list[dict[str, Any]], Any, str]:
+) -> tuple[Any, Any, int, list[dict[str, Any]], list[dict[str, Any]], Any, str, Any]:
     project = project or {}
     llm_settings = experiment_llm_state or load_service_settings("experiment_llm")
     choices = _model_choices_with_fallback(
@@ -1939,7 +1946,12 @@ def load_experiment_project_runtime_state_for_ui(
         gr.update(interactive=bool(project.get("pending_answers"))),
         (f"✅ 已保存 {len(project.get('pending_answers', []))} 個待評測回答。請按「開始評測」。"
          if project.get("pending_answers") else "尚未生成實驗回答；請先按「檢索並生成回答」。"),
+        gr.update(interactive=bool(project.get("results"))),
     )
+
+
+def save_experiment_run_button_state_for_ui(project: dict[str, Any] | None) -> Any:
+    return gr.update(interactive=bool((project or {}).get("results")))
 
 
 def save_experiment_project_groups_from_rows_for_ui(
@@ -4249,8 +4261,13 @@ def evaluate_experiment_project_answers_for_ui(
             verdict = {"passed": False, "reason": item.get("answer_status") or "回答生成失敗"}
         verdict.setdefault("verification_enabled", bool(verification_enabled))
         verdict.setdefault("verification_changed", None)
-        return {**item, "judge_model": judge_model,
-            **_reasoning_effort_record(judge_model, judge_reasoning_effort, "judge_reasoning_effort"), **_normalize_judgment(verdict)}
+        normalized = _normalize_judgment(verdict)
+        return {
+            **item, "judge_model": judge_model,
+            **_reasoning_effort_record(judge_model, judge_reasoning_effort, "judge_reasoning_effort"),
+            **normalized, "ai_score": normalized["score"],
+            "ai_reason": str(normalized.get("reason") or ""),
+        }
 
     try:
         with ThreadPoolExecutor(max_workers=min(concurrency, len(pending_answers))) as executor:
@@ -4400,6 +4417,315 @@ def run_experiment_project_for_ui(
     except (OSError, TypeError, ValueError) as exc:
         return f"⚠️ 實驗已完成，但結果保存失敗：{exc}", summary_rows, detail_rows, current
     return status, summary_rows, detail_rows, updated
+
+
+def save_experiment_project_run_for_ui(
+    project: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]]:
+    """Archive the current AI evaluation as an immutable human-review run."""
+    if not project or not project.get("experiment_project_id"):
+        return "❌ 請先載入實驗專案。", project or {}
+    try:
+        with _HUMAN_REVIEW_LOCK:
+            current = load_experiment_project(project["experiment_project_id"])
+            results = current.get("results") or []
+            if not results:
+                raise ValueError("尚無 AI 評測結果，請先完成 2-2 實驗評測")
+            normalized_results = []
+            for result in results:
+                if not isinstance(result, dict) or not ("score" in result or "passed" in result):
+                    raise ValueError("逐題結果尚未完成 AI 判定，不能保存為人工評測來源")
+                item = deepcopy(result)
+                item.setdefault("ai_score", _result_score(item))
+                item.setdefault("ai_reason", str(item.get("reason") or ""))
+                normalized_results.append(item)
+            run = {
+                "run_id": uuid4().hex,
+                "saved_at": datetime.now().astimezone().isoformat(),
+                "saved_by": current_actor() or "未選擇使用者",
+                "members": deepcopy(current.get("members") or []),
+                "groups": deepcopy(current.get("groups") or []),
+                "judge_model": current.get("judge_model", ""),
+                "judge_reasoning_effort": current.get("judge_reasoning_effort", ""),
+                "verification_enabled": bool(current.get("verification_enabled", False)),
+                "results": normalized_results,
+                "summary_rows": deepcopy(current.get("summary_rows") or []),
+                "human_review": None,
+            }
+            runs = [*current.get("saved_runs", []), run]
+            updated = save_experiment_project(current["experiment_project_id"], {
+                "saved_runs": runs,
+                "status": f"✅ 已保存實驗執行結果 {run['run_id'][:8]}，共 {len(results)} 個 AI 評測題次；可至 3-0 建立人工抽樣。",
+            })
+        return (
+            f"✅ 已保存實驗執行結果 {run['run_id'][:8]}，共 {len(results)} 個 AI 評測題次；可至 3-0 建立人工抽樣。",
+            updated,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        return f"❌ 保存實驗結果失敗：{exc}", project
+
+
+def _saved_run_key(experiment_project_id: str, run_id: str) -> str:
+    return f"{experiment_project_id}::{run_id}"
+
+
+def _parse_saved_run_key(value: str | None) -> tuple[str, str]:
+    parts = str(value or "").split("::", 1)
+    if len(parts) != 2 or not all(parts):
+        raise ValueError("請選擇一筆已保存的實驗結果")
+    return parts[0], parts[1]
+
+
+def _load_saved_experiment_run(
+    experiment_project_id: str, run_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    project = load_experiment_project(experiment_project_id)
+    run = next(
+        (item for item in project.get("saved_runs", []) if item.get("run_id") == run_id),
+        None,
+    )
+    if run is None:
+        raise ValueError("找不到這筆已保存的實驗結果")
+    return project, run
+
+
+def _human_review_records(*, incomplete_only: bool = False) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
+    records = []
+    for project_name, project_id in list_experiment_projects():
+        try:
+            project = load_experiment_project(project_id)
+        except (OSError, ValueError):
+            continue
+        for run in project.get("saved_runs", []):
+            review = run.get("human_review") or {}
+            if incomplete_only and human_review_complete(review):
+                continue
+            records.append((project, run, {"name": project_name}))
+    return records
+
+
+def human_review_queue_for_ui() -> tuple[list[list[Any]], Any, str]:
+    rows: list[list[Any]] = []
+    choices: list[tuple[str, str]] = []
+    for project, run, metadata in _human_review_records(incomplete_only=True):
+        review = run.get("human_review") or {}
+        completed, total = human_review_progress(review)
+        status = "尚未抽樣" if not review.get("tasks") else "評測中"
+        saved_at = str(run.get("saved_at") or "")
+        label = f"{metadata['name']}｜{saved_at[:19]}｜{len(run.get('results') or [])} 題"
+        key = _saved_run_key(project["experiment_project_id"], run["run_id"])
+        choices.append((label, key))
+        rows.append([
+            metadata["name"], run["run_id"][:8], saved_at,
+            len(run.get("results") or []), f"{completed} / {total}", status,
+        ])
+    first = choices[0][1] if choices else None
+    status = (
+        f"目前有 {len(rows)} 筆已保存實驗結果尚未完成人工評測。"
+        if rows else "目前沒有待人工評測的已保存實驗結果。"
+    )
+    return rows, gr.update(choices=choices, value=first), status
+
+
+def create_human_review_sample_for_ui(
+    run_key: str | None, sample_per_stratum: int | float,
+) -> tuple[str, list[list[Any]], Any]:
+    try:
+        actor = current_actor()
+        if actor not in KNOWN_USERS:
+            raise ValueError("請先在 0-0 選擇有效使用者")
+        experiment_project_id, run_id = _parse_saved_run_key(run_key)
+        sample_count = int(sample_per_stratum)
+        if sample_count < 1 or float(sample_per_stratum) != sample_count:
+            raise ValueError("每層抽樣數必須是大於 0 的整數")
+        with _HUMAN_REVIEW_LOCK:
+            project, run = _load_saved_experiment_run(experiment_project_id, run_id)
+            if run.get("human_review"):
+                raise ValueError("這筆實驗結果已建立抽樣任務，不能重複抽樣")
+            review = create_human_review(
+                run.get("results") or [], sample_count, list(KNOWN_USERS), created_by=actor,
+            )
+            runs = [
+                {**item, "human_review": review} if item.get("run_id") == run_id else item
+                for item in project.get("saved_runs", [])
+            ]
+            save_experiment_project(experiment_project_id, {"saved_runs": runs})
+        counts = {user: 0 for user in KNOWN_USERS}
+        for task in review["tasks"]:
+            counts[task["assigned_to"]] += 1
+        distribution = "、".join(f"{user} {count} 題" for user, count in counts.items())
+        status = f"✅ 已抽樣 {len(review['tasks'])} 題，分成 {review['stratum_count']} 層並平均分派：{distribution}。"
+    except (OSError, TypeError, ValueError, OverflowError) as exc:
+        status = f"❌ 建立人工抽樣失敗：{exc}"
+    rows, selector, _queue_status = human_review_queue_for_ui()
+    return status, rows, selector
+
+
+def human_review_tasks_for_current_user_for_ui() -> tuple[Any, str]:
+    actor = current_actor()
+    choices: list[tuple[str, str]] = []
+    for project, run, _metadata in _human_review_records():
+        review = run.get("human_review") or {}
+        for task in review.get("tasks", []):
+            if task.get("assigned_to") != actor:
+                continue
+            result_index = int(task.get("result_index", -1))
+            results = run.get("results") or []
+            if not 0 <= result_index < len(results):
+                continue
+            item = results[result_index]
+            state = "已完成" if task.get("score") in (0, 1, 2) else "待評"
+            label = (
+                f"[{state}] {item.get('group_name', '實驗組')}｜"
+                f"{item.get('source_project_name', '成員專案')}｜"
+                f"{item.get('question_set_name', '題目集')}｜題目 {item.get('number', result_index + 1)}"
+            )
+            key = f"{project['experiment_project_id']}::{run['run_id']}::{task['task_id']}"
+            choices.append((label, key))
+    choices.sort(key=lambda entry: (entry[0].startswith("[已完成]"), entry[0]))
+    pending = sum(label.startswith("[待評]") for label, _ in choices)
+    selected = next((key for label, key in choices if label.startswith("[待評]")), None)
+    message = f"目前使用者：{actor or '未選擇'}；待評 {pending} 題，已完成 {len(choices) - pending} 題。"
+    return gr.update(choices=choices, value=selected), message
+
+
+def human_review_task_details_for_ui(
+    task_key: str | None,
+) -> tuple[str, list[list[Any]], Any, Any]:
+    if not task_key:
+        return "請選擇分派給你的待評題目。", [], gr.update(value=None), gr.update(value="")
+    try:
+        parts = str(task_key).split("::", 2)
+        if len(parts) != 3:
+            raise ValueError("評測任務識別碼無效")
+        project, run = _load_saved_experiment_run(parts[0], parts[1])
+        review = run.get("human_review") or {}
+        task = next((item for item in review.get("tasks", []) if item.get("task_id") == parts[2]), None)
+        if task is None or task.get("assigned_to") != current_actor():
+            raise ValueError("找不到分派給目前使用者的評測任務")
+        index = int(task.get("result_index", -1))
+        results = run.get("results") or []
+        if not 0 <= index < len(results):
+            raise ValueError("評測任務對應的實驗結果不存在")
+        result = results[index]
+        row = [[
+            result.get("group_name", ""), result.get("source_project_name", ""),
+            result.get("question_set_name", ""), result.get("number", index + 1),
+            result.get("question", ""), result.get("expected_answer", ""),
+            result.get("actual_answer", ""), result.get("document", ""),
+        ]]
+        if task.get("score") in (0, 1, 2):
+            return (
+                f"此題已於 {task.get('submitted_at', '')} 評分：{task['score']}；評分者：{task.get('submitted_by', task.get('assigned_to', ''))}。",
+                row, gr.update(value=task["score"], interactive=False),
+                gr.update(value=task.get("note", ""), interactive=False),
+            )
+        return "請獨立判斷模型回答的正確程度；AI 判定與理由暫不顯示。", row, gr.update(value=None, interactive=True), gr.update(value="", interactive=True)
+    except (OSError, TypeError, ValueError) as exc:
+        return f"❌ 載入評測任務失敗：{exc}", [], gr.update(value=None), gr.update(value="")
+
+
+def submit_human_review_for_ui(
+    task_key: str | None, score: int | float | None, note: str | None,
+) -> tuple[str, Any, str, list[list[Any]], Any, Any]:
+    try:
+        actor = current_actor()
+        if actor not in KNOWN_USERS:
+            raise ValueError("請先在 0-0 選擇有效使用者")
+        if score is None or isinstance(score, bool) or int(score) not in (0, 1, 2) or float(score) != int(score):
+            raise ValueError("答案判定必須選擇 0、1 或 2")
+        parts = str(task_key or "").split("::", 2)
+        if len(parts) != 3:
+            raise ValueError("請先選擇待評測題目")
+        with _HUMAN_REVIEW_LOCK:
+            project, run = _load_saved_experiment_run(parts[0], parts[1])
+            runs = deepcopy(project.get("saved_runs") or [])
+            target_run = next((item for item in runs if item.get("run_id") == parts[1]), None)
+            if target_run is None:
+                raise ValueError("找不到保存的實驗結果")
+            review = target_run.get("human_review") or {}
+            task = next((item for item in review.get("tasks", []) if item.get("task_id") == parts[2]), None)
+            if task is None or task.get("assigned_to") != actor:
+                raise ValueError("這筆評測任務未分派給目前使用者")
+            if task.get("score") in (0, 1, 2):
+                raise ValueError("這筆題目已提交人工評分")
+            task.update({
+                "score": int(score), "note": str(note or "").strip(),
+                "submitted_by": actor, "submitted_at": datetime.now().astimezone().isoformat(),
+            })
+            updated = save_experiment_project(parts[0], {"saved_runs": runs})
+        complete = human_review_complete(target_run.get("human_review"))
+        status = "✅ 已保存人工評分；此執行結果的抽樣題目已全部完成。" if complete else "✅ 已保存人工評分。"
+    except (OSError, TypeError, ValueError, OverflowError) as exc:
+        status = f"❌ 人工評分保存失敗：{exc}"
+    selector, user_status = human_review_tasks_for_current_user_for_ui()
+    first_key = selector.get("value")
+    details_status, rows, next_score, next_note = human_review_task_details_for_ui(first_key)
+    return status + " " + user_status, selector, details_status, rows, next_score, next_note
+
+
+def completed_human_review_runs_for_ui() -> tuple[Any, str]:
+    choices: list[tuple[str, str]] = []
+    for project, run, metadata in _human_review_records():
+        review = run.get("human_review") or {}
+        if not human_review_complete(review):
+            continue
+        label = f"{metadata['name']}｜{str(run.get('saved_at') or '')[:19]}｜{run['run_id'][:8]}"
+        choices.append((label, _saved_run_key(project["experiment_project_id"], run["run_id"])))
+    choices.sort(key=lambda item: item[0])
+    return gr.update(choices=choices, value=choices[0][1] if choices else None), f"目前有 {len(choices)} 筆已完成人工評測的實驗執行結果。"
+
+
+def human_review_results_for_ui(
+    run_key: str | None,
+) -> tuple[str, list[list[Any]], list[list[Any]]]:
+    if not run_key:
+        return "目前沒有已完成人工評測的實驗結果。", [], []
+    try:
+        _project, run = _load_saved_experiment_run(*_parse_saved_run_key(run_key))
+        review = run.get("human_review") or {}
+        if not human_review_complete(review):
+            return "人工評測尚未全部完成。", [], []
+        results = run.get("results") or []
+        groups: dict[tuple[str, str, str], list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+        details: list[list[Any]] = []
+        for task in review.get("tasks", []):
+            index = int(task["result_index"])
+            item = results[index]
+            ai_score = item.get("ai_score", _result_score(item))
+            human_score = int(task["score"])
+            key = (
+                str(item.get("group_name", "")),
+                str(item.get("source_project_name", "")),
+                str(item.get("question_set_name", "未分類題目集")),
+            )
+            groups.setdefault(key, []).append((item, task))
+            details.append([
+                key[0], key[1], key[2], item.get("number", index + 1),
+                item.get("question", ""), item.get("expected_answer", ""),
+                item.get("actual_answer", ""), ai_score, human_score,
+                "一致" if int(ai_score) == human_score else "不一致",
+                item.get("ai_reason", item.get("reason", "")), task.get("note", ""),
+                task.get("submitted_by", task.get("assigned_to", "")),
+            ])
+        summaries = []
+        for (group_name, project_name, set_name), pairs in groups.items():
+            ai_scores = [item.get("ai_score", _result_score(item)) for item, _task in pairs]
+            human_scores = [int(task["score"]) for _item, task in pairs]
+            count = len(pairs)
+            exact = sum(ai == human for ai, human in zip(ai_scores, human_scores))
+            mae = sum(abs(ai - human) for ai, human in zip(ai_scores, human_scores)) / count
+            summaries.append([
+                group_name, project_name, set_name, count,
+                f"{sum(ai_scores) / count:.2f}", f"{sum(human_scores) / count:.2f}",
+                f"{sum(ai_scores) / (2 * count):.1%}",
+                f"{sum(human_scores) / (2 * count):.1%}",
+                f"{exact / count:.1%}", f"{mae:.2f}",
+            ])
+        status = f"✅ 人工評測完成｜共 {len(details)} 個抽樣題次；保存時間 {run.get('saved_at', '')}。"
+        return status, summaries, details
+    except (OSError, TypeError, ValueError, IndexError, ZeroDivisionError) as exc:
+        return f"❌ 載入人工評測結果失敗：{exc}", [], []
 
 
 def _add_single_document(
@@ -5896,6 +6222,66 @@ def build_app() -> gr.Blocks:
                 value=False, label="啟用答案結果人工修改",
                 info="勾選後可直接在逐題結果表格的答案判定欄輸入 0、1 或 2。",
             )
+            save_experiment_run_button = gr.Button(
+                "保存實驗結果", variant="primary", interactive=False,
+            )
+            save_experiment_run_status = gr.Markdown(
+                "AI 評測完成後保存執行快照，3-0 才會列入人工抽樣。"
+            )
+
+        with gr.Tab("3-0 人工評測抽樣", interactive=False) as human_review_sampling_tab:
+            gr.Markdown("選取 2-2 已保存的實驗執行結果，系統會依實驗組、成員專案與題目集分層抽樣，並平均分派給所有使用者。")
+            human_review_queue_status = gr.Markdown("載入待人工評測的已保存實驗結果。")
+            human_review_queue_table = gr.Dataframe(
+                headers=["實驗專案", "執行編號", "保存時間", "AI 題次", "人工進度", "狀態"],
+                interactive=False, wrap=True,
+            )
+            with gr.Row():
+                human_review_run_selector = gr.Dropdown(
+                    choices=[], value=None, label="選擇已保存實驗結果",
+                )
+                human_review_sample_per_stratum = gr.Number(
+                    value=3, minimum=1, precision=0,
+                    label="每個實驗組／成員專案／題目集抽樣數",
+                )
+                create_human_review_button = gr.Button(
+                    "抽樣並平均分派", variant="primary",
+                )
+            human_review_sampling_status = gr.Markdown()
+
+        with gr.Tab("3-1 人工評測", interactive=False) as human_review_tasks_tab:
+            human_review_tasks_status = gr.Markdown("載入目前使用者分派到的題目。")
+            human_review_task_selector = gr.Dropdown(
+                choices=[], value=None, label="我的人工評測題目",
+            )
+            human_review_task_context = gr.Dataframe(
+                headers=["實驗組", "成員專案", "題目集", "題號", "題目", "正確答案", "模型回答", "來源文件"],
+                interactive=False, wrap=True,
+            )
+            human_review_score = gr.Radio(
+                choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
+                value=None, label="人工判定",
+            )
+            human_review_note = gr.Textbox(
+                label="人工評判理由／註記（選填）", lines=3,
+            )
+            submit_human_review_button = gr.Button("提交人工評分", variant="primary")
+            human_review_submission_status = gr.Markdown()
+
+        with gr.Tab("4-0 AI／人工評測結果", interactive=False) as human_review_results_tab:
+            gr.Markdown("只顯示抽樣題目全部完成人工評分的已保存執行結果。AI 判定使用保存當下的原始分數。")
+            human_review_results_run_selector = gr.Dropdown(
+                choices=[], value=None, label="已完成人工評測的實驗執行",
+            )
+            human_review_results_status = gr.Markdown("選擇已完成的人工評測執行結果。")
+            human_review_summary_table = gr.Dataframe(
+                headers=["實驗組", "成員專案", "題目集", "樣本數", "AI 平均分（0–2）", "人工平均分（0–2）", "AI 得分率", "人工得分率", "判定一致率", "平均分差"],
+                interactive=False, wrap=True,
+            )
+            human_review_results_table = gr.Dataframe(
+                headers=["實驗組", "成員專案", "題目集", "題號", "題目", "正確答案", "模型回答", "AI 判定", "人工判定", "一致性", "AI 理由", "人工註記", "評分者"],
+                interactive=False, wrap=True,
+            )
 
         schema_model_endpoint = gr.State(initial_llm_credentials[0][0])
         schema_model_key = gr.State(initial_llm_credentials[0][1])
@@ -6391,7 +6777,7 @@ def build_app() -> gr.Blocks:
             outputs=[experiment_project_global_judge_model, experiment_project_judge_effort,
                      experiment_project_judge_concurrency, experiment_project_pending_answers_state,
                      experiment_project_results_state, evaluate_experiment_project_button,
-                     experiment_project_answers_status],
+                     experiment_project_answers_status, save_experiment_run_button],
         ).then(
             refresh_experiment_model_choices_for_ui,
             inputs=[experiment_llm_service_state,
@@ -6399,6 +6785,10 @@ def build_app() -> gr.Blocks:
                     experiment_project_global_judge_model],
             outputs=[*[row[1] for row in experiment_project_group_rows],
                      experiment_project_global_judge_model],
+            show_progress="hidden",
+        ).then(
+            save_experiment_run_button_state_for_ui,
+            inputs=experiment_project_state, outputs=save_experiment_run_button,
             show_progress="hidden",
         )
         add_experiment_project_group_button.click(
@@ -6490,8 +6880,12 @@ def build_app() -> gr.Blocks:
             lambda pending: gr.update(interactive=bool(pending)),
             inputs=experiment_project_pending_answers_state,
             outputs=evaluate_experiment_project_button, show_progress="hidden",
+        ).then(
+            save_experiment_run_button_state_for_ui,
+            inputs=experiment_project_state, outputs=save_experiment_run_button,
+            show_progress="hidden",
         )
-        evaluate_experiment_project_button.click(
+        experiment_project_evaluation_event = evaluate_experiment_project_button.click(
             evaluate_experiment_project_answers_for_ui,
             inputs=[experiment_project_state, experiment_project_pending_answers_state,
                     experiment_project_global_judge_model, experiment_project_judge_effort,
@@ -6501,6 +6895,16 @@ def build_app() -> gr.Blocks:
                      experiment_project_summary_table, experiment_project_details_table,
                      experiment_project_state],
             show_progress="minimal",
+        )
+        experiment_project_evaluation_event.then(
+            save_experiment_run_button_state_for_ui,
+            inputs=experiment_project_state, outputs=save_experiment_run_button,
+            show_progress="hidden",
+        )
+        save_experiment_run_button.click(
+            save_experiment_project_run_for_ui,
+            inputs=experiment_project_state,
+            outputs=[save_experiment_run_status, experiment_project_state],
         )
         experiment_project_manual_edit.input(
             experiment_table_editability_for_ui,
@@ -6513,6 +6917,63 @@ def build_app() -> gr.Blocks:
                     experiment_project_results_state],
             outputs=[experiment_project_test_status, experiment_project_summary_table,
                      experiment_project_details_table, experiment_project_state],
+            show_progress="hidden",
+        )
+        human_review_sampling_tab.select(
+            human_review_queue_for_ui,
+            outputs=[human_review_queue_table, human_review_run_selector,
+                     human_review_queue_status],
+            show_progress="hidden",
+        )
+        create_human_review_button.click(
+            create_human_review_sample_for_ui,
+            inputs=[human_review_run_selector, human_review_sample_per_stratum],
+            outputs=[human_review_sampling_status, human_review_queue_table,
+                     human_review_run_selector],
+            show_progress="hidden",
+        )
+        human_review_tasks_tab.select(
+            human_review_tasks_for_current_user_for_ui,
+            outputs=[human_review_task_selector, human_review_tasks_status],
+            show_progress="hidden",
+        ).then(
+            human_review_task_details_for_ui,
+            inputs=human_review_task_selector,
+            outputs=[human_review_submission_status, human_review_task_context,
+                     human_review_score, human_review_note],
+            show_progress="hidden",
+        )
+        human_review_task_selector.change(
+            human_review_task_details_for_ui,
+            inputs=human_review_task_selector,
+            outputs=[human_review_submission_status, human_review_task_context,
+                     human_review_score, human_review_note],
+            show_progress="hidden",
+        )
+        submit_human_review_button.click(
+            submit_human_review_for_ui,
+            inputs=[human_review_task_selector, human_review_score, human_review_note],
+            outputs=[human_review_tasks_status, human_review_task_selector,
+                     human_review_submission_status, human_review_task_context,
+                     human_review_score, human_review_note],
+            show_progress="hidden",
+        )
+        human_review_results_tab.select(
+            completed_human_review_runs_for_ui,
+            outputs=[human_review_results_run_selector, human_review_results_status],
+            show_progress="hidden",
+        ).then(
+            human_review_results_for_ui,
+            inputs=human_review_results_run_selector,
+            outputs=[human_review_results_status, human_review_summary_table,
+                     human_review_results_table],
+            show_progress="hidden",
+        )
+        human_review_results_run_selector.change(
+            human_review_results_for_ui,
+            inputs=human_review_results_run_selector,
+            outputs=[human_review_results_status, human_review_summary_table,
+                     human_review_results_table],
             show_progress="hidden",
         )
         project_setting_inputs = [
@@ -6562,7 +7023,9 @@ def build_app() -> gr.Blocks:
             select_user_for_ui,
             inputs=current_user_dropdown,
             outputs=[current_user_banner, question_set_manager_tab, question_set_binding_tab,
-                     api_settings_tab, project_tab, experiment_project_tab],
+                     api_settings_tab, project_tab, experiment_project_tab,
+                     human_review_sampling_tab, human_review_tasks_tab,
+                     human_review_results_tab],
             show_progress="hidden",
         )
         project_tab.select(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
