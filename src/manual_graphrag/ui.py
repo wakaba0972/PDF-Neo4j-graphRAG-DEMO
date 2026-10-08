@@ -1488,14 +1488,21 @@ def project_question_set_bindings_for_ui(
                    for item in items]
         selected = list(selected_ids) if selected_ids is not None else list(project.get("question_set_ids") or [])
         selected = [item for item in selected if item in {value for _, value in choices}]
-        return f"專案「{project['name']}」目前綁定 {len(selected)} 份題目集。", gr.update(choices=choices, value=selected)
+        selected_names = [label.split("（", 1)[0] for label, value in choices if value in selected]
+        summary = "、".join(selected_names) if selected_names else "尚未綁定題目集"
+        return (
+            f"專案「{project['name']}」目前綁定 {len(selected)} 份題目集：{summary}。",
+            gr.update(choices=choices, value=selected),
+        )
     except (OSError, ValueError) as exc:
         return f"❌ 載入綁定失敗：{exc}", gr.update(choices=[] , value=[])
 
 
-def save_project_question_set_bindings_for_ui(project_id: str | None, selected_ids: list[str] | None) -> str:
+def save_project_question_set_bindings_for_ui(
+    project_id: str | None, selected_ids: list[str] | None,
+) -> tuple[str, Any]:
     if not project_id:
-        return "❌ 請先選擇專案。"
+        return "❌ 請先選擇專案。", gr.update(choices=[], value=[])
     try:
         requested = list(dict.fromkeys(str(item) for item in (selected_ids or [])))
         project = set_project_question_set_bindings(project_id, requested)
@@ -1503,9 +1510,11 @@ def save_project_question_set_bindings_for_ui(project_id: str | None, selected_i
         actual = list(persisted.get("question_set_ids") or [])
         if actual != requested:
             raise ValueError("重新讀取後的綁定與選取內容不一致，請重試")
-        return f"✅ 已保存並驗證「{project['name']}」的 {len(actual)} 份題目集綁定。"
+        _status, selector = project_question_set_bindings_for_ui(project_id)
+        return f"✅ 已保存並驗證「{project['name']}」的 {len(actual)} 份題目集綁定。", selector
     except (OSError, ValueError) as exc:
-        return f"❌ 儲存綁定失敗：{exc}"
+        _status, selector = project_question_set_bindings_for_ui(project_id)
+        return f"❌ 儲存綁定失敗：{exc}", selector
 
 
 def bound_question_set_choices_for_ui(project_id: str | None) -> Any:
@@ -1517,11 +1526,12 @@ def bound_question_set_choices_for_ui(project_id: str | None) -> Any:
     return gr.update(choices=choices, value=[value for _, value in choices])
 
 
-def refresh_binding_project_choices_for_ui(project_id: str | None) -> Any:
+def refresh_binding_project_choices_for_ui(project_id: str | None) -> tuple[Any, str, Any]:
     choices = _project_choices()
     available = {value for _, value in choices}
     selected = project_id if project_id in available else (choices[0][1] if choices else None)
-    return gr.update(choices=choices, value=selected)
+    status, question_set_update = project_question_set_bindings_for_ui(selected)
+    return gr.update(choices=choices, value=selected), status, question_set_update
 
 
 def select_experiment_question_sets_for_ui(
@@ -5948,12 +5958,7 @@ def build_app() -> gr.Blocks:
         )
         refresh_binding_projects_event = question_set_binding_tab.select(
             refresh_binding_project_choices_for_ui, inputs=binding_project_selector,
-            outputs=[binding_project_selector], show_progress="hidden",
-        )
-        refresh_binding_projects_event.then(
-            project_question_set_bindings_for_ui,
-            inputs=[binding_project_selector],
-            outputs=[binding_question_set_status, binding_question_set_selector],
+            outputs=[binding_project_selector, binding_question_set_status, binding_question_set_selector],
             show_progress="hidden",
         )
         binding_project_selector.change(
@@ -5965,7 +5970,7 @@ def build_app() -> gr.Blocks:
         save_question_set_bindings_button.click(
             save_project_question_set_bindings_for_ui,
             inputs=[binding_project_selector, binding_question_set_selector],
-            outputs=[binding_question_set_status],
+            outputs=[binding_question_set_status, binding_question_set_selector],
         )
         experiment_bound_question_sets.change(
             select_experiment_question_sets_for_ui,

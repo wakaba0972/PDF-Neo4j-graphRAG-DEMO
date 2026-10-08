@@ -955,15 +955,24 @@ def test_question_set_manager_imports_centrally_and_binding_is_project_scoped(tm
     assert len(ui.list_question_sets()) == 1
 
     _status, _choices = ui.project_question_set_bindings_for_ui(project["project_id"])
-    saved_status = ui.save_project_question_set_bindings_for_ui(project["project_id"], [question_set_id])
+    saved_status, saved_selector = ui.save_project_question_set_bindings_for_ui(
+        project["project_id"], [question_set_id],
+    )
     project_after = ui.load_project(project["project_id"])
     assert saved_status.startswith("✅")
+    assert saved_selector["value"] == [question_set_id]
     assert project_after["question_set_ids"] == [question_set_id]
     assert ui.bound_question_sets(project_after)[0]["name"] == "中央測試集"
     # Simulate leaving 0-3 and reopening it: selections must be read from project.json.
     restored_status, restored_selector = ui.project_question_set_bindings_for_ui(project["project_id"])
     assert restored_status.startswith("專案")
     assert restored_selector["value"] == [question_set_id]
+    refreshed_project, refreshed_status, refreshed_selector = ui.refresh_binding_project_choices_for_ui(
+        project["project_id"],
+    )
+    assert refreshed_project["value"] == project["project_id"]
+    assert "中央測試集" in refreshed_status
+    assert refreshed_selector["value"] == [question_set_id]
 
     components = build_app().config["components"]
     assert not any(component.get("props", {}).get("value") == "刪除中央題目集" for component in components)
