@@ -3348,7 +3348,7 @@ def run_experiment_groups_for_ui(
     if not project_id:
         return "❌ 請先建立或載入專案。", [], [], []
     if not questions:
-        return "❌ 請先在 0-3 為此專案綁定題目集，再回到 1-7 選擇。", [], [], []
+        return "❌ 請先在 0-2 為此專案綁定題目集，再回到 1-6 選擇。", [], [], []
     if not groups:
         return "❌ 請至少加入一個實驗組。", [], [], []
     try:
@@ -3576,7 +3576,7 @@ def generate_experiment_answers_for_ui(
     if not project_id:
         return "❌ 請先建立或載入專案。", [], [], [], []
     if not questions:
-        return "❌ 請先在 0-3 為此專案綁定題目集，再回到 1-7 選擇。", [], [], [], []
+        return "❌ 請先在 0-2 為此專案綁定題目集，再回到 1-6 選擇。", [], [], [], []
     if not groups:
         return "❌ 請至少加入一個實驗組。", [], [], [], []
     try:
@@ -4142,7 +4142,7 @@ def generate_experiment_project_answers_for_ui(
         return f"❌ 成員專案載入失敗：{exc}", [], [], [], current
     missing = [member for member in members if not question_map.get(member)]
     if missing:
-        return f"❌ 尚有 {len(missing)} 個成員專案沒有題目集，請至 0-3 綁定題目集。", [], [], [], current
+        return f"❌ 尚有 {len(missing)} 個成員專案沒有題目集，請至 0-2 綁定題目集。", [], [], [], current
     for member_id in members:
         member = members_data[member_id]
         if not (member.get("graph_state") or {}).get("neo4j_imported"):
@@ -4356,7 +4356,7 @@ def run_experiment_project_for_ui(
         return f"❌ 成員專案載入失敗：{exc}", [], [], current
     missing = [member_id for member_id in members if not question_map.get(member_id)]
     if missing:
-        return f"❌ 尚有 {len(missing)} 個成員專案沒有題目集，請至 0-3 綁定題目集。", [], [], current
+        return f"❌ 尚有 {len(missing)} 個成員專案沒有題目集，請至 0-2 綁定題目集。", [], [], current
     if not judge_model:
         return "❌ 請選擇全域評測模型。", [], [], current
     all_results: list[dict[str, Any]] = []
@@ -5106,7 +5106,7 @@ def build_app() -> gr.Blocks:
         experiment_project_connection_state = gr.State({})
         experiment_project_pending_answers_state = gr.State([])
         experiment_project_results_state = gr.State([])
-        # Internal service states are shared by workflows; credentials are editable only on 0-4.
+        # Internal service states are shared by workflows; credentials are editable only on 0-3.
         llm_provider = gr.State("OpenAI")
         model_endpoint = gr.State(llm_profile["base_url"])
         api_key = gr.State(llm_profile["api_key"])
@@ -5130,8 +5130,8 @@ def build_app() -> gr.Blocks:
                 interactive=True,
             )
 
-        with gr.Tab("0-2 管理題目集", interactive=False) as question_set_manager_tab:
-            gr.Markdown("此頁只負責將題目集匯入中央題庫；專案使用哪些題目集，請至 0-3 設定。")
+        with gr.Tab("0-1 管理題目集", interactive=False) as question_set_manager_tab:
+            gr.Markdown("此頁只負責將題目集匯入中央題庫；專案使用哪些題目集，請至 0-2 設定。")
             with gr.Row():
                 central_question_file = gr.File(
                     label="題目集（JSON／CSV）", file_types=[".json", ".csv"], type="filepath",
@@ -5145,8 +5145,8 @@ def build_app() -> gr.Blocks:
                 datatype=["number", "str", "str", "str", "str"], interactive=False, wrap=True,
             )
 
-        with gr.Tab("0-3 綁定題目集", interactive=False) as question_set_binding_tab:
-            gr.Markdown("集中設定各專案可使用的中央題目集。1-7 與跨專案測試都會使用這裡保存的綁定。")
+        with gr.Tab("0-2 綁定題目集", interactive=False) as question_set_binding_tab:
+            gr.Markdown("集中設定各專案可使用的中央題目集。1-6 與跨專案測試都會使用這裡保存的綁定。")
             binding_project_selector = gr.Dropdown(
                 choices=project_choices, value=project_choices[0][1] if project_choices else None,
                 label="專案",
@@ -5155,7 +5155,7 @@ def build_app() -> gr.Blocks:
             binding_question_set_status = gr.Markdown("請選擇專案。")
             save_question_set_bindings_button = gr.Button("保存綁定", variant="primary")
 
-        with gr.Tab("0-4 API Key 設定", interactive=False) as api_settings_tab:
+        with gr.Tab("0-3 API Key 設定", interactive=False) as api_settings_tab:
             gr.Markdown("所有模型與 Embedding 呼叫共用同一組 OpenAI API 設定，並寫入本機 `.env`。")
             with gr.Row():
                 global_api_endpoint = gr.Textbox(label="OpenAI API Base URL", value=llm_profile["base_url"])
@@ -5209,7 +5209,7 @@ def build_app() -> gr.Blocks:
                     neo4j_password = gr.Textbox(label="Password", value=env["NEO4J_PASSWORD"], type="password")
                     neo4j_test_button = gr.Button("測試 Neo4j 連線", variant="primary")
                     neo4j_connection_status = gr.Markdown()
-            gr.Markdown("Neo4j 連線設定保存在此頁。模型與 Embedding API 請至 0-4 API Key 設定管理。")
+            gr.Markdown("Neo4j 連線設定保存在此頁。模型與 Embedding API 請至 0-3 API Key 設定管理。")
             env_status = gr.Markdown("Neo4j 設定欄位修改後會自動儲存。")
 
         with gr.Tab("1-2 PDF 與參數", interactive=False) as pdf_tab:
@@ -5603,9 +5603,9 @@ def build_app() -> gr.Blocks:
                 evaluation_status = gr.Markdown(
                     "請先載入專案並解析 PDF。", elem_classes="evaluation-metrics"
                 )
-        with gr.Tab("1-7 單一專案實驗", interactive=False) as experiment_tab:
+        with gr.Tab("1-6 單一專案實驗", interactive=False) as experiment_tab:
             gr.Markdown(
-                "使用 0-3 綁定至目前專案的題目集；建立多個不同回答／檢索設定的實驗組，"
+                "使用 0-2 綁定至目前專案的題目集；建立多個不同回答／檢索設定的實驗組，"
                 "先生成各組回答，再獨立評測並比較答案正確率、Recall@5、Recall@10 與 MRR。"
             )
             experiment_questions_state = gr.State([])
@@ -5783,17 +5783,17 @@ def build_app() -> gr.Blocks:
             )
 
         with gr.Tab("2-1 成員專案連線測試", interactive=False) as experiment_connection_tab:
-            gr.Markdown("使用 1-1 的 Neo4j URI／帳密，逐一測試實驗專案內各成員專案自己的 Database；回答與 Embedding 模型共用 0-4 的 OpenAI 設定。")
+            gr.Markdown("使用 1-1 的 Neo4j URI／帳密，逐一測試實驗專案內各成員專案自己的 Database；回答與 Embedding 模型共用 0-3 的 OpenAI 設定。")
             test_experiment_connections_button = gr.Button("測試所有成員專案連線", variant="primary")
             experiment_connection_status = gr.Markdown("請先在 2-0 載入實驗專案。")
             experiment_connection_table = gr.Dataframe(
                 headers=["專案", "專案 ID", "Neo4j Database", "連線結果"],
                 datatype=["str", "str", "str", "str"], interactive=False, wrap=True,
             )
-            gr.Markdown("回答模型服務共用 0-4 的 OpenAI 設定。")
+            gr.Markdown("回答模型服務共用 0-3 的 OpenAI 設定。")
 
         with gr.Tab("2-2 自動實驗測試", interactive=False) as experiment_project_test_tab:
-            gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，使用各專案在 0-3 綁定的題目集及自己的 Neo4j Database 執行。")
+            gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，使用各專案在 0-2 綁定的題目集及自己的 Neo4j Database 執行。")
             gr.Markdown("#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）")
             experiment_project_group_rows: list[list[Any]] = []
             for row_index in range(EXPERIMENT_GROUP_LIMIT):
@@ -5880,7 +5880,7 @@ def build_app() -> gr.Blocks:
                 "<style>.evaluation-judge-button button {background:#f59e0b !important;border-color:#f59e0b !important;color:#1f2937 !important;}</style>",
                 padding=False,
             )
-            experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並至 0-3 為成員專案綁定題目集。")
+            experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並至 0-2 為成員專案綁定題目集。")
             experiment_project_summary_table = gr.Dataframe(
                 headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Recall@5", "Recall@10", "MRR", "成員專案", "題目集"],
                 interactive=False, wrap=True,

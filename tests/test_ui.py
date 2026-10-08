@@ -437,7 +437,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     protected_labels = {
         "1-2 PDF 與參數", "1-3 建圖",
         "1-4 問答測試", "1-5 自動問答測試",
-        "1-7 單一專案實驗",
+        "1-6 單一專案實驗",
     }
     tabs = [
         component for component in app.config["components"]
@@ -513,7 +513,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     }
     assert {
         "1-0 專案設定", "1-1 連線設定", "1-2 PDF 與參數", "1-3 建圖",
-        "1-4 問答測試", "1-5 自動問答測試", "1-7 單一專案實驗",
+        "1-4 問答測試", "1-5 自動問答測試", "1-6 單一專案實驗",
         "2-0 實驗專案", "2-1 成員專案連線測試",
         "2-2 自動實驗測試",
     } <= page_labels
@@ -745,11 +745,16 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     labels = [
         component.get("props", {}).get("label") for component in app.config["components"]
     ]
+    assert labels.index("0-0 使用者") < labels.index("0-1 管理題目集")
+    assert labels.index("0-1 管理題目集") < labels.index("0-2 綁定題目集")
+    assert labels.index("0-2 綁定題目集") < labels.index("0-3 API Key 設定")
+    assert "0-4 API Key 設定" not in labels
+    assert "1-7 單一專案實驗" not in labels
     assert labels.index("1-0 專案設定") < labels.index("1-1 連線設定")
     assert labels.index("1-4 問答測試") < labels.index("1-5 自動問答測試")
     assert "1-6 匯入問題集" not in labels
-    assert labels.index("1-5 自動問答測試") < labels.index("1-7 單一專案實驗")
-    assert labels.index("1-7 單一專案實驗") < labels.index("2-0 實驗專案")
+    assert labels.index("1-5 自動問答測試") < labels.index("1-6 單一專案實驗")
+    assert labels.index("1-6 單一專案實驗") < labels.index("2-0 實驗專案")
     assert labels.index("2-0 實驗專案") < labels.index("2-1 成員專案連線測試")
     assert "2-3 問題集準備" not in labels
     assert labels.index("2-1 成員專案連線測試") < labels.index("2-2 自動實驗測試")
@@ -931,13 +936,13 @@ def test_global_api_credentials_exist_only_on_page_zero() -> None:
     labels = [component.get("props", {}).get("label") for component in components]
 
     assert "0-0 使用者" in labels
-    assert {"0-2 管理題目集", "0-3 綁定題目集", "0-4 API Key 設定"} <= set(labels)
+    assert {"0-1 管理題目集", "0-2 綁定題目集", "0-3 API Key 設定"} <= set(labels)
     assert labels.count("OpenAI API Key") == 1
     assert labels.count("OpenAI API Base URL") == 1
     assert not any("API Key" in str(label) for label in labels if label not in {
-        "0-4 API Key 設定", "OpenAI API Key",
+        "0-3 API Key 設定", "OpenAI API Key",
     })
-    assert {"1-0 專案設定", "1-1 連線設定", "1-7 單一專案實驗",
+    assert {"1-0 專案設定", "1-1 連線設定", "1-6 單一專案實驗",
             "2-0 實驗專案", "2-2 自動實驗測試"} <= set(labels)
 
 
@@ -963,7 +968,7 @@ def test_question_set_manager_imports_centrally_and_binding_is_project_scoped(tm
     assert saved_selector["value"] == [question_set_id]
     assert project_after["question_set_ids"] == [question_set_id]
     assert ui.bound_question_sets(project_after)[0]["name"] == "中央測試集"
-    # Simulate leaving 0-3 and reopening it: selections must be read from project.json.
+    # Simulate leaving 0-2 and reopening it: selections must be read from project.json.
     restored_status, restored_selector = ui.project_question_set_bindings_for_ui(project["project_id"])
     assert restored_status.startswith("專案")
     assert restored_selector["value"] == [question_set_id]
@@ -1034,14 +1039,14 @@ def test_user_selection_unlocks_roots_and_names_audited_projects(tmp_path, monke
         component.get("props", {}).get("label"): component.get("props", {}).get("interactive")
         for component in app.config["components"]
         if component.get("props", {}).get("label") in {
-            "0-2 管理題目集", "0-3 綁定題目集", "0-4 API Key 設定",
+            "0-1 管理題目集", "0-2 綁定題目集", "0-3 API Key 設定",
             "1-0 專案設定", "2-0 實驗專案",
         }
     }
     assert initial_tabs == {
-        "0-2 管理題目集": False,
-        "0-3 綁定題目集": False,
-        "0-4 API Key 設定": False,
+        "0-1 管理題目集": False,
+        "0-2 綁定題目集": False,
+        "0-3 API Key 設定": False,
         "1-0 專案設定": False,
         "2-0 實驗專案": False,
     }
