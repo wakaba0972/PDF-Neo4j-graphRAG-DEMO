@@ -16,7 +16,6 @@ from .chunking import TextChunk
 SCHEMA_CONTEXT_LIMIT = 30_000
 SCHEMA_MERGE_LIMIT = 12_000
 SCHEMA_DESCRIPTION_LIMIT = 120
-EXTRACTION_BATCH_LIMIT = 12_000
 RATE_LIMIT_MAX_RETRIES = 6
 GPT_6_LUNA_MODEL = "gpt-6-luna"
 GPT_6_LUNA_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
@@ -634,7 +633,9 @@ def plan_graph_schema(
 
 
 def _batches(chunks: list[TextChunk]) -> list[list[TextChunk]]:
-    return _chunk_batches(chunks, EXTRACTION_BATCH_LIMIT)
+    # Keep provenance deterministic: every extraction response belongs to
+    # exactly one input chunk, so the program can attach its source directly.
+    return [[chunk] for chunk in chunks]
 
 
 def extract_graph(
@@ -699,11 +700,11 @@ def extract_graph(
             llm_model,
             "你是知識圖譜資訊抽取器。只能依據提供的文件內容抽取，禁止臆測。只輸出 JSON。",
             extraction_instructions
-            + "source_chunk_numbers 必須引用提供的 CHUNK 編號。關係的 source 與 target 使用實體 name。"
+            + "關係的 source 與 target 使用實體 name。來源 chunk 由程式依本次輸入記錄，不需輸出來源編號。"
             "輸出格式：{\"entities\":[{\"name\":\"...\",\"type\":\"...\","
-            "\"description\":\"...\",\"source_chunk_numbers\":[1]}],"
+            "\"description\":\"...\"}],"
             "\"relationships\":[{\"source\":\"...\",\"target\":\"...\","
-            "\"type\":\"...\",\"description\":\"...\",\"source_chunk_numbers\":[1]}]}。\n\n"
+            "\"type\":\"...\",\"description\":\"...\"}]}。\n\n"
             f"文件：\n{context}",
             temperature,
             on_retry=report_retry,
@@ -738,9 +739,10 @@ def extract_graph(
 
     if progress_callback:
         progress_callback(1.0, "全部批次已完成，正在統一去重與整合")
-    for result in results:
+    for result, batch in zip(results, batches):
         if result is None:
             raise RuntimeError("知識圖譜抽取結果不完整")
+        source_chunk_number = batch[0].number
         for item in result.get("entities", []):
             if not isinstance(item, dict):
                 continue
@@ -752,7 +754,7 @@ def extract_graph(
                 or (allowed_entity_types is not None and entity_type.casefold() not in allowed_entity_types)
             ):
                 continue
-            numbers = _source_numbers(item, chunk_lookup)
+            numbers = [source_chunk_number]
             key = (entity_type.casefold(), name.casefold())
             current = entities.setdefault(
                 key,
@@ -780,7 +782,7 @@ def extract_graph(
                 or (allowed_relationship_types is not None and relation_type.casefold() not in allowed_relationship_types)
             ):
                 continue
-            numbers = _source_numbers(item, chunk_lookup)
+            numbers = [source_chunk_number]
             key = (source.casefold(), relation_type.casefold(), target.casefold())
             current = relationships.setdefault(
                 key,
@@ -799,23 +801,6 @@ def extract_graph(
     return GraphExtraction(
         list(entities.values()), list(relationships.values()), len(chunks)
     )
-
-
-def _source_numbers(
-    item: dict[str, Any], chunk_lookup: dict[int, TextChunk]
-) -> list[int]:
-    raw = item.get("source_chunk_numbers", [])
-    if not isinstance(raw, list):
-        return []
-    numbers: list[int] = []
-    for value in raw:
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
-            continue
-        if number in chunk_lookup and number not in numbers:
-            numbers.append(number)
-    return numbers
 
 
 def _merge_sources(

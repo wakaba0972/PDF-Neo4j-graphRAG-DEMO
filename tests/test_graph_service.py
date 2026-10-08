@@ -375,12 +375,12 @@ def test_plan_graph_schema_failure_does_not_run_queued_batches(monkeypatch) -> N
 
 
 
-def test_extract_graph_batches_deduplicates_and_keeps_sources(monkeypatch) -> None:
-    monkeypatch.setattr(graph_service, "EXTRACTION_BATCH_LIMIT", 45)
+def test_extract_graph_uses_one_chunk_per_request_and_records_sources(monkeypatch) -> None:
     chunks = [
         TextChunk(1, "設備 A", (1,), document="manual-a.pdf"),
         TextChunk(2, "設備 A 使用設備 B", (2,), document="manual-b.pdf"),
     ]
+    prompts: list[str] = []
     responses = iter(
         [
             {
@@ -389,7 +389,8 @@ def test_extract_graph_batches_deduplicates_and_keeps_sources(monkeypatch) -> No
                         "name": "設備 A",
                         "type": "DEVICE",
                         "description": "主要設備",
-                        "source_chunk_numbers": [1],
+                        # The model's reported provenance is ignored.
+                        "source_chunk_numbers": [2],
                     }
                 ],
                 "relationships": [],
@@ -400,13 +401,13 @@ def test_extract_graph_batches_deduplicates_and_keeps_sources(monkeypatch) -> No
                         "name": "設備 A",
                         "type": "DEVICE",
                         "description": "主要設備",
-                        "source_chunk_numbers": [2],
+                        "source_chunk_numbers": [1],
                     },
                     {
                         "name": "設備 B",
                         "type": "DEVICE",
                         "description": "配件",
-                        "source_chunk_numbers": [2],
+                        "source_chunk_numbers": [999],
                     },
                     {
                         "name": "忽略",
@@ -420,19 +421,26 @@ def test_extract_graph_batches_deduplicates_and_keeps_sources(monkeypatch) -> No
                         "target": "設備 B",
                         "type": "USES",
                         "description": "搭配使用",
-                        "source_chunk_numbers": [2, 999],
+                        "source_chunk_numbers": [1, 999],
                     }
                 ],
             },
         ]
     )
-    monkeypatch.setattr(graph_service, "_chat_json", lambda *args, **kwargs: next(responses))
+    def fake_chat(*args, **kwargs):
+        prompts.append(args[4])
+        return next(responses)
+
+    monkeypatch.setattr(graph_service, "_chat_json", fake_chat)
 
     extraction = graph_service.extract_graph(
         "http://models/v1", "", "llm", chunks, SCHEMA
     )
 
     assert extraction.processed_chunks == 2
+    assert len(prompts) == len(chunks)
+    assert all(prompt.count("[CHUNK ") == 1 for prompt in prompts)
+    assert "來源 chunk 由程式依本次輸入記錄" in prompts[0]
     assert len(extraction.entities) == 2
     assert extraction.entities[0]["source_chunk_numbers"] == [1, 2]
     assert extraction.entities[0]["source_pages"] == [1, 2]
