@@ -447,7 +447,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
         component for component in app.config["components"]
         if component.get("props", {}).get("label") in {
             "2-0 實驗專案", "2-1 成員專案連線測試",
-            "2-3 自動實驗測試",
+            "2-2 自動實驗測試",
         }
     ]
 
@@ -460,7 +460,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     assert experiment_tab_states == {
         "2-0 實驗專案": False,
         "2-1 成員專案連線測試": False,
-        "2-3 自動實驗測試": False,
+        "2-2 自動實驗測試": False,
     }
     assert not any(
         "歷史紀錄" in str(component.get("props", {}).get("label", ""))
@@ -515,7 +515,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
         "1-0 專案設定", "1-1 連線設定", "1-2 PDF 與參數", "1-3 建圖",
         "1-4 問答測試", "1-5 自動問答測試", "1-6 匯入問題集", "1-7 單一專案實驗",
         "2-0 實驗專案", "2-1 成員專案連線測試",
-        "2-3 自動實驗測試",
+        "2-2 自動實驗測試",
     } <= page_labels
     gate_dependencies = [
         dependency for dependency in app.config["dependencies"]
@@ -749,8 +749,8 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     assert labels.index("1-6 匯入問題集") < labels.index("1-7 單一專案實驗")
     assert labels.index("1-7 單一專案實驗") < labels.index("2-0 實驗專案")
     assert labels.index("2-0 實驗專案") < labels.index("2-1 成員專案連線測試")
-    assert "2-2 問題集準備" not in labels
-    assert labels.index("2-1 成員專案連線測試") < labels.index("2-3 自動實驗測試")
+    assert "2-3 問題集準備" not in labels
+    assert labels.index("2-1 成員專案連線測試") < labels.index("2-2 自動實驗測試")
     components = app.config["components"]
     question_table_index = next(
         index for index, component in enumerate(components)
@@ -936,7 +936,7 @@ def test_global_api_credentials_exist_only_on_page_zero() -> None:
         "0-1 API Key 設定", "OpenAI API Key",
     })
     assert {"1-0 專案設定", "1-1 連線設定", "1-6 匯入問題集", "1-7 單一專案實驗",
-            "2-0 實驗專案", "2-3 自動實驗測試"} <= set(labels)
+            "2-0 實驗專案", "2-2 自動實驗測試"} <= set(labels)
 
 
 def test_user_selection_unlocks_roots_and_names_audited_projects(tmp_path, monkeypatch) -> None:

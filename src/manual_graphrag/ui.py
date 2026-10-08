@@ -5430,7 +5430,7 @@ def build_app() -> gr.Blocks:
             gr.Markdown(
                 "在目前載入的專案匯入專屬題目集。題目集會儲存在該專案，"
                 "每次匯入都會新增獨立題目集，不會覆蓋或混合其他題目集；"
-                "1-7 與 2-3 會分別列出各題目集的測試結果。"
+                "1-7 與 2-2 會分別列出各題目集的測試結果。"
             )
             with gr.Row():
                 project_question_file = gr.File(
@@ -5638,7 +5638,7 @@ def build_app() -> gr.Blocks:
             )
             gr.Markdown("回答模型服務共用 0-1 的 OpenAI 設定。")
 
-        with gr.Tab("2-3 自動實驗測試", interactive=False) as experiment_project_test_tab:
+        with gr.Tab("2-2 自動實驗測試", interactive=False) as experiment_project_test_tab:
             gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，直接使用各專案在 1-6 匯入的題目集及自己的 Neo4j Database 執行。")
             gr.Markdown("#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）")
             experiment_project_group_rows: list[list[Any]] = []
