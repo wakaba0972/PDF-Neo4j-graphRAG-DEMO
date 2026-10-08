@@ -4180,7 +4180,80 @@ def test_saved_experiment_run_is_sampled_distributed_and_compared_with_human_sco
     assert summaries[0][5] == "1.20"
     assert len(details) == 5
     assert {row[12] for row in details} == set(ui.KNOWN_USERS)
+    assert {row[13] for row in details} == set(ui.KNOWN_USERS)
     assert all(row[10] == "AI 理由" for row in details)
+
+
+def test_reviewer_can_opt_in_to_help_after_finishing_own_tasks(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    experiment = ui.create_experiment_project("協助評測")
+    results = [{
+        "group_name": "G", "source_project_name": "車型 A",
+        "question_set_name": "題目集 A", "number": index + 1,
+        "question": f"問題 {index + 1}", "expected_answer": "答案",
+        "actual_answer": "回答", "score": 2, "reason": "AI 理由",
+    } for index in range(5)]
+    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {"results": results})
+    _, experiment = ui.save_experiment_project_run_for_ui(experiment)
+    run_key = ui._saved_run_key(experiment["experiment_project_id"], experiment["saved_runs"][0]["run_id"])
+    with actor_context("Zhao"):
+        sample_status, *_ = ui.create_human_review_sample_for_ui(run_key, 5)
+    assert sample_status.startswith("✅")
+    experiment = ui.load_experiment_project(experiment["experiment_project_id"])
+    run = experiment["saved_runs"][0]
+    tasks = run["human_review"]["tasks"]
+    jay_task = next(task for task in tasks if task["assigned_to"] == "Jay")
+    with actor_context("Jay"):
+        status, *_ = ui.submit_human_review_for_ui(
+            f"{experiment['experiment_project_id']}::{run['run_id']}::{jay_task['task_id']}", 2, "本人評分",
+        )
+        assert status.startswith("✅")
+        selector, message, help_button, _stop_button = ui.human_review_tasks_for_current_user_for_ui(run_key)
+        assert help_button["interactive"] is True
+        assert "你的原分派已完成" in message
+        selector, _message, _help, stop_button, helping = ui.enable_human_review_help_for_ui(run_key)
+        assert helping is True and stop_button["interactive"] is True
+        helper_task_key = selector["value"]
+        assert helper_task_key
+        detail_status, *_ = ui.human_review_task_details_for_ui(helper_task_key, helping)
+        assert detail_status.startswith("請獨立判斷")
+        helper_task_id = helper_task_key.rsplit("::", 1)[1]
+        claimed_task = next(task for task in tasks if task["task_id"] == helper_task_id)
+        with actor_context(claimed_task["assigned_to"]):
+            owner_status, *_ = ui.human_review_task_details_for_ui(helper_task_key)
+            assert "協助中" in owner_status
+        status, *_ = ui.submit_human_review_for_ui(helper_task_key, 1, "協助評分", helping)
+        assert status.startswith("✅")
+
+    experiment = ui.load_experiment_project(experiment["experiment_project_id"])
+    remaining_tasks = list(experiment["saved_runs"][0]["human_review"]["tasks"])
+    for task in remaining_tasks:
+        current_run = ui.load_experiment_project(experiment["experiment_project_id"])["saved_runs"][0]
+        current_task = next(item for item in current_run["human_review"]["tasks"]
+                            if item["task_id"] == task["task_id"])
+        if current_task.get("score") in (0, 1, 2):
+            continue
+        reviewer = current_task.get("claimed_by") or task["assigned_to"]
+        assisting = reviewer != task["assigned_to"]
+        with actor_context(reviewer):
+            submit_status, *_ = ui.submit_human_review_for_ui(
+                f"{experiment['experiment_project_id']}::{run['run_id']}::{task['task_id']}",
+                2, "協助評分" if assisting else "原分派評分", assisting,
+            )
+        assert submit_status.startswith("✅"), submit_status
+    experiment = ui.load_experiment_project(experiment["experiment_project_id"])
+    submitted_task = next(
+        task for task in experiment["saved_runs"][0]["human_review"]["tasks"]
+        if task.get("submitted_by") == "Jay" and task.get("assigned_to") != "Jay"
+    )
+    assert submitted_task["assigned_to"] in ui.KNOWN_USERS
+    assert submitted_task["assigned_to"] != "Jay"
+    assert submitted_task["submitted_by"] == "Jay"
+    result_status, _summaries, details = ui.human_review_results_for_ui(run_key)
+    assert result_status.startswith("✅ 人工評測完成")
+    result_row = next(row for row in details if row[3] == submitted_task["result_index"] + 1)
+    assert result_row[12] == submitted_task["assigned_to"]
+    assert result_row[13] == "Jay"
 
 
 def test_saved_experiment_run_requires_completed_ai_judgments(tmp_path, monkeypatch):

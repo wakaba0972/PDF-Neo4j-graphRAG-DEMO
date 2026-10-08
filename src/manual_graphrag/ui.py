@@ -4,7 +4,7 @@ import csv
 from copy import deepcopy
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 import zipfile
 from dataclasses import replace
@@ -4561,48 +4561,155 @@ def create_human_review_sample_for_ui(
     return status, rows, selector
 
 
-def human_review_tasks_for_current_user_for_ui() -> tuple[Any, str]:
+def _review_claim_is_stale(task: dict[str, Any]) -> bool:
+    claimed_by = task.get("claimed_by")
+    claimed_at = task.get("claimed_at")
+    if not claimed_by or not claimed_at:
+        return True
+    try:
+        claimed_time = datetime.fromisoformat(str(claimed_at))
+        if claimed_time.tzinfo is None:
+            claimed_time = claimed_time.astimezone()
+        return datetime.now().astimezone() - claimed_time > timedelta(minutes=30)
+    except (TypeError, ValueError):
+        return True
+
+
+def human_review_batches_for_current_user_for_ui() -> tuple[Any, str]:
     actor = current_actor()
     choices: list[tuple[str, str]] = []
-    for project, run, _metadata in _human_review_records():
+    for project, run, metadata in _human_review_records(incomplete_only=True):
         review = run.get("human_review") or {}
-        for task in review.get("tasks", []):
-            if task.get("assigned_to") != actor:
-                continue
-            result_index = int(task.get("result_index", -1))
-            results = run.get("results") or []
-            if not 0 <= result_index < len(results):
-                continue
-            item = results[result_index]
-            state = "已完成" if task.get("score") in (0, 1, 2) else "待評"
-            label = (
-                f"[{state}] {item.get('group_name', '實驗組')}｜"
-                f"{item.get('source_project_name', '成員專案')}｜"
-                f"{item.get('question_set_name', '題目集')}｜題目 {item.get('number', result_index + 1)}"
+        if not review.get("tasks"):
+            continue
+        pending = [task for task in review["tasks"] if task.get("score") not in (0, 1, 2)]
+        if not pending:
+            continue
+        label = f"{metadata['name']}｜{str(run.get('saved_at') or '')[:19]}｜{run['run_id'][:8]}"
+        choices.append((label, _saved_run_key(project["experiment_project_id"], run["run_id"])))
+    choices.sort(key=lambda item: item[0])
+    return gr.update(choices=choices, value=choices[0][1] if choices else None), f"使用者：{actor or '未選擇'}；選擇一次已保存的實驗執行來評測。"
+
+
+def load_human_review_batch_for_ui(run_key: str | None) -> tuple[Any, str, Any, Any, bool]:
+    selector, status, help_button, stop_button = human_review_tasks_for_current_user_for_ui(run_key, False)
+    return selector, status, help_button, stop_button, False
+
+
+def enable_human_review_help_for_ui(run_key: str | None) -> tuple[Any, str, Any, Any, bool]:
+    selector, status, help_button, stop_button = human_review_tasks_for_current_user_for_ui(run_key, True)
+    return selector, status, help_button, stop_button, True
+
+
+def disable_human_review_help_for_ui(run_key: str | None) -> tuple[Any, str, Any, Any, bool]:
+    return load_human_review_batch_for_ui(run_key)
+
+
+def human_review_tasks_for_current_user_for_ui(
+    run_key: str | None = None, helping: bool = False,
+) -> tuple[Any, str, Any, Any]:
+    actor = current_actor()
+    choices: list[tuple[str, str]] = []
+    own_pending = 0
+    other_pending = 0
+    my_claims = 0
+    if run_key:
+        try:
+            experiment_project_id, run_id = _parse_saved_run_key(run_key)
+            project, run = _load_saved_experiment_run(experiment_project_id, run_id)
+            review = run.get("human_review") or {}
+            tasks = review.get("tasks", [])
+            own_pending = sum(
+                task.get("assigned_to") == actor and task.get("score") not in (0, 1, 2)
+                and (not task.get("claimed_by") or _review_claim_is_stale(task)) for task in tasks
             )
-            key = f"{project['experiment_project_id']}::{run['run_id']}::{task['task_id']}"
-            choices.append((label, key))
-    choices.sort(key=lambda entry: (entry[0].startswith("[已完成]"), entry[0]))
-    pending = sum(label.startswith("[待評]") for label, _ in choices)
-    selected = next((key for label, key in choices if label.startswith("[待評]")), None)
-    message = f"目前使用者：{actor or '未選擇'}；待評 {pending} 題，已完成 {len(choices) - pending} 題。"
-    return gr.update(choices=choices, value=selected), message
+            other_pending = sum(
+                task.get("assigned_to") != actor and task.get("score") not in (0, 1, 2)
+                and (not task.get("claimed_by") or _review_claim_is_stale(task)) for task in tasks
+            )
+            my_claims = sum(
+                task.get("assigned_to") != actor and task.get("score") not in (0, 1, 2)
+                and task.get("claimed_by") == actor and not _review_claim_is_stale(task)
+                for task in tasks
+            )
+            for task in tasks:
+                is_own = task.get("assigned_to") == actor
+                if (helping and is_own) or (not helping and not is_own):
+                    continue
+                index = int(task.get("result_index", -1))
+                results = run.get("results") or []
+                if not 0 <= index < len(results):
+                    continue
+                item = results[index]
+                done = task.get("score") in (0, 1, 2)
+                claimed_by = task.get("claimed_by") if not _review_claim_is_stale(task) else None
+                if done:
+                    state = "已完成"
+                elif helping and claimed_by == actor:
+                    state = "我的協助中"
+                else:
+                    state = f"由 {claimed_by} 協助中" if claimed_by else "待評"
+                label = (f"[{state}] {item.get('group_name', '實驗組')}｜"
+                         f"{item.get('source_project_name', '成員專案')}｜"
+                         f"{item.get('question_set_name', '題目集')}｜題目 {item.get('number', index + 1)}")
+                choices.append((label, f"{experiment_project_id}::{run_id}::{task['task_id']}"))
+        except (OSError, TypeError, ValueError):
+            pass
+    choices.sort(key=lambda item: (
+        0 if item[0].startswith("[我的協助中]") else 1 if item[0].startswith("[待評]") else 2,
+        item[0],
+    ))
+    eligible_to_help = bool(run_key and own_pending == 0 and (other_pending > 0 or my_claims > 0))
+    if helping:
+        message = f"協助模式：其他評測人尚有 {other_pending} 題未完成；原分派者資料會保留，提交者會記為你。"
+    elif own_pending:
+        message = f"你的原分派尚有 {own_pending} 題。完成後，可按「載入其他人的待評題目」選擇是否協助。"
+    elif other_pending or my_claims:
+        message = (f"你的原分派已完成；其他人還有 {other_pending} 題待領取，"
+                   f"另有 {my_claims} 題由你協助中；按按鈕決定是否繼續協助。")
+    else:
+        message = "這次評測沒有其他待處理題目。"
+    return (gr.update(choices=choices, value=next((key for label, key in choices
+                                                   if label.startswith(("[待評]", "[我的協助中]"))), None)),
+            message,
+            gr.update(interactive=eligible_to_help and not helping),
+            gr.update(interactive=bool(helping)))
 
 
 def human_review_task_details_for_ui(
-    task_key: str | None,
+    task_key: str | None, helping: bool = False,
 ) -> tuple[str, list[list[Any]], Any, Any]:
     if not task_key:
-        return "請選擇分派給你的待評題目。", [], gr.update(value=None), gr.update(value="")
+        return "請選擇待評題目。", [], gr.update(value=None), gr.update(value="")
     try:
         parts = str(task_key).split("::", 2)
         if len(parts) != 3:
             raise ValueError("評測任務識別碼無效")
-        project, run = _load_saved_experiment_run(parts[0], parts[1])
-        review = run.get("human_review") or {}
-        task = next((item for item in review.get("tasks", []) if item.get("task_id") == parts[2]), None)
-        if task is None or task.get("assigned_to") != current_actor():
-            raise ValueError("找不到分派給目前使用者的評測任務")
+        with _HUMAN_REVIEW_LOCK:
+            project, run = _load_saved_experiment_run(parts[0], parts[1])
+            runs = deepcopy(project.get("saved_runs") or [])
+            target_run = next((item for item in runs if item.get("run_id") == parts[1]), None)
+            review = target_run.get("human_review") or {} if target_run else {}
+            task = next((item for item in review.get("tasks", []) if item.get("task_id") == parts[2]), None)
+            actor = current_actor()
+            if task is None:
+                raise ValueError("找不到評測任務")
+            is_own = task.get("assigned_to") == actor
+            if not is_own:
+                own_pending = [item for item in review.get("tasks", [])
+                               if item.get("assigned_to") == actor and item.get("score") not in (0, 1, 2)
+                               and (not item.get("claimed_by") or _review_claim_is_stale(item))]
+                if not helping or own_pending:
+                    raise ValueError("請先完成自己的原分派，再選擇協助其他評測人")
+                if task.get("score") in (0, 1, 2):
+                    raise ValueError("這題已由其他評測人完成")
+                if task.get("claimed_by") not in (None, actor) and not _review_claim_is_stale(task):
+                    raise ValueError(f"這題目前由 {task.get('claimed_by')} 評測中")
+                task.update({"claimed_by": actor, "claimed_at": datetime.now().astimezone().isoformat()})
+                target_run["human_review"] = review
+                save_experiment_project(parts[0], {"saved_runs": runs})
+            elif task.get("claimed_by") and task.get("claimed_by") != actor and not _review_claim_is_stale(task):
+                raise ValueError(f"這題目前由 {task.get('claimed_by')} 協助中")
         index = int(task.get("result_index", -1))
         results = run.get("results") or []
         if not 0 <= index < len(results):
@@ -4613,10 +4720,11 @@ def human_review_task_details_for_ui(
             result.get("question_set_name", ""), result.get("number", index + 1),
             result.get("question", ""), result.get("expected_answer", ""),
             result.get("actual_answer", ""), result.get("document", ""),
+            task.get("assigned_to", ""),
         ]]
         if task.get("score") in (0, 1, 2):
             return (
-                f"此題已於 {task.get('submitted_at', '')} 評分：{task['score']}；評分者：{task.get('submitted_by', task.get('assigned_to', ''))}。",
+                f"此題已於 {task.get('submitted_at', '')} 評分；原分派：{task.get('assigned_to', '')}；實際評測：{task.get('submitted_by', task.get('assigned_to', ''))}。",
                 row, gr.update(value=task["score"], interactive=False),
                 gr.update(value=task.get("note", ""), interactive=False),
             )
@@ -4627,7 +4735,8 @@ def human_review_task_details_for_ui(
 
 def submit_human_review_for_ui(
     task_key: str | None, score: int | float | None, note: str | None,
-) -> tuple[str, Any, str, list[list[Any]], Any, Any]:
+    helping: bool = False,
+) -> tuple[str, Any, str, list[list[Any]], Any, Any, Any, Any]:
     try:
         actor = current_actor()
         if actor not in KNOWN_USERS:
@@ -4645,23 +4754,37 @@ def submit_human_review_for_ui(
                 raise ValueError("找不到保存的實驗結果")
             review = target_run.get("human_review") or {}
             task = next((item for item in review.get("tasks", []) if item.get("task_id") == parts[2]), None)
-            if task is None or task.get("assigned_to") != actor:
-                raise ValueError("這筆評測任務未分派給目前使用者")
+            if task is None:
+                raise ValueError("找不到評測任務")
+            is_own = task.get("assigned_to") == actor
+            if not is_own and (not helping or task.get("claimed_by") != actor):
+                raise ValueError("此協助題目未由目前使用者取得評測權")
+            if not is_own:
+                own_pending = [item for item in review.get("tasks", [])
+                               if item.get("assigned_to") == actor and item.get("score") not in (0, 1, 2)
+                               and (not item.get("claimed_by") or _review_claim_is_stale(item))]
+                if own_pending:
+                    raise ValueError("請先完成自己的原分派題目")
+            elif task.get("claimed_by") and task.get("claimed_by") != actor and not _review_claim_is_stale(task):
+                raise ValueError(f"此題目前由 {task.get('claimed_by')} 協助中")
             if task.get("score") in (0, 1, 2):
                 raise ValueError("這筆題目已提交人工評分")
             task.update({
                 "score": int(score), "note": str(note or "").strip(),
                 "submitted_by": actor, "submitted_at": datetime.now().astimezone().isoformat(),
             })
+            task.pop("claimed_by", None)
+            task.pop("claimed_at", None)
             updated = save_experiment_project(parts[0], {"saved_runs": runs})
         complete = human_review_complete(target_run.get("human_review"))
         status = "✅ 已保存人工評分；此執行結果的抽樣題目已全部完成。" if complete else "✅ 已保存人工評分。"
     except (OSError, TypeError, ValueError, OverflowError) as exc:
         status = f"❌ 人工評分保存失敗：{exc}"
-    selector, user_status = human_review_tasks_for_current_user_for_ui()
+    selected_run = "::".join((parts[0], parts[1])) if len(parts) == 3 else None
+    selector, user_status, help_update, stop_update = human_review_tasks_for_current_user_for_ui(selected_run, helping)
     first_key = selector.get("value")
-    details_status, rows, next_score, next_note = human_review_task_details_for_ui(first_key)
-    return status + " " + user_status, selector, details_status, rows, next_score, next_note
+    details_status, rows, next_score, next_note = human_review_task_details_for_ui(first_key, helping)
+    return status + " " + user_status, selector, details_status, rows, next_score, next_note, help_update, stop_update
 
 
 def completed_human_review_runs_for_ui() -> tuple[Any, str]:
@@ -4706,7 +4829,7 @@ def human_review_results_for_ui(
                 item.get("actual_answer", ""), ai_score, human_score,
                 "一致" if int(ai_score) == human_score else "不一致",
                 item.get("ai_reason", item.get("reason", "")), task.get("note", ""),
-                task.get("submitted_by", task.get("assigned_to", "")),
+                task.get("assigned_to", ""), task.get("submitted_by", task.get("assigned_to", "")),
             ])
         summaries = []
         for (group_name, project_name, set_name), pairs in groups.items():
@@ -6251,11 +6374,18 @@ def build_app() -> gr.Blocks:
 
         with gr.Tab("3-1 人工評測", interactive=False) as human_review_tasks_tab:
             human_review_tasks_status = gr.Markdown("載入目前使用者分派到的題目。")
-            human_review_task_selector = gr.Dropdown(
-                choices=[], value=None, label="我的人工評測題目",
+            human_review_batch_selector = gr.Dropdown(
+                choices=[], value=None, label="選擇一次已保存的實驗執行",
             )
+            human_review_task_selector = gr.Dropdown(
+                choices=[], value=None, label="人工評測題目",
+            )
+            human_review_help_mode = gr.State(False)
+            with gr.Row():
+                human_review_help_button = gr.Button("載入其他人的待評題目", interactive=False)
+                human_review_stop_help_button = gr.Button("返回我的分派", interactive=False)
             human_review_task_context = gr.Dataframe(
-                headers=["實驗組", "成員專案", "題目集", "題號", "題目", "正確答案", "模型回答", "來源文件"],
+                headers=["實驗組", "成員專案", "題目集", "題號", "題目", "正確答案", "模型回答", "來源文件", "原分派評測人"],
                 interactive=False, wrap=True,
             )
             human_review_score = gr.Radio(
@@ -6279,7 +6409,7 @@ def build_app() -> gr.Blocks:
                 interactive=False, wrap=True,
             )
             human_review_results_table = gr.Dataframe(
-                headers=["實驗組", "成員專案", "題目集", "題號", "題目", "正確答案", "模型回答", "AI 判定", "人工判定", "一致性", "AI 理由", "人工註記", "評分者"],
+                headers=["實驗組", "成員專案", "題目集", "題號", "題目", "正確答案", "模型回答", "AI 判定", "人工判定", "一致性", "AI 理由", "人工註記", "原分派評測人", "實際評測人"],
                 interactive=False, wrap=True,
             )
 
@@ -6933,29 +7063,80 @@ def build_app() -> gr.Blocks:
             show_progress="hidden",
         )
         human_review_tasks_tab.select(
-            human_review_tasks_for_current_user_for_ui,
-            outputs=[human_review_task_selector, human_review_tasks_status],
+            human_review_batches_for_current_user_for_ui,
+            outputs=[human_review_batch_selector, human_review_tasks_status],
+            show_progress="hidden",
+        ).then(
+            load_human_review_batch_for_ui,
+            inputs=human_review_batch_selector,
+            outputs=[human_review_task_selector, human_review_tasks_status,
+                     human_review_help_button, human_review_stop_help_button,
+                     human_review_help_mode],
             show_progress="hidden",
         ).then(
             human_review_task_details_for_ui,
-            inputs=human_review_task_selector,
+            inputs=[human_review_task_selector, human_review_help_mode],
+            outputs=[human_review_submission_status, human_review_task_context,
+                     human_review_score, human_review_note],
+            show_progress="hidden",
+        )
+        human_review_batch_selector.change(
+            load_human_review_batch_for_ui,
+            inputs=human_review_batch_selector,
+            outputs=[human_review_task_selector, human_review_tasks_status,
+                     human_review_help_button, human_review_stop_help_button,
+                     human_review_help_mode],
+            show_progress="hidden",
+        ).then(
+            human_review_task_details_for_ui,
+            inputs=[human_review_task_selector, human_review_help_mode],
+            outputs=[human_review_submission_status, human_review_task_context,
+                     human_review_score, human_review_note],
+            show_progress="hidden",
+        )
+        human_review_help_button.click(
+            enable_human_review_help_for_ui,
+            inputs=human_review_batch_selector,
+            outputs=[human_review_task_selector, human_review_tasks_status,
+                     human_review_help_button, human_review_stop_help_button,
+                     human_review_help_mode],
+            show_progress="hidden",
+        ).then(
+            human_review_task_details_for_ui,
+            inputs=[human_review_task_selector, human_review_help_mode],
+            outputs=[human_review_submission_status, human_review_task_context,
+                     human_review_score, human_review_note],
+            show_progress="hidden",
+        )
+        human_review_stop_help_button.click(
+            disable_human_review_help_for_ui,
+            inputs=human_review_batch_selector,
+            outputs=[human_review_task_selector, human_review_tasks_status,
+                     human_review_help_button, human_review_stop_help_button,
+                     human_review_help_mode],
+            show_progress="hidden",
+        ).then(
+            human_review_task_details_for_ui,
+            inputs=[human_review_task_selector, human_review_help_mode],
             outputs=[human_review_submission_status, human_review_task_context,
                      human_review_score, human_review_note],
             show_progress="hidden",
         )
         human_review_task_selector.change(
             human_review_task_details_for_ui,
-            inputs=human_review_task_selector,
+            inputs=[human_review_task_selector, human_review_help_mode],
             outputs=[human_review_submission_status, human_review_task_context,
                      human_review_score, human_review_note],
             show_progress="hidden",
         )
         submit_human_review_button.click(
             submit_human_review_for_ui,
-            inputs=[human_review_task_selector, human_review_score, human_review_note],
+            inputs=[human_review_task_selector, human_review_score, human_review_note,
+                    human_review_help_mode],
             outputs=[human_review_tasks_status, human_review_task_selector,
                      human_review_submission_status, human_review_task_context,
-                     human_review_score, human_review_note],
+                     human_review_score, human_review_note,
+                     human_review_help_button, human_review_stop_help_button],
             show_progress="hidden",
         )
         human_review_results_tab.select(
