@@ -4861,6 +4861,14 @@ def human_review_results_for_ui(
         if not human_review_complete(review):
             return "人工評測尚未全部完成。", [], [], []
         results = run.get("results") or []
+        group_order: dict[str, int] = {}
+        for index, group in enumerate(run.get("groups") or []):
+            group_name = str(group.get("name") or "未命名實驗組")
+            group_order.setdefault(group_name, index)
+
+        def group_sort_key(group_name: str) -> tuple[int, str]:
+            return group_order.get(group_name, len(group_order)), group_name
+
         groups: dict[tuple[str, str, str], list[tuple[dict[str, Any], dict[str, Any]]]] = {}
         retrieval_groups: dict[str, dict[str, Any]] = {}
         for item in results:
@@ -4903,6 +4911,7 @@ def human_review_results_for_ui(
                 f"{sum(human_scores) / (2 * count):.1%}",
                 f"{exact / count:.1%}", f"{mae:.2f}",
             ])
+        summaries.sort(key=lambda row: (*group_sort_key(str(row[0])), str(row[1]), str(row[2])))
         retrieval_summaries: list[list[Any]] = []
         for bucket in retrieval_groups.values():
             group_items = bucket["items"]
@@ -4935,6 +4944,7 @@ def human_review_results_for_ui(
                 else:
                     row.append(f"{sum(values) / len(values):.3f}")
             retrieval_summaries.append(row)
+        retrieval_summaries.sort(key=lambda row: group_sort_key(str(row[0])))
         status = f"✅ 人工評測完成｜共 {len(details)} 個抽樣題次；保存時間 {run.get('saved_at', '')}。"
         return status, summaries, retrieval_summaries, details
     except (OSError, TypeError, ValueError, IndexError, ZeroDivisionError) as exc:

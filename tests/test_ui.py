@@ -4233,21 +4233,24 @@ def test_human_review_results_show_retrieval_metrics_for_each_experiment_group(t
         {"group_index": 1, "group_name": "混合組", "score": 2, "recall_at_5": False,
          "recall_at_10": True, "reciprocal_rank": 1 / 6},
     ]
-    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {"results": results})
+    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
+        "groups": [{"name": "向量組"}, {"name": "混合組"}], "results": results,
+    })
     _, experiment = ui.save_experiment_project_run_for_ui(experiment)
     saved_run = experiment["saved_runs"][0]
     saved_run["human_review"] = {"tasks": [
         {"task_id": f"task-{index}", "result_index": index,
          "assigned_to": "Jay", "submitted_by": "Jay", "score": 2, "note": ""}
-        for index in range(len(results))
+        for index in (2, 1, 0)
     ]}
     experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
         "saved_runs": [saved_run],
     })
     run_key = ui._saved_run_key(experiment["experiment_project_id"], saved_run["run_id"])
 
-    _status, _human_summaries, retrieval_summaries, _details = ui.human_review_results_for_ui(run_key)
+    _status, human_summaries, retrieval_summaries, _details = ui.human_review_results_for_ui(run_key)
 
+    assert [row[0] for row in human_summaries] == ["向量組", "混合組"]
     assert retrieval_summaries == [
         ["向量組", 2, "50.0%", "100.0%", "0.750"],
         ["混合組", 1, "0.0%", "100.0%", "0.167"],
