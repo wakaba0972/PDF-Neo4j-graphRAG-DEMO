@@ -4184,6 +4184,41 @@ def test_saved_experiment_run_is_sampled_distributed_and_compared_with_human_sco
     assert all(row[10] == "AI 理由" for row in details)
 
 
+def test_removing_human_review_sampling_keeps_saved_ai_run_and_requires_confirmation(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    experiment = ui.create_experiment_project("移除抽樣")
+    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
+        "results": [{"question": "Q", "expected_answer": "A", "actual_answer": "A", "score": 2}],
+    })
+    with actor_context("Zhao"):
+        _, experiment = ui.save_experiment_project_run_for_ui(experiment)
+        run_key = ui._saved_run_key(
+            experiment["experiment_project_id"], experiment["saved_runs"][0]["run_id"],
+        )
+        sample_status, *_ = ui.create_human_review_sample_for_ui(run_key, 1)
+        assert sample_status.startswith("✅")
+        removable = ui.human_review_removable_runs_for_ui()
+        assert removable["value"] == run_key
+
+        denied, *_ = ui.remove_human_review_sample_for_ui(run_key, False)
+        assert denied.startswith("❌")
+        still_sampled = ui.load_experiment_project(experiment["experiment_project_id"])
+        assert still_sampled["saved_runs"][0]["human_review"]["tasks"]
+
+        removed, queue_rows, _sample_selector, _queue_status, removable, confirm, button = (
+            ui.remove_human_review_sample_for_ui(run_key, True)
+        )
+    assert removed.startswith("✅ 已移除")
+    assert "仍保留" in removed
+    assert len(queue_rows) == 1 and queue_rows[0][-1] == "尚未抽樣"
+    assert removable["choices"] == []
+    assert confirm["value"] is False
+    assert button["interactive"] is False
+    restored = ui.load_experiment_project(experiment["experiment_project_id"])
+    assert restored["saved_runs"][0]["human_review"] is None
+    assert restored["saved_runs"][0]["results"][0]["question"] == "Q"
+
+
 def test_reviewer_can_opt_in_to_help_after_finishing_own_tasks(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     experiment = ui.create_experiment_project("協助評測")

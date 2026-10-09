@@ -4527,6 +4527,47 @@ def human_review_queue_for_ui() -> tuple[list[list[Any]], Any, str]:
     return rows, gr.update(choices=choices, value=first), status
 
 
+def human_review_removable_runs_for_ui() -> Any:
+    choices: list[tuple[str, str]] = []
+    for project, run, metadata in _human_review_records():
+        review = run.get("human_review") or {}
+        if not review.get("tasks"):
+            continue
+        completed, total = human_review_progress(review)
+        saved_at = str(run.get("saved_at") or "")[:19]
+        label = f"{metadata['name']}｜{saved_at}｜{run['run_id'][:8]}｜人工評測 {completed}/{total}"
+        choices.append((label, _saved_run_key(project["experiment_project_id"], run["run_id"])))
+    choices.sort(key=lambda item: item[0])
+    return gr.update(choices=choices, value=choices[0][1] if choices else None)
+
+
+def remove_human_review_sample_for_ui(
+    run_key: str | None, confirmed: bool,
+) -> tuple[str, list[list[Any]], Any, str, Any, Any, Any]:
+    try:
+        if current_actor() not in KNOWN_USERS:
+            raise ValueError("請先在 0-0 選擇有效使用者")
+        if not confirmed:
+            raise ValueError("請先勾選確認，避免誤刪人工評分資料")
+        experiment_project_id, run_id = _parse_saved_run_key(run_key)
+        with _HUMAN_REVIEW_LOCK:
+            project, _run = _load_saved_experiment_run(experiment_project_id, run_id)
+            runs = deepcopy(project.get("saved_runs") or [])
+            target_run = next((item for item in runs if item.get("run_id") == run_id), None)
+            if target_run is None or not (target_run.get("human_review") or {}).get("tasks"):
+                raise ValueError("這筆實驗結果沒有可移除的抽樣／人工評測資料")
+            deleted_tasks = len(target_run["human_review"]["tasks"])
+            target_run["human_review"] = None
+            save_experiment_project(experiment_project_id, {"saved_runs": runs})
+        status = f"✅ 已移除這次的 {deleted_tasks} 筆抽樣任務及其人工評分；原 AI 實驗結果仍保留，可重新抽樣。"
+    except (OSError, TypeError, ValueError) as exc:
+        status = f"❌ 移除抽樣資料失敗：{exc}"
+    rows, sample_selector, queue_status = human_review_queue_for_ui()
+    removable_selector = human_review_removable_runs_for_ui()
+    return (status, rows, sample_selector, queue_status, removable_selector,
+            gr.update(value=False), gr.update(interactive=False))
+
+
 def create_human_review_sample_for_ui(
     run_key: str | None, sample_count: int | float,
     sampling_mode: str = "fixed_per_stratum",
@@ -6388,6 +6429,17 @@ def build_app() -> gr.Blocks:
                     "抽樣並平均分派", variant="primary",
                 )
             human_review_sampling_status = gr.Markdown()
+            gr.Markdown("移除只會清除所選執行的抽樣任務與人工評分，不會刪除原 AI 實驗結果。")
+            with gr.Row():
+                human_review_remove_selector = gr.Dropdown(
+                    choices=[], value=None, label="選擇要移除抽樣資料的實驗執行",
+                )
+                human_review_remove_confirm = gr.Checkbox(
+                    value=False, label="我確認移除此執行的抽樣與所有人工評分",
+                )
+                human_review_remove_button = gr.Button(
+                    "移除抽樣資料", variant="stop", interactive=False,
+                )
 
         with gr.Tab("3-1 人工評測", interactive=False) as human_review_tasks_tab:
             human_review_tasks_status = gr.Markdown("載入目前使用者分派到的題目。")
@@ -7071,6 +7123,31 @@ def build_app() -> gr.Blocks:
             outputs=[human_review_queue_table, human_review_run_selector,
                      human_review_queue_status],
             show_progress="hidden",
+        ).then(
+            human_review_removable_runs_for_ui,
+            outputs=human_review_remove_selector,
+            show_progress="hidden",
+        )
+        human_review_remove_confirm.change(
+            lambda confirmed: gr.update(interactive=bool(confirmed)),
+            inputs=human_review_remove_confirm,
+            outputs=human_review_remove_button,
+            show_progress="hidden",
+        )
+        human_review_remove_selector.change(
+            lambda _run_key: (gr.update(value=False), gr.update(interactive=False)),
+            inputs=human_review_remove_selector,
+            outputs=[human_review_remove_confirm, human_review_remove_button],
+            show_progress="hidden",
+        )
+        human_review_remove_button.click(
+            remove_human_review_sample_for_ui,
+            inputs=[human_review_remove_selector, human_review_remove_confirm],
+            outputs=[human_review_sampling_status, human_review_queue_table,
+                     human_review_run_selector, human_review_queue_status,
+                     human_review_remove_selector, human_review_remove_confirm,
+                     human_review_remove_button],
+            show_progress="hidden",
         )
         create_human_review_button.click(
             create_human_review_sample_for_ui,
@@ -7078,6 +7155,10 @@ def build_app() -> gr.Blocks:
                     human_review_sampling_mode],
             outputs=[human_review_sampling_status, human_review_queue_table,
                      human_review_run_selector],
+            show_progress="hidden",
+        ).then(
+            human_review_removable_runs_for_ui,
+            outputs=human_review_remove_selector,
             show_progress="hidden",
         )
         human_review_tasks_tab.select(
