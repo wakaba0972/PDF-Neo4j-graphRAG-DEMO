@@ -23,8 +23,19 @@ async def _score_with_ragas_async(
         from openai import AsyncOpenAI
         from ragas.llms import llm_factory
         from ragas.metrics.collections import ContextPrecision, ContextRecall, Faithfulness
+    except ModuleNotFoundError as exc:
+        if exc.name in {"openai", "ragas"}:
+            raise ValueError(
+                f"缺少必要套件 {exc.name}；請重新啟動程式安裝 requirements.txt 中的套件。"
+            ) from exc
+        raise ValueError(
+            f"RAGAS 相依套件載入失敗（缺少 {exc.name or '未知模組'}）；"
+            "請重新啟動程式更新 requirements.txt 中的套件。"
+        ) from exc
     except ImportError as exc:
-        raise ValueError("RAGAS 套件尚未安裝，請重新啟動以安裝 requirements.txt 中的套件。") from exc
+        raise ValueError(
+            f"RAGAS 相依套件載入失敗：{exc}；請重新啟動程式更新 requirements.txt 中的套件。"
+        ) from exc
 
     client = AsyncOpenAI(
         api_key=api_key or "", base_url=base_url.rstrip("/"),

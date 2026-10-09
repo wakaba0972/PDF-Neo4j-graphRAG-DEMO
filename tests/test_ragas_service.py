@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -11,6 +12,31 @@ from manual_graphrag.ragas_service import score_ragas_metrics
 def test_ragas_metrics_require_retrieved_contexts_before_loading_optional_dependency() -> None:
     with pytest.raises(ValueError, match="沒有保存檢索證據"):
         score_ragas_metrics("https://api.openai.com/v1", "key", "gpt-6-luna", "Q", "A", "A", [])
+
+
+def test_ragas_reports_missing_package_separately_from_broken_dependency(monkeypatch) -> None:
+    original_import = builtins.__import__
+
+    def missing_ragas(name, *args, **kwargs):
+        if name == "ragas.llms":
+            raise ModuleNotFoundError(
+                "No module named 'langchain_community.chat_models.vertexai'",
+                name="langchain_community.chat_models.vertexai",
+            )
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_ragas)
+    with pytest.raises(ValueError, match="RAGAS 相依套件載入失敗.*langchain_community.chat_models.vertexai"):
+        score_ragas_metrics("https://api.openai.com/v1", "key", "gpt-6-luna", "Q", "A", "A", ["context"])
+
+    def missing_package(name, *args, **kwargs):
+        if name == "ragas.llms":
+            raise ModuleNotFoundError("No module named 'ragas'", name="ragas")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_package)
+    with pytest.raises(ValueError, match="缺少必要套件 ragas"):
+        score_ragas_metrics("https://api.openai.com/v1", "key", "gpt-6-luna", "Q", "A", "A", ["context"])
 
 
 def test_ragas_metrics_use_openai_compatible_client_and_three_core_metrics(monkeypatch) -> None:
