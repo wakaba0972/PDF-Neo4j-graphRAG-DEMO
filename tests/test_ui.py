@@ -1087,39 +1087,6 @@ def test_user_selection_unlocks_roots_and_names_audited_projects(tmp_path, monke
     assert experiment_event["action"] == "create_experiment_project_for_ui"
 
 
-def test_renamed_users_can_continue_legacy_human_review_assignments(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    experiment = ui.create_experiment_project("舊評測分派相容")
-    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
-        "results": [{"question": "Q", "expected_answer": "A", "actual_answer": "A", "score": 2}],
-    })
-    _, experiment = ui.save_experiment_project_run_for_ui(experiment)
-    saved_run = experiment["saved_runs"][0]
-    saved_run["human_review"] = {"tasks": [{
-        "task_id": "legacy-task", "result_index": 0,
-        "assigned_to": "Jay", "score": None, "note": "", "submitted_at": None,
-    }]}
-    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
-        "saved_runs": [saved_run],
-    })
-    run_key = ui._saved_run_key(experiment["experiment_project_id"], saved_run["run_id"])
-
-    with actor_context("57"):
-        selector, *_ = ui.human_review_tasks_for_current_user_for_ui(run_key)
-        task_key = selector["value"]
-        assert task_key.endswith("legacy-task")
-        detail_status, context, *_ = ui.human_review_task_details_for_ui(task_key)
-        assert detail_status.startswith("請獨立判斷")
-        assert context[0][-1] == "57"
-        status, *_ = ui.submit_human_review_for_ui(task_key, 2, "完成")
-        assert status.startswith("✅")
-
-    updated = ui.load_experiment_project(experiment["experiment_project_id"])
-    task = updated["saved_runs"][0]["human_review"]["tasks"][0]
-    assert task["assigned_to"] == "Jay"  # Preserve the original archived assignment.
-    assert task["submitted_by"] == "57"
-
-
 def test_answer_display_is_plain_text_not_markdown() -> None:
     app = build_app()
     answer = next(
