@@ -4148,7 +4148,7 @@ def test_saved_experiment_run_is_sampled_distributed_and_compared_with_human_sco
     run_key = run_selector["value"]
     with actor_context("Zhao"):
         sample_status, _rows, _selector = ui.create_human_review_sample_for_ui(run_key, 5)
-    assert "已抽樣 5 題" in sample_status
+    assert "共抽樣 5 題" in sample_status
     experiment = ui.load_experiment_project(experiment["experiment_project_id"])
     review = experiment["saved_runs"][0]["human_review"]
     assert {task["assigned_to"] for task in review["tasks"]} == set(ui.KNOWN_USERS)

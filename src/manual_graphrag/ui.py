@@ -4528,22 +4528,26 @@ def human_review_queue_for_ui() -> tuple[list[list[Any]], Any, str]:
 
 
 def create_human_review_sample_for_ui(
-    run_key: str | None, sample_per_stratum: int | float,
+    run_key: str | None, sample_count: int | float,
+    sampling_mode: str = "fixed_per_stratum",
 ) -> tuple[str, list[list[Any]], Any]:
     try:
         actor = current_actor()
         if actor not in KNOWN_USERS:
             raise ValueError("請先在 0-0 選擇有效使用者")
         experiment_project_id, run_id = _parse_saved_run_key(run_key)
-        sample_count = int(sample_per_stratum)
-        if sample_count < 1 or float(sample_per_stratum) != sample_count:
-            raise ValueError("每層抽樣數必須是大於 0 的整數")
+        requested_count = int(sample_count)
+        if requested_count < 1 or float(sample_count) != requested_count:
+            raise ValueError("抽樣數必須是大於 0 的整數")
+        if sampling_mode not in {"fixed_per_stratum", "proportional_total"}:
+            raise ValueError("請選擇有效的抽樣方式")
         with _HUMAN_REVIEW_LOCK:
             project, run = _load_saved_experiment_run(experiment_project_id, run_id)
             if run.get("human_review"):
                 raise ValueError("這筆實驗結果已建立抽樣任務，不能重複抽樣")
             review = create_human_review(
-                run.get("results") or [], sample_count, list(KNOWN_USERS), created_by=actor,
+                run.get("results") or [], requested_count, list(KNOWN_USERS),
+                sampling_mode=sampling_mode, created_by=actor,
             )
             runs = [
                 {**item, "human_review": review} if item.get("run_id") == run_id else item
@@ -4554,7 +4558,13 @@ def create_human_review_sample_for_ui(
         for task in review["tasks"]:
             counts[task["assigned_to"]] += 1
         distribution = "、".join(f"{user} {count} 題" for user, count in counts.items())
-        status = f"✅ 已抽樣 {len(review['tasks'])} 題，分成 {review['stratum_count']} 層並平均分派：{distribution}。"
+        if sampling_mode == "fixed_per_stratum":
+            mode_description = f"每個實驗組／成員專案／題目集最多抽 {requested_count} 題"
+        else:
+            mode_description = f"依各分層題數比例分配，原訂總抽樣 {requested_count} 題"
+            if review["sampled_count"] < requested_count:
+                mode_description += f"（題目總數不足，實際抽 {review['sampled_count']} 題）"
+        status = f"✅ {mode_description}；分成 {review['stratum_count']} 層，共抽樣 {len(review['tasks'])} 題，平均分派：{distribution}。"
     except (OSError, TypeError, ValueError, OverflowError) as exc:
         status = f"❌ 建立人工抽樣失敗：{exc}"
     rows, selector, _queue_status = human_review_queue_for_ui()
@@ -6363,9 +6373,16 @@ def build_app() -> gr.Blocks:
                 human_review_run_selector = gr.Dropdown(
                     choices=[], value=None, label="選擇已保存實驗結果",
                 )
-                human_review_sample_per_stratum = gr.Number(
+                human_review_sampling_mode = gr.Radio(
+                    choices=[
+                        ("每份題目集固定抽樣", "fixed_per_stratum"),
+                        ("依題目數比例分配總抽樣數", "proportional_total"),
+                    ],
+                    value="fixed_per_stratum", label="抽樣方式",
+                )
+                human_review_sample_count = gr.Number(
                     value=3, minimum=1, precision=0,
-                    label="每個實驗組／成員專案／題目集抽樣數",
+                    label="抽樣數（固定模式＝每份題目集的題數；比例模式＝整次評測的總題數）",
                 )
                 create_human_review_button = gr.Button(
                     "抽樣並平均分派", variant="primary",
@@ -7057,7 +7074,8 @@ def build_app() -> gr.Blocks:
         )
         create_human_review_button.click(
             create_human_review_sample_for_ui,
-            inputs=[human_review_run_selector, human_review_sample_per_stratum],
+            inputs=[human_review_run_selector, human_review_sample_count,
+                    human_review_sampling_mode],
             outputs=[human_review_sampling_status, human_review_queue_table,
                      human_review_run_selector],
             show_progress="hidden",
