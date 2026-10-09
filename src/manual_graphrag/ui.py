@@ -4852,16 +4852,23 @@ def completed_human_review_runs_for_ui() -> tuple[Any, str]:
 
 def human_review_results_for_ui(
     run_key: str | None,
-) -> tuple[str, list[list[Any]], list[list[Any]]]:
+) -> tuple[str, list[list[Any]], list[list[Any]], list[list[Any]]]:
     if not run_key:
-        return "目前沒有已完成人工評測的實驗結果。", [], []
+        return "目前沒有已完成人工評測的實驗結果。", [], [], []
     try:
         _project, run = _load_saved_experiment_run(*_parse_saved_run_key(run_key))
         review = run.get("human_review") or {}
         if not human_review_complete(review):
-            return "人工評測尚未全部完成。", [], []
+            return "人工評測尚未全部完成。", [], [], []
         results = run.get("results") or []
         groups: dict[tuple[str, str, str], list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+        retrieval_groups: dict[str, dict[str, Any]] = {}
+        for item in results:
+            group_index = item.get("group_index")
+            group_name = str(item.get("group_name") or "未命名實驗組")
+            group_key = f"index:{group_index}" if group_index is not None else f"name:{group_name}"
+            bucket = retrieval_groups.setdefault(group_key, {"name": group_name, "items": []})
+            bucket["items"].append(item)
         details: list[list[Any]] = []
         for task in review.get("tasks", []):
             index = int(task["result_index"])
@@ -4896,10 +4903,42 @@ def human_review_results_for_ui(
                 f"{sum(human_scores) / (2 * count):.1%}",
                 f"{exact / count:.1%}", f"{mae:.2f}",
             ])
+        retrieval_summaries: list[list[Any]] = []
+        for bucket in retrieval_groups.values():
+            group_items = bucket["items"]
+            row: list[Any] = [bucket["name"], len(group_items)]
+            for source_name, formatter in (
+                ("recall_at_5", "percent"),
+                ("recall_at_10", "percent"),
+                ("reciprocal_rank", "decimal"),
+            ):
+                values: list[float] = []
+                for item in group_items:
+                    value = item.get(source_name)
+                    if value is None and item.get("retrieval_rank") is not None:
+                        try:
+                            rank = int(item["retrieval_rank"])
+                            value = (rank <= 5 if source_name == "recall_at_5" else
+                                     rank <= 10 if source_name == "recall_at_10" else
+                                     1 / rank if rank > 0 else 0.0)
+                        except (TypeError, ValueError, ZeroDivisionError):
+                            value = None
+                    if value is not None:
+                        try:
+                            values.append(float(value))
+                        except (TypeError, ValueError):
+                            continue
+                if not values:
+                    row.append("—")
+                elif formatter == "percent":
+                    row.append(f"{sum(values) / len(values):.1%}")
+                else:
+                    row.append(f"{sum(values) / len(values):.3f}")
+            retrieval_summaries.append(row)
         status = f"✅ 人工評測完成｜共 {len(details)} 個抽樣題次；保存時間 {run.get('saved_at', '')}。"
-        return status, summaries, details
+        return status, summaries, retrieval_summaries, details
     except (OSError, TypeError, ValueError, IndexError, ZeroDivisionError) as exc:
-        return f"❌ 載入人工評測結果失敗：{exc}", [], []
+        return f"❌ 載入人工評測結果失敗：{exc}", [], [], []
 
 
 def _add_single_document(
@@ -6468,11 +6507,15 @@ def build_app() -> gr.Blocks:
             human_review_submission_status = gr.Markdown()
 
         with gr.Tab("4-0 AI／人工評測結果", interactive=False) as human_review_results_tab:
-            gr.Markdown("只顯示抽樣題目全部完成人工評分的已保存執行結果。AI 判定使用保存當下的原始分數。")
+            gr.Markdown("只顯示抽樣題目全部完成人工評分的已保存執行結果。AI 判定使用保存當下的原始分數；檢索指標則依該次執行中各實驗組的全部題目計算，不限人工抽樣題。")
             human_review_results_run_selector = gr.Dropdown(
                 choices=[], value=None, label="已完成人工評測的實驗執行",
             )
             human_review_results_status = gr.Markdown("選擇已完成的人工評測執行結果。")
+            human_review_retrieval_summary_table = gr.Dataframe(
+                headers=["實驗組", "總測試題數", "Recall@5", "Recall@10", "MRR"],
+                interactive=False, wrap=True,
+            )
             human_review_summary_table = gr.Dataframe(
                 headers=["實驗組", "成員專案", "題目集", "樣本數", "AI 平均分（0–2）", "人工平均分（0–2）", "AI 得分率", "人工得分率", "判定一致率", "平均分差"],
                 interactive=False, wrap=True,
@@ -7246,14 +7289,14 @@ def build_app() -> gr.Blocks:
             human_review_results_for_ui,
             inputs=human_review_results_run_selector,
             outputs=[human_review_results_status, human_review_summary_table,
-                     human_review_results_table],
+                     human_review_retrieval_summary_table, human_review_results_table],
             show_progress="hidden",
         )
         human_review_results_run_selector.change(
             human_review_results_for_ui,
             inputs=human_review_results_run_selector,
             outputs=[human_review_results_status, human_review_summary_table,
-                     human_review_results_table],
+                     human_review_retrieval_summary_table, human_review_results_table],
             show_progress="hidden",
         )
         project_setting_inputs = [

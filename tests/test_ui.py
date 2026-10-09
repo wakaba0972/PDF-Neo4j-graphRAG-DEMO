@@ -4125,6 +4125,8 @@ def test_saved_experiment_run_is_sampled_distributed_and_compared_with_human_sco
             "expected_answer": "標準答案", "actual_answer": f"回答 {index + 1}",
             "score": index % 3, "passed": index % 3 == 2,
             "reason": "AI 理由", "judge_model": "judge-model",
+            "recall_at_5": index < 2, "recall_at_10": index < 4,
+            "reciprocal_rank": [1.0, 0.5, 0.0, 0.25, 0.1][index],
         }
         for index in range(5)
     ]
@@ -4172,12 +4174,13 @@ def test_saved_experiment_run_is_sampled_distributed_and_compared_with_human_sco
     choices, complete_status = ui.completed_human_review_runs_for_ui()
     assert choices["value"] == run_key
     assert "1 筆" in complete_status
-    result_status, summaries, details = ui.human_review_results_for_ui(run_key)
+    result_status, summaries, retrieval_summaries, details = ui.human_review_results_for_ui(run_key)
     assert result_status.startswith("✅ 人工評測完成")
     assert len(summaries) == 1
     assert summaries[0][3] == 5
     assert summaries[0][4] == "0.80"
     assert summaries[0][5] == "1.20"
+    assert retrieval_summaries == [["向量組", 5, "40.0%", "80.0%", "0.370"]]
     assert len(details) == 5
     assert {row[12] for row in details} == set(ui.KNOWN_USERS)
     assert {row[13] for row in details} == set(ui.KNOWN_USERS)
@@ -4217,6 +4220,38 @@ def test_removing_human_review_sampling_keeps_saved_ai_run_and_requires_confirma
     restored = ui.load_experiment_project(experiment["experiment_project_id"])
     assert restored["saved_runs"][0]["human_review"] is None
     assert restored["saved_runs"][0]["results"][0]["question"] == "Q"
+
+
+def test_human_review_results_show_retrieval_metrics_for_each_experiment_group(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    experiment = ui.create_experiment_project("檢索指標彙總")
+    results = [
+        {"group_index": 0, "group_name": "向量組", "score": 2, "recall_at_5": True,
+         "recall_at_10": True, "reciprocal_rank": 1.0},
+        {"group_index": 0, "group_name": "向量組", "score": 2, "recall_at_5": False,
+         "recall_at_10": True, "reciprocal_rank": 0.5},
+        {"group_index": 1, "group_name": "混合組", "score": 2, "recall_at_5": False,
+         "recall_at_10": True, "reciprocal_rank": 1 / 6},
+    ]
+    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {"results": results})
+    _, experiment = ui.save_experiment_project_run_for_ui(experiment)
+    saved_run = experiment["saved_runs"][0]
+    saved_run["human_review"] = {"tasks": [
+        {"task_id": f"task-{index}", "result_index": index,
+         "assigned_to": "Jay", "submitted_by": "Jay", "score": 2, "note": ""}
+        for index in range(len(results))
+    ]}
+    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
+        "saved_runs": [saved_run],
+    })
+    run_key = ui._saved_run_key(experiment["experiment_project_id"], saved_run["run_id"])
+
+    _status, _human_summaries, retrieval_summaries, _details = ui.human_review_results_for_ui(run_key)
+
+    assert retrieval_summaries == [
+        ["向量組", 2, "50.0%", "100.0%", "0.750"],
+        ["混合組", 1, "0.0%", "100.0%", "0.167"],
+    ]
 
 
 def test_reviewer_can_opt_in_to_help_after_finishing_own_tasks(tmp_path, monkeypatch):
@@ -4284,7 +4319,7 @@ def test_reviewer_can_opt_in_to_help_after_finishing_own_tasks(tmp_path, monkeyp
     assert submitted_task["assigned_to"] in ui.KNOWN_USERS
     assert submitted_task["assigned_to"] != "Jay"
     assert submitted_task["submitted_by"] == "Jay"
-    result_status, _summaries, details = ui.human_review_results_for_ui(run_key)
+    result_status, _summaries, _retrieval_summaries, details = ui.human_review_results_for_ui(run_key)
     assert result_status.startswith("✅ 人工評測完成")
     result_row = next(row for row in details if row[3] == submitted_task["result_index"] + 1)
     assert result_row[12] == submitted_task["assigned_to"]
