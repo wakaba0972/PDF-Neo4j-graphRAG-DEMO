@@ -413,7 +413,7 @@ def test_evaluation_results_table_uses_smaller_font_class() -> None:
         component
         for component in app.config["components"]
         if component.get("props", {}).get("headers")
-        == ["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"]
+        == ["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由", "RAGAS（Faith／Context P／Context R）"]
     )
     html_styles = "\n".join(
         str(component.get("props", {}).get("value", ""))
@@ -783,13 +783,13 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     result_table_index = next(
         index for index, component in enumerate(components)
         if component.get("props", {}).get("headers")
-                == ["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"]
+                    == ["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由", "RAGAS（Faith／Context P／Context R）"]
     )
     assert question_table_index < answer_heading_index < answer_availability_index < judge_heading_index < result_title_index < result_table_index
     results_table = components[result_table_index]
     assert results_table["props"]["interactive"] is True
     assert results_table["props"]["datatype"][5] == "number"
-    assert results_table["props"]["static_columns"] == list(range(8))
+    assert results_table["props"]["static_columns"] == list(range(9))
     judge_button = next(
         component for component in components
         if component.get("props", {}).get("value") == "進行評測"
@@ -1517,7 +1517,7 @@ def test_run_evaluation_for_ui_judges_and_saves(monkeypatch) -> None:
     assert "Recall@5：100.0%" in status
     assert "Recall@10：100.0%" in status
     assert "MRR：1.000" in status
-    assert rows[0][3:] == ["manual.pdf", "實際答案", 2, None, "正確"]
+    assert rows[0][3:] == ["manual.pdf", "實際答案", 2, None, "正確", "—"]
     assert captured["test_workers"] == 2
     assert updated["results"][0]["passed"] is True
     assert captured["evaluation"] == updated
@@ -1618,6 +1618,30 @@ def test_evaluation_verification_rechecks_judgment_without_changing_answer(monke
     assert captured["evaluation"]["results"] == updated["results"]
 
 
+def test_staged_evaluation_keeps_original_verdict_when_ragas_scoring_fails(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(ui, "judge_evaluation_answer", lambda *_args, **_kwargs: {
+        "score": 2, "reason": "原評測判定正確",
+    })
+    monkeypatch.setattr(ui, "score_ragas_metrics", lambda *_args: (_ for _ in ()).throw(RuntimeError("API 暫時失敗")))
+    monkeypatch.setattr(ui, "save_project", lambda _project_id, payload: captured.update(payload) or {})
+    evaluation = {"pending_answers": [{
+        "number": 1, "question": "Q", "expected_answer": "A", "actual_answer": "A",
+        "answer_status": "✅ 完成", "retrieved_contexts": ["source passage"],
+    }]}
+
+    status, rows, updated = ui.evaluate_generated_answers_for_ui(
+        "project", "endpoint", "key", "gpt-6-luna", evaluation, run_ragas=True,
+    )
+
+    result = updated["results"][0]
+    assert "完全正確 1 題 / 1 題" in status
+    assert result["score"] == 2 and result["reason"] == "原評測判定正確"
+    assert result["ragas_metrics"]["error"] == "API 暫時失敗"
+    assert rows[0][-1] == "API 暫時失敗"
+    assert captured["evaluation"]["ragas_enabled"] is True
+
+
 def test_manual_evaluation_edit_updates_reason_and_accuracy(monkeypatch) -> None:
     captured = {}
     monkeypatch.setattr(ui, "save_project", lambda project_id, payload: captured.update(payload) or {})
@@ -1683,8 +1707,37 @@ def test_manual_evaluation_toggle_unlocks_only_score_column() -> None:
     locked = ui.manual_result_editability_for_ui(False)
     unlocked = ui.manual_result_editability_for_ui(True)
 
-    assert locked["static_columns"] == list(range(8))
-    assert unlocked["static_columns"] == [0, 1, 2, 3, 4, 6, 7]
+    assert locked["static_columns"] == list(range(9))
+    assert unlocked["static_columns"] == [0, 1, 2, 3, 4, 6, 7, 8]
+
+
+def test_ragas_scores_are_additive_and_do_not_replace_three_level_judgment(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(ui, "answer_question_for_ui", lambda *args, **kwargs: (
+        "✅ 完成", "實際答案", [["原文", "檢索證據", "vector", "1.0", "文件.pdf：1", "文件.pdf：1", "文件.pdf"]],
+    ))
+    monkeypatch.setattr(ui, "judge_evaluation_answer", lambda *args, **kwargs: {"score": 1, "reason": "部分正確"})
+    monkeypatch.setattr(ui, "score_ragas_metrics", lambda *args: {
+        "faithfulness": 0.9, "context_precision": 0.8, "context_recall": 0.7,
+    })
+    monkeypatch.setattr(ui, "_project_document_ids", lambda _project_id: {})
+    monkeypatch.setattr(ui, "save_project", lambda _project_id, payload: captured.update(payload) or {})
+
+    status, rows, updated = ui.run_evaluation_for_ui(
+        "project", "endpoint", "key", "embed", "embed-key", "bolt", "db", "user", "password",
+        "gpt-6-luna", "混合檢索", 5,
+        {"questions": [{"number": 1, "question": "問題", "expected_answer": "標準答案", "document": "文件.pdf"}]},
+        judge_model_endpoint="judge-endpoint", judge_api_key="judge-key", judge_model="gpt-6-luna",
+        run_ragas=True,
+    )
+
+    result = updated["results"][0]
+    assert result["score"] == 1 and result["reason"] == "部分正確"
+    assert result["ragas_metrics"] == {"faithfulness": 0.9, "context_precision": 0.8, "context_recall": 0.7}
+    assert result["retrieved_contexts"] == ["檢索證據"]
+    assert rows[0][-1] == "Faith 0.900｜C.Prec 0.800｜C.Rec 0.700"
+    assert "Faithfulness 0.900" in status
+    assert captured["evaluation"]["ragas_enabled"] is True
 
 
 def test_experiment_summaries_report_each_question_set_separately() -> None:
@@ -1704,7 +1757,7 @@ def test_experiment_summaries_report_each_question_set_separately() -> None:
     summaries = ui._single_experiment_summary_rows(groups, results, "judge")
 
     assert len(summaries) == 2
-    assert [(row[5], row[8], row[-1]) for row in summaries] == [
+    assert [(row[5], row[8], row[13]) for row in summaries] == [
         (1, "100.0%", "手冊題"), (1, "0.0%", "故障題"),
     ]
 
@@ -2457,7 +2510,7 @@ def test_generate_experiment_answers_populates_table_without_judging(monkeypatch
     assert status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
     assert pending[0]["actual_answer"] == "隱藏答案"
     assert results == summaries == []
-    assert details == [["G", 1, "", "未分類題目集", "Q", "A", "隱藏答案", None, None, ""]]
+    assert details == [["G", 1, "", "未分類題目集", "Q", "A", "隱藏答案", None, None, "", "—"]]
     assert captured["experiment"]["pending_answers"] == pending
     assert captured["experiment"]["results"] == []
     assert captured["experiment"]["detail_rows"] == details
@@ -2588,7 +2641,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         component for component in components
         if component.get("props", {}).get("headers", [])[:3] == ["編號", "問題", "標準答案"]
     )
-    assert evaluation_table["props"]["static_columns"] == list(range(8))
+    assert evaluation_table["props"]["static_columns"] == list(range(9))
     assert sum(
         component.get("props", {}).get("choices") == [
             ("基本向量檢索", "基本向量檢索"), ("混合檢索", "混合檢索"),
@@ -2610,10 +2663,10 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         and component.get("props", {}).get("headers") in (
             ["實驗組", "題號", "來源文件", "題目集", "題目", "正確答案",
              "實際答案", "答案判定（0錯誤／1部分正確／2全對）",
-             "複核後判定有變更", "評判理由"],
+             "複核後判定有變更", "評判理由", "RAGAS（Faith／Context P／Context R）"],
             ["實驗組", "成員專案", "題號", "來源文件", "題目集", "題目",
              "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）",
-             "複核後判定有變更", "評判理由"],
+             "複核後判定有變更", "評判理由", "RAGAS（Faith／Context P／Context R）"],
         )
     ]
     assert len(experiment_tables) == 2
@@ -2655,7 +2708,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     assert "評測模型" not in result_table["props"]["headers"]
     assert result_table["props"]["headers"][1:5] == ["題號", "來源文件", "題目集", "題目"]
     assert "答案來源排名" not in result_table["props"]["headers"]
-    assert len(result_table["props"]["headers"]) == 10
+    assert len(result_table["props"]["headers"]) == 11
     column_widths = [int(str(width).removesuffix("px")) for width in result_table["props"]["column_widths"]]
     assert column_widths[0] < column_widths[4] and column_widths[0] < column_widths[5]
     assert column_widths[1] < column_widths[4] and column_widths[1] < column_widths[5]
@@ -2691,7 +2744,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         dependency for dependency in app.config["dependencies"]
         if str(dependency.get("api_name", "")).startswith("evaluate_experiment_answers_with_services_for_ui")
     )
-    assert len(evaluation_dependency["inputs"]) == 9
+    assert len(evaluation_dependency["inputs"]) == 10
     assert any(
         str(dependency.get("api_name", "")).startswith("load_experiment_for_ui")
         for dependency in app.config["dependencies"]
@@ -2732,10 +2785,13 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
         "actual_answer": "模型答案", "passed": True, "reason": "正確",
         "retrieval_rank": 1, "recall_at_5": True, "recall_at_10": True,
         "reciprocal_rank": 1.0,
+        "ragas_metrics": {"faithfulness": 0.9, "context_precision": 0.8, "context_recall": 0.7},
+        "ragas_model": "gpt-6-luna",
     }
     ui.save_project(project["project_id"], {"experiment": {
         "questions": [{"question": "問題二"}], "groups": groups,
         "max_concurrent_requests": 5, "status": "實驗已完成",
+        "ragas_enabled": True, "ragas_model": "gpt-6-luna",
         "results": [result],
         "summary_rows": [["向量組", "model-a", "judge-a", 1, "1 / 1", "100.0%", "100.0%", "100.0%", "1.000"]],
         "detail_rows": [["向量組", 2, "問題二"]],
@@ -2754,10 +2810,12 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
     assert payload["max_concurrent_requests"] == 5
     assert payload["evaluation"] == {
         "judge_model": "judge-a", "judge_reasoning_effort": "medium",
+        "ragas_enabled": True, "ragas_model": "gpt-6-luna",
     }
     assert payload["summary"] == {
         "question_count": 1, "correct_count": 1, "partial_count": 0, "correct_total": "1 / 1",
         "accuracy": 1.0, "recall_at_5": 1.0, "recall_at_10": 1.0, "mrr": 1.0,
+        "faithfulness": 0.9, "context_precision": 0.8, "context_recall": 0.7,
     }
     assert payload["groups"][0] == {
         "name": "向量組",
@@ -2772,6 +2830,7 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
             "question_count": 1, "correct_count": 1, "partial_count": 0, "correct_total": "1 / 1",
             "accuracy": 1.0, "recall_at_5": 1.0,
             "recall_at_10": 1.0, "mrr": 1.0,
+            "faithfulness": 0.9, "context_precision": 0.8, "context_recall": 0.7,
         },
         "results": [{
             key: value for key, value in result.items()
@@ -2883,8 +2942,8 @@ def test_run_experiment_groups_outputs_each_group_summary_and_details(monkeypatc
 
     assert status.startswith("✅ 已完成 2 個實驗組")
     assert summaries == [
-        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000", "", "未分類題目集"],
-        ["混合擴展", "model-b", "Reranker", "證據擴展 V2", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000", "", "未分類題目集"],
+        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000", "", "未分類題目集", "—", "—", "—"],
+        ["混合擴展", "model-b", "Reranker", "證據擴展 V2", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000", "", "未分類題目集", "—", "—", "—"],
     ]
     assert len(details) == len(results) == 4
     assert captured["workers"] == 2
@@ -4088,7 +4147,7 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     assert generated_status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
     assert len(pending) == 1 and pending[0]["actual_answer"] == "A"
     assert summaries == []
-    assert details == [["G", "跨專案成員", 1, "manual.pdf", "實驗專案舊版題目集", "Q", "A", "A", None, None, ""]]
+    assert details == [["G", "跨專案成員", 1, "manual.pdf", "實驗專案舊版題目集", "Q", "A", "A", None, None, "", "—"]]
     assert saved["pending_answers"] == pending
     assert saved["detail_rows"] == details
 

@@ -74,6 +74,7 @@ from .project_store import (
     remove_document,
     save_project,
 )
+from .ragas_service import score_ragas_metrics
 from .question_set_store import (
     bound_question_sets,
     create_question_set,
@@ -2597,7 +2598,68 @@ def _evaluation_result_rows(results: list[dict[str, Any]]) -> list[list[object]]
         _result_score(item),
         item.get("verification_changed"),
         item.get("reason", ""),
+        _ragas_score_display(item.get("ragas_metrics")),
     ] for item in results]
+
+
+def _ragas_contexts(evidence_rows: Any) -> list[str]:
+    """Extract the evidence text shown to the answer model from UI evidence rows."""
+    contexts: list[str] = []
+    for row in evidence_rows or []:
+        if isinstance(row, dict):
+            value = row.get("text", "")
+        elif isinstance(row, (list, tuple)) and len(row) > 1:
+            value = row[1]
+        else:
+            value = ""
+        text_value = str(value or "").strip()
+        if text_value:
+            contexts.append(text_value)
+    return contexts
+
+
+def _ragas_score_display(scores: Any) -> str:
+    if not isinstance(scores, dict) or not scores:
+        return "—"
+    labels = (("faithfulness", "Faith"), ("context_precision", "C.Prec"), ("context_recall", "C.Rec"))
+    return "｜".join(
+        f"{label} {float(scores[key]):.3f}"
+        for key, label in labels if key in scores and isinstance(scores[key], (int, float))
+    ) or str(scores.get("error") or "—")
+
+
+def _ragas_summary(results: list[dict[str, Any]]) -> str:
+    names = ("faithfulness", "context_precision", "context_recall")
+    labels = {"faithfulness": "Faithfulness", "context_precision": "Context Precision", "context_recall": "Context Recall"}
+    sections = []
+    for name in names:
+        values = [(item.get("ragas_metrics") or {}).get(name) for item in results]
+        values = [float(value) for value in values if isinstance(value, (int, float))]
+        if values:
+            sections.append(f"{labels[name]} {sum(values) / len(values):.3f}（{len(values)} 題）")
+    errors = sum(bool((item.get("ragas_metrics") or {}).get("error")) for item in results)
+    if errors:
+        sections.append(f"失敗 {errors} 題")
+    return "｜".join(sections)
+
+
+def _score_ragas_item(
+    item: dict[str, Any], endpoint: str, key: str, model: str,
+    reasoning_effort: str | None = None,
+) -> dict[str, Any]:
+    """Attach RAGAS metrics without changing the app's existing judge fields."""
+    try:
+        scores = score_ragas_metrics(
+            endpoint, key, model, str(item.get("question") or ""),
+            str(item.get("expected_answer") or ""), str(item.get("actual_answer") or ""),
+            list(item.get("retrieved_contexts") or []), reasoning_effort,
+        )
+        return {**item, "ragas_metrics": scores, "ragas_model": model}
+    except Exception as exc:  # RAGAS/API errors must not erase the 0/1/2 judgment.
+        return {
+            **item, "ragas_metrics": {"error": str(exc)[:500]},
+            "ragas_model": model,
+        }
 
 
 def _evaluation_answer_availability(evaluation: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
@@ -2669,8 +2731,8 @@ def update_manual_evaluation_score_for_ui(
 
 def manual_result_editability_for_ui(enabled: bool) -> dict[str, Any]:
     """Unlock only the answer-score column when requested."""
-    locked_columns = [0, 1, 2, 3, 4, 6, 7]
-    return gr.update(static_columns=locked_columns if enabled else list(range(8)))
+    locked_columns = [0, 1, 2, 3, 4, 6, 7, 8]
+    return gr.update(static_columns=locked_columns if enabled else list(range(9)))
 
 
 def experiment_table_editability_for_ui(enabled: bool) -> dict[str, Any]:
@@ -2680,7 +2742,7 @@ def experiment_table_editability_for_ui(enabled: bool) -> dict[str, Any]:
 
 def reset_manual_result_editability_for_ui() -> tuple[dict[str, Any], ...]:
     return (
-        gr.update(value=False), gr.update(static_columns=list(range(8))),
+        gr.update(value=False), gr.update(static_columns=list(range(9))),
         gr.update(value=False), gr.update(interactive=False),
     )
 
@@ -2715,11 +2777,13 @@ def _evaluation_summary(results: list[dict[str, Any]], *, loaded: bool = False) 
     heading = "已載入測試結果" if loaded else "測試完成"
     failed = sum(_result_score(item) == 0 for item in results)
     accuracy = sum(_result_score(item) for item in results) / (2 * total) * 100
+    ragas = _ragas_summary(results)
     return (
         f"## {heading}｜完全正確 {passed} 題 / {total} 題  "
         f"\n部分正確：{partial} 題｜錯誤：{failed} 題｜得分正確率：{accuracy:.1f}%"
         f"\n\n### 各 PDF 結果\n{document_summary}"
         f"  \nRecall@5：{recall_at_5:.1%}｜Recall@10：{recall_at_10:.1%}｜MRR：{mrr:.3f}"
+        + (f"\n\n### RAGAS 指標（平均）\n{ragas}" if ragas else "")
     )
 
 
@@ -3137,6 +3201,7 @@ def generate_evaluation_answers_for_ui(
             "retrieval_config": retrieval_config.to_dict(),
             **_reasoning_effort_record(model, answer_reasoning_effort, "answer_reasoning_effort"),
             "actual_answer": actual,
+            "retrieved_contexts": _ragas_contexts(evidence_rows),
             "answer_status": status,
             "retrieval_rank": rank,
             "recall_at_5": rank is not None and rank <= 5,
@@ -3166,6 +3231,7 @@ def evaluate_generated_answers_for_ui(
     max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
     judge_reasoning_effort: str | None = None,
     verification_enabled: bool = False,
+    run_ragas: bool = False,
     progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], dict[str, Any]]:
     """Judge saved answers and only then display the complete per-question results."""
@@ -3205,12 +3271,15 @@ def evaluate_generated_answers_for_ui(
             judgment = {"passed": False, "reason": status or "回答生成失敗"}
         judgment.setdefault("verification_enabled", bool(verification_enabled))
         judgment.setdefault("verification_changed", None)
-        return {
+        result = {
             **item,
             "judge_model": judge_model,
             **_reasoning_effort_record(judge_model, judge_reasoning_effort, "judge_reasoning_effort"),
             **_normalize_judgment(judgment),
         }
+        if run_ragas and status.startswith("✅"):
+            result = _score_ragas_item(result, judge_model_endpoint, judge_api_key, judge_model, judge_reasoning_effort)
+        return result
 
     results: list[dict[str, Any] | None] = [None] * len(pending)
     try:
@@ -3223,6 +3292,8 @@ def evaluate_generated_answers_for_ui(
         current["results"] = final_results
         current["judge_model"] = judge_model
         current["verification_enabled"] = bool(verification_enabled)
+        current["ragas_enabled"] = bool(run_ragas)
+        current["ragas_model"] = judge_model if run_ragas else None
         save_project(project_id, {"evaluation": current})
     except (OSError, TypeError, ValueError) as exc:
         return f"❌ 評測或保存失敗：{exc}", [], current
@@ -3243,6 +3314,7 @@ def run_evaluation_for_ui(
     answer_reasoning_effort: str | None = None,
     judge_reasoning_effort: str | None = None,
     verification_enabled: bool = False,
+    run_ragas: bool = False,
     progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], dict[str, Any]]:
     questions = evaluation.get("questions") if evaluation else None
@@ -3302,7 +3374,7 @@ def run_evaluation_for_ui(
             judgment = {"passed": False, "reason": status}
         judgment.setdefault("verification_enabled", bool(verification_enabled))
         judgment.setdefault("verification_changed", None)
-        return {
+        result = {
             **item,
             "answer_model": model,
             "judge_model": effective_judge_model,
@@ -3310,12 +3382,20 @@ def run_evaluation_for_ui(
             **_reasoning_effort_record(model, answer_reasoning_effort, "answer_reasoning_effort"),
             **_reasoning_effort_record(effective_judge_model, judge_reasoning_effort, "judge_reasoning_effort"),
             "actual_answer": actual,
+            "retrieved_contexts": _ragas_contexts(evidence_rows),
             "retrieval_rank": retrieval_rank,
             "recall_at_5": retrieval_rank is not None and retrieval_rank <= 5,
             "recall_at_10": retrieval_rank is not None and retrieval_rank <= 10,
             "reciprocal_rank": 1 / retrieval_rank if retrieval_rank else 0.0,
             **_normalize_judgment(judgment),
         }
+        if run_ragas and status.startswith("✅"):
+            result = _score_ragas_item(
+                result, judge_model_endpoint or model_endpoint,
+                api_key if judge_api_key is None else judge_api_key,
+                effective_judge_model, judge_reasoning_effort,
+            )
+        return result
 
     results: list[dict[str, Any] | None] = [None] * len(questions)
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
@@ -3332,6 +3412,9 @@ def run_evaluation_for_ui(
     updated = dict(evaluation)
     updated["results"] = results
     updated["verification_enabled"] = bool(verification_enabled)
+    updated["ragas_enabled"] = bool(run_ragas)
+    if run_ragas:
+        updated["ragas_model"] = effective_judge_model
     try:
         save_project(project_id, {"evaluation": updated})
     except (OSError, ValueError) as exc:
@@ -3464,6 +3547,7 @@ def run_experiment_groups_for_ui(
             "expected_answer": item["expected_answer"],
             "document": item.get("document", ""),
             "actual_answer": actual,
+            "retrieved_contexts": _ragas_contexts(evidence_rows),
             "retrieval_rank": rank,
             "recall_at_5": rank is not None and rank <= 5,
             "recall_at_10": rank is not None and rank <= 10,
@@ -3553,6 +3637,14 @@ def _single_experiment_summary_rows(
                 f"{sum(bool(item.get('recall_at_10')) for item in selected) / total:.1%}" if total else "—",
                 f"{sum(float(item.get('reciprocal_rank', 0)) for item in selected) / total:.3f}" if total else "—",
                 source_project_name, set_name,
+                *[
+                    (f"{sum(values) / len(values):.3f}" if values else "—")
+                    for metric_name in ("faithfulness", "context_precision", "context_recall")
+                    for values in [[
+                        float(item["ragas_metrics"][metric_name]) for item in selected
+                        if isinstance((item.get("ragas_metrics") or {}).get(metric_name), (int, float))
+                    ]]
+                ],
             ])
     return summaries
 
@@ -3563,6 +3655,7 @@ def _single_experiment_detail_rows(results: list[dict[str, Any]]) -> list[list[o
         item.get("question_set_name", ""), item["question"],
         item["expected_answer"], item.get("actual_answer", ""),
         _display_score(item), item.get("verification_changed"), item.get("reason", ""),
+        _ragas_score_display(item.get("ragas_metrics")),
     ] for item in results]
 
 
@@ -3573,6 +3666,7 @@ def _experiment_project_detail_rows(results: list[dict[str, Any]]) -> list[list[
         item["question"], item["expected_answer"],
         item.get("actual_answer", ""), _display_score(item),
         item.get("verification_changed"), item.get("reason", ""),
+        _ragas_score_display(item.get("ragas_metrics")),
     ] for item in results]
 
 
@@ -3641,6 +3735,7 @@ def generate_experiment_answers_for_ui(
             "question_set_name": question.get("question_set_name", "未分類題目集"),
             "question": question["question"], "expected_answer": question["expected_answer"],
             "document": question.get("document", ""), "actual_answer": actual,
+            "retrieved_contexts": _ragas_contexts(evidence_rows),
             "answer_status": status, "retrieval_rank": rank,
             "recall_at_5": rank is not None and rank <= 5,
             "recall_at_10": rank is not None and rank <= 10,
@@ -3682,6 +3777,7 @@ def evaluate_experiment_answers_for_ui(
     judge_model: str, judge_reasoning_effort: str, max_concurrent_requests: int | float,
     judge_endpoint: str, judge_key: str,
     verification_enabled: bool = False,
+    run_ragas: bool = False,
     progress=gr.Progress(),
 ) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]]]:
     if not project_id:
@@ -3716,11 +3812,14 @@ def evaluate_experiment_answers_for_ui(
             verdict = {"passed": False, "reason": item.get("answer_status") or "回答生成失敗"}
         verdict.setdefault("verification_enabled", bool(verification_enabled))
         verdict.setdefault("verification_changed", None)
-        return {
+        result = {
             **item, "judge_model": judge_model,
             **_reasoning_effort_record(judge_model, judge_reasoning_effort, "judge_reasoning_effort"),
             **_normalize_judgment(verdict),
         }
+        if run_ragas and str(item.get("answer_status", "")).startswith("✅"):
+            result = _score_ragas_item(result, judge_endpoint, judge_key, judge_model, effective_judge_effort)
+        return result
 
     evaluated: list[dict[str, Any] | None] = [None] * len(pending_answers)
     try:
@@ -3742,10 +3841,15 @@ def evaluate_experiment_answers_for_ui(
         partial = sum(_result_score(item) == 1 for item in results)
         rate = sum(_result_score(item) for item in results) / (2 * len(results))
         status = f"✅ 評測完成｜完全正確 {full}、部分正確 {partial} / {len(results)} 個實驗題次；得分正確率 {rate:.1%}。"
+        ragas_summary = _ragas_summary(results)
+        if ragas_summary:
+            status += f"\n\nRAGAS 平均：{ragas_summary}"
         _save_experiment_data(project_id, {
             **previous, "pending_answers": pending_answers, "results": results,
             "summary_rows": summary, "detail_rows": details,
             "judge_model": judge_model, "judge_reasoning_effort": judge_reasoning_effort,
+            "ragas_enabled": bool(run_ragas),
+            "ragas_model": judge_model if run_ragas else None,
             "judge_max_concurrent_requests": concurrency, "status": status,
         })
     except (OSError, TypeError, ValueError) as exc:
@@ -3758,6 +3862,7 @@ def evaluate_experiment_answers_with_services_for_ui(
     judge_model: str, judge_reasoning_effort: str, max_concurrent_requests: int | float,
     llm_state: dict[str, Any],
     verification_enabled: bool = False,
+    run_ragas: bool = False,
     progress=gr.Progress(),
 ) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]]]:
     judge_endpoint, judge_key = resolve_model_credentials_for_ui(llm_state, judge_model)
@@ -3767,6 +3872,7 @@ def evaluate_experiment_answers_with_services_for_ui(
         project_id, pending_answers, groups, judge_model, judge_reasoning_effort,
         max_concurrent_requests, judge_endpoint, judge_key,
         verification_enabled=verification_enabled, progress=progress,
+        run_ragas=run_ragas,
     )
 
 
@@ -3892,7 +3998,7 @@ def export_experiment_results_for_ui(
             "reciprocal_rank", "answer_reasoning_effort", "judge_reasoning_effort",
             "manual_judgment", "verification_enabled", "first_passed", "first_reason",
             "verification_passed", "verification_reason", "verification_changed",
-            "verification_error",
+            "verification_error", "ragas_metrics", "ragas_model",
         )
         exported_groups = []
         for group_index, group in enumerate(groups):
@@ -3969,6 +4075,19 @@ def export_experiment_results_for_ui(
                 "recall_at_5": recall_at_5,
                 "recall_at_10": recall_at_10,
                 "mrr": mrr,
+                **{
+                    metric_name: (
+                        sum(float(result["ragas_metrics"][metric_name]) for result in group_results
+                            if isinstance((result.get("ragas_metrics") or {}).get(metric_name), (int, float)))
+                        / sum(isinstance((result.get("ragas_metrics") or {}).get(metric_name), (int, float))
+                              for result in group_results)
+                        if any(isinstance((result.get("ragas_metrics") or {}).get(metric_name), (int, float))
+                               for result in group_results) else None
+                    )
+                    for metric_name in ("faithfulness", "context_precision", "context_recall")
+                    if any(isinstance((result.get("ragas_metrics") or {}).get(metric_name), (int, float))
+                           for result in group_results)
+                },
             }
             parameters = {
                 "answer_model": group.get("answer_model"),
@@ -4006,20 +4125,28 @@ def export_experiment_results_for_ui(
             "recall_at_5": weighted_metric("recall_at_5"),
             "recall_at_10": weighted_metric("recall_at_10"),
             "mrr": weighted_metric("mrr"),
+            **{
+                metric_name: weighted_metric(metric_name)
+                for metric_name in ("faithfulness", "context_precision", "context_recall")
+                if any(item["summary"].get(metric_name) is not None for item in exported_groups)
+            },
         }
+        evaluation_payload = {
+            "judge_model": experiment.get("judge_model") or next(
+                (group.get("judge_model") for group in groups if group.get("judge_model")),
+                groups[0].get("answer_model") if groups else None,
+            ),
+            "judge_reasoning_effort": experiment.get(
+                "judge_reasoning_effort", DEFAULT_JUDGE_REASONING_EFFORT,
+            ),
+        }
+        if experiment.get("ragas_enabled"):
+            evaluation_payload.update({"ragas_enabled": True, "ragas_model": experiment.get("ragas_model")})
         payload = {
             "schema_version": 4,
             "project": {"project_id": project_id, "name": project.get("name", "")},
             "max_concurrent_requests": experiment.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
-            "evaluation": {
-                "judge_model": experiment.get("judge_model") or next(
-                    (group.get("judge_model") for group in groups if group.get("judge_model")),
-                    groups[0].get("answer_model") if groups else None,
-                ),
-                "judge_reasoning_effort": experiment.get(
-                    "judge_reasoning_effort", DEFAULT_JUDGE_REASONING_EFFORT,
-                ),
-            },
+            "evaluation": evaluation_payload,
             "question_count": len(experiment.get("questions") or []),
             "summary": overall_summary,
             "groups": exported_groups,
@@ -4192,6 +4319,7 @@ def generate_experiment_project_answers_for_ui(
             "question_set_name": question.get("question_set_name", "未分類題目集"),
             "question": question["question"], "expected_answer": question["expected_answer"],
             "document": question.get("document", ""), "actual_answer": actual,
+            "retrieved_contexts": _ragas_contexts(evidence_rows),
             "answer_status": status, "retrieval_rank": rank,
             "recall_at_5": rank is not None and rank <= 5,
             "recall_at_10": rank is not None and rank <= 10,
@@ -4225,6 +4353,7 @@ def evaluate_experiment_project_answers_for_ui(
     judge_model: str | None, judge_reasoning_effort: str | None,
     max_concurrent_requests: int | float, llm_state: dict[str, Any],
     verification_enabled: bool = False,
+    run_ragas: bool = False,
     progress=gr.Progress(),
 ) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]], dict[str, Any]]:
     if not project or not pending_answers:
@@ -4262,12 +4391,15 @@ def evaluate_experiment_project_answers_for_ui(
         verdict.setdefault("verification_enabled", bool(verification_enabled))
         verdict.setdefault("verification_changed", None)
         normalized = _normalize_judgment(verdict)
-        return {
+        result = {
             **item, "judge_model": judge_model,
             **_reasoning_effort_record(judge_model, judge_reasoning_effort, "judge_reasoning_effort"),
             **normalized, "ai_score": normalized["score"],
             "ai_reason": str(normalized.get("reason") or ""),
         }
+        if run_ragas and str(item.get("answer_status", "")).startswith("✅"):
+            result = _score_ragas_item(result, endpoint, key, judge_model or "", judge_reasoning_effort)
+        return result
 
     try:
         with ThreadPoolExecutor(max_workers=min(concurrency, len(pending_answers))) as executor:
@@ -4287,10 +4419,15 @@ def evaluate_experiment_project_answers_for_ui(
         partial = sum(_result_score(item) == 1 for item in results)
         rate = sum(_result_score(item) for item in results) / (2 * len(results))
         status = f"✅ 評測完成｜完全正確 {correct}、部分正確 {partial} / {len(results)} 個跨專案實驗題次；得分正確率 {rate:.1%}。"
+        ragas_summary = _ragas_summary(results)
+        if ragas_summary:
+            status += f"\n\nRAGAS 平均：{ragas_summary}"
         updated = save_experiment_project(project["experiment_project_id"], {
             "pending_answers": pending_answers, "results": results, "summary_rows": summary,
             "detail_rows": details, "judge_model": judge_model,
             "verification_enabled": bool(verification_enabled),
+            "ragas_enabled": bool(run_ragas),
+            "ragas_model": judge_model if run_ragas else None,
             "judge_reasoning_effort": judge_reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT,
             "judge_max_concurrent_requests": concurrency, "status": status,
         })
@@ -6133,6 +6270,10 @@ def build_app() -> gr.Blocks:
                     value=False, label="二階段驗證：複核第一輪判定與理由",
                     info="再呼叫一次評測模型；依第二輪複核結果作為最終判定。",
                 )
+                evaluation_run_ragas = gr.Checkbox(
+                    value=False, label="同時計算 RAGAS 指標",
+                    info="保留 0/1/2 判定，另計算 Faithfulness、Context Precision、Context Recall；會增加 LLM API 用量。",
+                )
                 run_evaluation_button = gr.Button(
                     "進行評測", variant="primary", interactive=False,
                     elem_classes="evaluation-judge-button",
@@ -6143,9 +6284,9 @@ def build_app() -> gr.Blocks:
                 info="勾選後可直接在表格的答案判定欄輸入 0、1 或 2。",
             )
             evaluation_results_table = gr.Dataframe(
-                headers=["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
-                datatype=["number", "str", "str", "str", "str", "number", "bool", "str"],
-                type="array", interactive=True, static_columns=list(range(8)), wrap=True,
+                headers=["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由", "RAGAS（Faith／Context P／Context R）"],
+                datatype=["number", "str", "str", "str", "str", "number", "bool", "str", "str"],
+                type="array", interactive=True, static_columns=list(range(9)), wrap=True,
                 elem_classes=["evaluation-table", "evaluation-results-table"],
             )
             with gr.Group(elem_classes="evaluation-metrics-box"):
@@ -6249,6 +6390,10 @@ def build_app() -> gr.Blocks:
                     value=False, label="二階段驗證：複核第一輪判定與理由",
                     info="再呼叫一次評測模型；依第二輪複核結果作為最終判定。",
                 )
+                experiment_run_ragas = gr.Checkbox(
+                    value=False, label="同時計算 RAGAS 指標",
+                    info="保留 0/1/2 判定，另計算 Faithfulness、Context Precision、Context Recall；會增加 LLM API 用量。",
+                )
                 evaluate_experiments_button = gr.Button(
                     "進行評測", variant="primary", interactive=False,
                     elem_classes="evaluation-judge-button",
@@ -6263,7 +6408,7 @@ def build_app() -> gr.Blocks:
             experiment_status = gr.Markdown()
             gr.Markdown("#### 實驗組摘要")
             experiment_summary_table = gr.Dataframe(
-                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Recall@5", "Recall@10", "MRR", "成員專案", "題目集"],
+                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Recall@5", "Recall@10", "MRR", "成員專案", "題目集", "Faithfulness", "Context Precision", "Context Recall"],
                 interactive=False, wrap=True,
             )
             gr.Markdown("#### 逐題結果")
@@ -6275,11 +6420,11 @@ def build_app() -> gr.Blocks:
                 headers=[
                     "實驗組", "題號", "來源文件", "題目集", "題目", "正確答案",
                     "實際答案", "答案判定（0錯誤／1部分正確／2全對）",
-                    "複核後判定有變更", "評判理由",
+                    "複核後判定有變更", "評判理由", "RAGAS（Faith／Context P／Context R）",
                 ],
-                datatype=["str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 8, 9],
-                column_widths=[90, 60, 140, 160, 420, 380, 300, 150, 220, 120],
+                datatype=["str", "number", "str", "str", "str", "str", "str", "number", "bool", "str", "str"],
+                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 8, 9, 10],
+                column_widths=[90, 60, 140, 160, 420, 380, 300, 150, 220, 120, 260],
                 wrap=True, elem_classes=["evaluation-table", "evaluation-results-table"],
             )
             with gr.Row():
@@ -6421,6 +6566,10 @@ def build_app() -> gr.Blocks:
                 value=False, label="二階段驗證：複核第一輪判定與理由",
                 info="再呼叫一次評測模型；依第二輪複核結果作為最終判定。",
             )
+            experiment_project_run_ragas = gr.Checkbox(
+                value=False, label="同時計算 RAGAS 指標",
+                info="保留 0/1/2 判定，另計算 Faithfulness、Context Precision、Context Recall；會增加 LLM API 用量。",
+            )
             evaluate_experiment_project_button = gr.Button(
                 "開始評測", variant="primary", interactive=False,
                 elem_classes="evaluation-judge-button",
@@ -6431,14 +6580,14 @@ def build_app() -> gr.Blocks:
             )
             experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並至 0-2 為成員專案綁定題目集。")
             experiment_project_summary_table = gr.Dataframe(
-                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Recall@5", "Recall@10", "MRR", "成員專案", "題目集"],
+                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Recall@5", "Recall@10", "MRR", "成員專案", "題目集", "Faithfulness", "Context Precision", "Context Recall"],
                 interactive=False, wrap=True,
             )
             experiment_project_details_table = gr.Dataframe(
-                headers=["實驗組", "成員專案", "題號", "來源文件", "題目集", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
-                datatype=["str", "str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 9, 10],
-                column_widths=[90, 120, 60, 140, 160, 380, 360, 300, 150, 220, 120],
+                headers=["實驗組", "成員專案", "題號", "來源文件", "題目集", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由", "RAGAS（Faith／Context P／Context R）"],
+                datatype=["str", "str", "number", "str", "str", "str", "str", "str", "number", "bool", "str", "str"],
+                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11],
+                column_widths=[90, 120, 60, 140, 160, 380, 360, 300, 150, 220, 120, 260],
                 wrap=True,
             )
             experiment_project_manual_edit = gr.Checkbox(
@@ -6724,7 +6873,7 @@ def build_app() -> gr.Blocks:
             inputs=[project_selector, evaluation_judge_endpoint, evaluation_judge_key,
                     evaluation_judge_model, evaluation_state,
                     evaluation_judge_max_concurrent_requests, evaluation_judge_effort,
-                    evaluation_verify_judgment],
+                    evaluation_verify_judgment, evaluation_run_ragas],
             outputs=[evaluation_status, evaluation_results_table, evaluation_state],
         )
         evaluation_manual_edit_enabled.change(
@@ -6847,7 +6996,7 @@ def build_app() -> gr.Blocks:
                 project_selector, experiment_pending_answers_state, experiment_groups_state,
                 experiment_judge_model, experiment_judge_effort,
                 experiment_judge_max_concurrent_requests, llm_service_state,
-                experiment_verify_judgment,
+                experiment_verify_judgment, experiment_run_ragas,
             ],
             outputs=[
                 experiment_status, experiment_results_state,
@@ -7142,7 +7291,7 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_project_state, experiment_project_pending_answers_state,
                     experiment_project_global_judge_model, experiment_project_judge_effort,
                     experiment_project_judge_concurrency, experiment_llm_service_state,
-                    experiment_project_verify_judgment],
+                    experiment_project_verify_judgment, experiment_project_run_ragas],
             outputs=[experiment_project_test_status, experiment_project_results_state,
                      experiment_project_summary_table, experiment_project_details_table,
                      experiment_project_state],
