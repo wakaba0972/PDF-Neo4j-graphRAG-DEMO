@@ -3818,7 +3818,7 @@ def evaluate_experiment_answers_for_ui(
             **_normalize_judgment(verdict),
         }
         if run_ragas and str(item.get("answer_status", "")).startswith("✅"):
-            result = _score_ragas_item(result, judge_endpoint, judge_key, judge_model, effective_judge_effort)
+            result = _score_ragas_item(result, judge_endpoint, judge_key, judge_model, judge_reasoning_effort)
         return result
 
     evaluated: list[dict[str, Any] | None] = [None] * len(pending_answers)

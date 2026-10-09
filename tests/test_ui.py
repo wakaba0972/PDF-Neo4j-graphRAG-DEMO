@@ -2525,6 +2525,9 @@ def test_evaluate_experiment_answers_and_manual_edit_recompute_summary(monkeypat
     monkeypatch.setattr(ui, "load_project", lambda _project_id: {"experiment": {"groups": [group]}})
     monkeypatch.setattr(ui, "save_project", lambda _project_id, payload: saved.update(payload) or {})
     monkeypatch.setattr(ui, "judge_evaluation_answer", lambda *_args: {"passed": True, "reason": "正確"})
+    monkeypatch.setattr(ui, "score_ragas_metrics", lambda *args: {
+        "faithfulness": 0.9, "context_precision": 0.8, "context_recall": 0.7,
+    })
     pending = [{
         "group_index": 0, "group_name": "G", "answer_model": "answer-model",
         "number": 1, "question": "Q", "expected_answer": "A", "actual_answer": "答案",
@@ -2534,11 +2537,16 @@ def test_evaluate_experiment_answers_and_manual_edit_recompute_summary(monkeypat
 
     status, results, summaries, details = ui.evaluate_experiment_answers_for_ui(
         "project", pending, [group], "judge-model", "low", 3, "judge-endpoint", "judge-key",
+        run_ragas=True,
     )
 
     assert status.startswith("✅ 評測完成")
     assert summaries[0][6:9] == ["1 / 1", 0, "100.0%"]
     assert details[0][7] == 2
+    assert results[0]["score"] == 2
+    assert results[0]["ragas_metrics"] == {
+        "faithfulness": 0.9, "context_precision": 0.8, "context_recall": 0.7,
+    }
     edited = [list(details[0])]
     edited[0][7] = 1
     manual_status, manual_summary, manual_details, updated = ui.update_manual_experiment_result_for_ui(
