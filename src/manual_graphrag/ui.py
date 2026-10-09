@@ -119,8 +119,16 @@ DEFAULT_EVALUATION_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_JUDGE_REASONING_EFFORT = "medium"
 DEFAULT_MAX_CONCURRENT_REQUESTS = 10
-KNOWN_USERS = ("Jay", "Christine", "Swallow", "Tai", "Zhao")
+KNOWN_USERS = ("57", "58", "59", "60", "61")
+LEGACY_USER_NAMES = {
+    "Jay": "57", "Christine": "58", "Swallow": "59", "Tai": "60", "Zhao": "61",
+}
 _HUMAN_REVIEW_LOCK = Lock()
+
+
+def _canonical_user_name(user: Any) -> str:
+    value = str(user or "")
+    return LEGACY_USER_NAMES.get(value, value)
 
 
 def current_user_banner_for_ui(user: str | None) -> str:
@@ -4671,20 +4679,20 @@ def human_review_tasks_for_current_user_for_ui(
             review = run.get("human_review") or {}
             tasks = review.get("tasks", [])
             own_pending = sum(
-                task.get("assigned_to") == actor and task.get("score") not in (0, 1, 2)
+                _canonical_user_name(task.get("assigned_to")) == actor and task.get("score") not in (0, 1, 2)
                 and (not task.get("claimed_by") or _review_claim_is_stale(task)) for task in tasks
             )
             other_pending = sum(
-                task.get("assigned_to") != actor and task.get("score") not in (0, 1, 2)
+                _canonical_user_name(task.get("assigned_to")) != actor and task.get("score") not in (0, 1, 2)
                 and (not task.get("claimed_by") or _review_claim_is_stale(task)) for task in tasks
             )
             my_claims = sum(
-                task.get("assigned_to") != actor and task.get("score") not in (0, 1, 2)
-                and task.get("claimed_by") == actor and not _review_claim_is_stale(task)
+                _canonical_user_name(task.get("assigned_to")) != actor and task.get("score") not in (0, 1, 2)
+                and _canonical_user_name(task.get("claimed_by")) == actor and not _review_claim_is_stale(task)
                 for task in tasks
             )
             for task in tasks:
-                is_own = task.get("assigned_to") == actor
+                is_own = _canonical_user_name(task.get("assigned_to")) == actor
                 if (helping and is_own) or (not helping and not is_own):
                     continue
                 index = int(task.get("result_index", -1))
@@ -4693,7 +4701,7 @@ def human_review_tasks_for_current_user_for_ui(
                     continue
                 item = results[index]
                 done = task.get("score") in (0, 1, 2)
-                claimed_by = task.get("claimed_by") if not _review_claim_is_stale(task) else None
+                claimed_by = _canonical_user_name(task.get("claimed_by")) if not _review_claim_is_stale(task) else None
                 if done:
                     state = "已完成"
                 elif helping and claimed_by == actor:
@@ -4745,22 +4753,22 @@ def human_review_task_details_for_ui(
             actor = current_actor()
             if task is None:
                 raise ValueError("找不到評測任務")
-            is_own = task.get("assigned_to") == actor
+            is_own = _canonical_user_name(task.get("assigned_to")) == actor
             if not is_own:
                 own_pending = [item for item in review.get("tasks", [])
-                               if item.get("assigned_to") == actor and item.get("score") not in (0, 1, 2)
+                               if _canonical_user_name(item.get("assigned_to")) == actor and item.get("score") not in (0, 1, 2)
                                and (not item.get("claimed_by") or _review_claim_is_stale(item))]
                 if not helping or own_pending:
                     raise ValueError("請先完成自己的原分派，再選擇協助其他評測人")
                 if task.get("score") in (0, 1, 2):
                     raise ValueError("這題已由其他評測人完成")
-                if task.get("claimed_by") not in (None, actor) and not _review_claim_is_stale(task):
-                    raise ValueError(f"這題目前由 {task.get('claimed_by')} 評測中")
+                if task.get("claimed_by") and _canonical_user_name(task.get("claimed_by")) != actor and not _review_claim_is_stale(task):
+                    raise ValueError(f"這題目前由 {_canonical_user_name(task.get('claimed_by'))} 評測中")
                 task.update({"claimed_by": actor, "claimed_at": datetime.now().astimezone().isoformat()})
                 target_run["human_review"] = review
                 save_experiment_project(parts[0], {"saved_runs": runs})
-            elif task.get("claimed_by") and task.get("claimed_by") != actor and not _review_claim_is_stale(task):
-                raise ValueError(f"這題目前由 {task.get('claimed_by')} 協助中")
+            elif task.get("claimed_by") and _canonical_user_name(task.get("claimed_by")) != actor and not _review_claim_is_stale(task):
+                raise ValueError(f"這題目前由 {_canonical_user_name(task.get('claimed_by'))} 協助中")
         index = int(task.get("result_index", -1))
         results = run.get("results") or []
         if not 0 <= index < len(results):
@@ -4771,11 +4779,11 @@ def human_review_task_details_for_ui(
             result.get("question_set_name", ""), result.get("number", index + 1),
             result.get("question", ""), result.get("expected_answer", ""),
             result.get("actual_answer", ""), result.get("document", ""),
-            task.get("assigned_to", ""),
+            _canonical_user_name(task.get("assigned_to")),
         ]]
         if task.get("score") in (0, 1, 2):
             return (
-                f"此題已於 {task.get('submitted_at', '')} 評分；原分派：{task.get('assigned_to', '')}；實際評測：{task.get('submitted_by', task.get('assigned_to', ''))}。",
+                f"此題已於 {task.get('submitted_at', '')} 評分；原分派：{_canonical_user_name(task.get('assigned_to'))}；實際評測：{_canonical_user_name(task.get('submitted_by', task.get('assigned_to', '')))}。",
                 row, gr.update(value=task["score"], interactive=False),
                 gr.update(value=task.get("note", ""), interactive=False),
             )
@@ -4807,17 +4815,17 @@ def submit_human_review_for_ui(
             task = next((item for item in review.get("tasks", []) if item.get("task_id") == parts[2]), None)
             if task is None:
                 raise ValueError("找不到評測任務")
-            is_own = task.get("assigned_to") == actor
-            if not is_own and (not helping or task.get("claimed_by") != actor):
+            is_own = _canonical_user_name(task.get("assigned_to")) == actor
+            if not is_own and (not helping or _canonical_user_name(task.get("claimed_by")) != actor):
                 raise ValueError("此協助題目未由目前使用者取得評測權")
             if not is_own:
                 own_pending = [item for item in review.get("tasks", [])
-                               if item.get("assigned_to") == actor and item.get("score") not in (0, 1, 2)
+                               if _canonical_user_name(item.get("assigned_to")) == actor and item.get("score") not in (0, 1, 2)
                                and (not item.get("claimed_by") or _review_claim_is_stale(item))]
                 if own_pending:
                     raise ValueError("請先完成自己的原分派題目")
-            elif task.get("claimed_by") and task.get("claimed_by") != actor and not _review_claim_is_stale(task):
-                raise ValueError(f"此題目前由 {task.get('claimed_by')} 協助中")
+            elif task.get("claimed_by") and _canonical_user_name(task.get("claimed_by")) != actor and not _review_claim_is_stale(task):
+                raise ValueError(f"此題目前由 {_canonical_user_name(task.get('claimed_by'))} 協助中")
             if task.get("score") in (0, 1, 2):
                 raise ValueError("這筆題目已提交人工評分")
             task.update({
@@ -4895,7 +4903,8 @@ def human_review_results_for_ui(
                 item.get("actual_answer", ""), ai_score, human_score,
                 "一致" if int(ai_score) == human_score else "不一致",
                 item.get("ai_reason", item.get("reason", "")), task.get("note", ""),
-                task.get("assigned_to", ""), task.get("submitted_by", task.get("assigned_to", "")),
+                _canonical_user_name(task.get("assigned_to")),
+                _canonical_user_name(task.get("submitted_by", task.get("assigned_to", ""))),
             ])
         summaries = []
         for (group_name, project_name, set_name), pairs in groups.items():

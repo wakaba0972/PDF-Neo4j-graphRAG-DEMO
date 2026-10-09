@@ -37,19 +37,19 @@ def test_project_round_trip_and_listing(tmp_path) -> None:
 
 
 def test_project_name_can_be_updated_without_changing_base_name(tmp_path) -> None:
-    project = create_project("Zhao | s25", tmp_path)
+    project = create_project("61 | s25", tmp_path)
 
     saved = save_project(
-        project["project_id"], {"name": "Zhao | s25 | 1500-200-None"}, root=tmp_path
+        project["project_id"], {"name": "61 | s25 | 1500-200-None"}, root=tmp_path
     )
 
-    assert saved["name"] == "Zhao | s25 | 1500-200-None"
-    assert saved["base_name"] == "Zhao | s25"
-    assert list_projects(tmp_path) == [("Zhao | s25 | 1500-200-None", project["project_id"])]
+    assert saved["name"] == "61 | s25 | 1500-200-None"
+    assert saved["base_name"] == "61 | s25"
+    assert list_projects(tmp_path) == [("61 | s25 | 1500-200-None", project["project_id"])]
 
 
 def test_project_summary_file_tracks_creator_documents_and_build_settings(tmp_path) -> None:
-    project = create_project("Zhao | s25", tmp_path, actor="Zhao")
+    project = create_project("61 | s25", tmp_path, actor="61")
     save_project(project["project_id"], {
         "settings": {"chunk_size": 1500, "chunk_overlap": 200, "schema_granularity": "詳細"},
         "evaluation": {"questions": [{"number": 1}, {"number": 2}]},
@@ -70,7 +70,7 @@ def test_project_summary_file_tracks_creator_documents_and_build_settings(tmp_pa
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
 
     assert summary == load_project_summary(project["project_id"], tmp_path)
-    assert summary["created_by"] == "Zhao"
+    assert summary["created_by"] == "61"
     assert summary["document_count"] == 2
     assert summary["chunk_count"] == 3
     assert summary["question_count"] == 2
@@ -89,8 +89,8 @@ def test_each_project_gets_a_stable_unique_database(tmp_path) -> None:
 
 
 def test_project_activity_log_records_actor_local_time_and_operation(tmp_path) -> None:
-    project = create_project("Zhao | Manual", tmp_path, actor="Zhao")
-    with actor_context("Christine", "save_project_for_ui"):
+    project = create_project("61 | Manual", tmp_path, actor="61")
+    with actor_context("58", "save_project_for_ui"):
         save_project(project["project_id"], {"settings": {"top_k": 8}}, root=tmp_path)
 
     events = [
@@ -98,7 +98,7 @@ def test_project_activity_log_records_actor_local_time_and_operation(tmp_path) -
         for line in (tmp_path / project["project_id"] / "activity.log").read_text().splitlines()
     ]
 
-    assert [event["user"] for event in events] == ["Zhao", "Christine"]
+    assert [event["user"] for event in events] == ["61", "58"]
     assert events[1]["action"] == "save_project_for_ui"
     assert events[1]["details"]["fields"] == ["settings"]
     assert all(datetime.fromisoformat(event["timestamp"]).utcoffset() is not None for event in events)

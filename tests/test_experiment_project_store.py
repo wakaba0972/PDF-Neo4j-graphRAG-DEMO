@@ -24,8 +24,8 @@ def test_experiment_project_round_trip_and_member_question_sets(tmp_path):
 
 
 def test_experiment_project_activity_log_tracks_actor_and_local_time(tmp_path):
-    project = create_experiment_project("Zhao | Compare", tmp_path, actor="Zhao")
-    with actor_context("Jay", "save_experiment_project_members_for_ui"):
+    project = create_experiment_project("61 | Compare", tmp_path, actor="61")
+    with actor_context("57", "save_experiment_project_members_for_ui"):
         save_experiment_project(
             project["experiment_project_id"], {"members": ["vehicle-a"]}, tmp_path,
         )
@@ -37,7 +37,7 @@ def test_experiment_project_activity_log_tracks_actor_and_local_time(tmp_path):
         ).read_text().splitlines()
     ]
 
-    assert [event["user"] for event in events] == ["Zhao", "Jay"]
+    assert [event["user"] for event in events] == ["61", "57"]
     assert events[1]["action"] == "save_experiment_project_members_for_ui"
     assert events[1]["details"]["fields"] == ["members"]
     assert all(datetime.fromisoformat(event["timestamp"]).utcoffset() is not None for event in events)

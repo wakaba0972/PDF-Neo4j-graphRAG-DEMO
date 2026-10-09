@@ -663,7 +663,7 @@ def test_confirmed_project_delete_runs_through_gradio_api(tmp_path, monkeypatch)
     )
 
     result = asyncio.run(app.process_api(
-        dependency["id"], [project["project_id"], "Zhao"],
+        dependency["id"], [project["project_id"], "61"],
     ))
 
     assert len(result["data"]) == len(
@@ -1032,7 +1032,7 @@ def test_user_selection_unlocks_roots_and_names_audited_projects(tmp_path, monke
     )
     assert user_dropdown["props"]["choices"] == [
         ("請選擇使用者", ""),
-        *((name, name) for name in ("Jay", "Christine", "Swallow", "Tai", "Zhao")),
+        *((name, name) for name in ("57", "58", "59", "60", "61")),
     ]
     assert user_dropdown["props"]["value"] == ""
     initial_tabs = {
@@ -1055,36 +1055,69 @@ def test_user_selection_unlocks_roots_and_names_audited_projects(tmp_path, monke
         "4-0 AI／人工評測結果": False,
     }
     assert all(update["interactive"] is False for update in ui.user_access_tabs_for_ui(None))
-    selection = ui.select_user_for_ui("Zhao")
-    assert "Zhao" in selection[0]
+    selection = ui.select_user_for_ui("61")
+    assert "61" in selection[0]
     assert all(update["interactive"] is True for update in selection[1:])
 
     project_dependency = next(
         dependency for dependency in app.config["dependencies"]
         if str(dependency.get("api_name", "")).startswith("create_project_for_ui")
     )
-    project_result = app.fns[project_dependency["id"]].fn("s25", "Zhao")
-    assert project_result[1]["name"] == "Zhao | s25"
+    project_result = app.fns[project_dependency["id"]].fn("s25", "61")
+    assert project_result[1]["name"] == "61 | s25"
     project_events = (
         tmp_path / "data" / "projects" / project_result[1]["project_id"] / "activity.log"
     ).read_text(encoding="utf-8")
     project_event = json.loads(project_events.splitlines()[0])
-    assert project_event["user"] == "Zhao"
+    assert project_event["user"] == "61"
     assert project_event["action"] == "create_project_for_ui"
 
     experiment_dependency = next(
         dependency for dependency in app.config["dependencies"]
         if str(dependency.get("api_name", "")).startswith("create_experiment_project_for_ui")
     )
-    experiment_result = app.fns[experiment_dependency["id"]].fn("s25", "Zhao")
-    assert experiment_result[1]["name"] == "Zhao | s25"
+    experiment_result = app.fns[experiment_dependency["id"]].fn("s25", "61")
+    assert experiment_result[1]["name"] == "61 | s25"
     experiment_events = (
         tmp_path / "data" / "experiment_projects"
         / experiment_result[1]["experiment_project_id"] / "activity.log"
     ).read_text(encoding="utf-8")
     experiment_event = json.loads(experiment_events.splitlines()[0])
-    assert experiment_event["user"] == "Zhao"
+    assert experiment_event["user"] == "61"
     assert experiment_event["action"] == "create_experiment_project_for_ui"
+
+
+def test_renamed_users_can_continue_legacy_human_review_assignments(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    experiment = ui.create_experiment_project("舊評測分派相容")
+    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
+        "results": [{"question": "Q", "expected_answer": "A", "actual_answer": "A", "score": 2}],
+    })
+    _, experiment = ui.save_experiment_project_run_for_ui(experiment)
+    saved_run = experiment["saved_runs"][0]
+    saved_run["human_review"] = {"tasks": [{
+        "task_id": "legacy-task", "result_index": 0,
+        "assigned_to": "Jay", "score": None, "note": "", "submitted_at": None,
+    }]}
+    experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
+        "saved_runs": [saved_run],
+    })
+    run_key = ui._saved_run_key(experiment["experiment_project_id"], saved_run["run_id"])
+
+    with actor_context("57"):
+        selector, *_ = ui.human_review_tasks_for_current_user_for_ui(run_key)
+        task_key = selector["value"]
+        assert task_key.endswith("legacy-task")
+        detail_status, context, *_ = ui.human_review_task_details_for_ui(task_key)
+        assert detail_status.startswith("請獨立判斷")
+        assert context[0][-1] == "57"
+        status, *_ = ui.submit_human_review_for_ui(task_key, 2, "完成")
+        assert status.startswith("✅")
+
+    updated = ui.load_experiment_project(experiment["experiment_project_id"])
+    task = updated["saved_runs"][0]["human_review"]["tasks"][0]
+    assert task["assigned_to"] == "Jay"  # Preserve the original archived assignment.
+    assert task["submitted_by"] == "57"
 
 
 def test_answer_display_is_plain_text_not_markdown() -> None:
@@ -1100,10 +1133,10 @@ def test_answer_display_is_plain_text_not_markdown() -> None:
 
 def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    with actor_context("Zhao"):
+    with actor_context("61"):
         _, created, status = ui.create_project_for_ui("手冊專案")
     assert status.startswith("✅")
-    assert created["name"] == "Zhao | 手冊專案"
+    assert created["name"] == "61 | 手冊專案"
     document = tmp_path / "manual.pdf"
     document.write_bytes(b"pdf")
     values = [
@@ -1152,7 +1185,7 @@ def test_load_project_ignores_legacy_model_credentials(tmp_path, monkeypatch) ->
         "NEO4J_USERNAME": "user",
         "NEO4J_PASSWORD": "password",
     })
-    with actor_context("Tai"):
+    with actor_context("60"):
         _, created, _ = ui.create_project_for_ui("Legacy")
     project_path = tmp_path / "data" / "projects" / created["project_id"] / "project.json"
     ui.write_json(project_path, {
@@ -3365,7 +3398,7 @@ def test_extract_graph_for_ui_allows_skipping_schema_planning(monkeypatch) -> No
 
 
 def test_project_name_suffix_uses_build_settings_and_planned_granularity() -> None:
-    project = {"name": "Zhao | s25", "base_name": "Zhao | s25"}
+    project = {"name": "61 | s25", "base_name": "61 | s25"}
 
     assert ui._project_name_for_build(project, {
         "build_config": {
@@ -3373,14 +3406,14 @@ def test_project_name_suffix_uses_build_settings_and_planned_granularity() -> No
             "chunk_overlap": 200,
             "schema_granularity": None,
         }
-    }) == "Zhao | s25 | 1500-200-None"
+    }) == "61 | s25 | 1500-200-None"
     assert ui._project_name_for_build(project, {
         "build_config": {
             "chunk_size": 1000,
             "chunk_overlap": 100,
             "schema_granularity": "粗略",
         }
-    }) == "Zhao | s25 | 1000-100-粗略"
+    }) == "61 | s25 | 1000-100-粗略"
 
 
 def test_graph_evidence_separates_merged_sources_by_pdf() -> None:
@@ -4137,18 +4170,18 @@ def test_saved_experiment_run_is_sampled_distributed_and_compared_with_human_sco
         "judge_model": "judge-model",
     })
 
-    with actor_context("Zhao"):
+    with actor_context("61"):
         saved_status, experiment = ui.save_experiment_project_run_for_ui(experiment)
     assert saved_status.startswith("✅ 已保存實驗執行結果")
     saved_run = experiment["saved_runs"][0]
-    assert saved_run["saved_by"] == "Zhao"
+    assert saved_run["saved_by"] == "61"
     assert [item["ai_score"] for item in saved_run["results"]] == [0, 1, 2, 0, 1]
     rows, run_selector, queue_status = ui.human_review_queue_for_ui()
     assert len(rows) == 1 and "尚未抽樣" in rows[0][-1]
     assert "1 筆" in queue_status
 
     run_key = run_selector["value"]
-    with actor_context("Zhao"):
+    with actor_context("61"):
         sample_status, _rows, _selector = ui.create_human_review_sample_for_ui(run_key, 5)
     assert "共抽樣 5 題" in sample_status
     experiment = ui.load_experiment_project(experiment["experiment_project_id"])
@@ -4158,7 +4191,7 @@ def test_saved_experiment_run_is_sampled_distributed_and_compared_with_human_sco
         task for task in review["tasks"] if task["assigned_to"] == user
     ]})[1] for user in ui.KNOWN_USERS] == [1] * 5
 
-    assigned_scores = {"Jay": 0, "Christine": 1, "Swallow": 2, "Tai": 1, "Zhao": 2}
+    assigned_scores = {"57": 0, "58": 1, "59": 2, "60": 1, "61": 2}
     for task in review["tasks"]:
         with actor_context(task["assigned_to"]):
             status, *_ = ui.submit_human_review_for_ui(
@@ -4193,7 +4226,7 @@ def test_removing_human_review_sampling_keeps_saved_ai_run_and_requires_confirma
     experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
         "results": [{"question": "Q", "expected_answer": "A", "actual_answer": "A", "score": 2}],
     })
-    with actor_context("Zhao"):
+    with actor_context("61"):
         _, experiment = ui.save_experiment_project_run_for_ui(experiment)
         run_key = ui._saved_run_key(
             experiment["experiment_project_id"], experiment["saved_runs"][0]["run_id"],
@@ -4240,7 +4273,7 @@ def test_human_review_results_show_retrieval_metrics_for_each_experiment_group(t
     saved_run = experiment["saved_runs"][0]
     saved_run["human_review"] = {"tasks": [
         {"task_id": f"task-{index}", "result_index": index,
-         "assigned_to": "Jay", "submitted_by": "Jay", "score": 2, "note": ""}
+         "assigned_to": "57", "submitted_by": "57", "score": 2, "note": ""}
         for index in (2, 1, 0)
     ]}
     experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
@@ -4269,14 +4302,14 @@ def test_reviewer_can_opt_in_to_help_after_finishing_own_tasks(tmp_path, monkeyp
     experiment = ui.save_experiment_project(experiment["experiment_project_id"], {"results": results})
     _, experiment = ui.save_experiment_project_run_for_ui(experiment)
     run_key = ui._saved_run_key(experiment["experiment_project_id"], experiment["saved_runs"][0]["run_id"])
-    with actor_context("Zhao"):
+    with actor_context("61"):
         sample_status, *_ = ui.create_human_review_sample_for_ui(run_key, 5)
     assert sample_status.startswith("✅")
     experiment = ui.load_experiment_project(experiment["experiment_project_id"])
     run = experiment["saved_runs"][0]
     tasks = run["human_review"]["tasks"]
-    jay_task = next(task for task in tasks if task["assigned_to"] == "Jay")
-    with actor_context("Jay"):
+    jay_task = next(task for task in tasks if task["assigned_to"] == "57")
+    with actor_context("57"):
         status, *_ = ui.submit_human_review_for_ui(
             f"{experiment['experiment_project_id']}::{run['run_id']}::{jay_task['task_id']}", 2, "本人評分",
         )
@@ -4317,16 +4350,16 @@ def test_reviewer_can_opt_in_to_help_after_finishing_own_tasks(tmp_path, monkeyp
     experiment = ui.load_experiment_project(experiment["experiment_project_id"])
     submitted_task = next(
         task for task in experiment["saved_runs"][0]["human_review"]["tasks"]
-        if task.get("submitted_by") == "Jay" and task.get("assigned_to") != "Jay"
+        if task.get("submitted_by") == "57" and task.get("assigned_to") != "57"
     )
     assert submitted_task["assigned_to"] in ui.KNOWN_USERS
-    assert submitted_task["assigned_to"] != "Jay"
-    assert submitted_task["submitted_by"] == "Jay"
+    assert submitted_task["assigned_to"] != "57"
+    assert submitted_task["submitted_by"] == "57"
     result_status, _summaries, _retrieval_summaries, details = ui.human_review_results_for_ui(run_key)
     assert result_status.startswith("✅ 人工評測完成")
     result_row = next(row for row in details if row[3] == submitted_task["result_index"] + 1)
     assert result_row[12] == submitted_task["assigned_to"]
-    assert result_row[13] == "Jay"
+    assert result_row[13] == "57"
 
 
 def test_saved_experiment_run_requires_completed_ai_judgments(tmp_path, monkeypatch):
@@ -4336,7 +4369,7 @@ def test_saved_experiment_run_requires_completed_ai_judgments(tmp_path, monkeypa
         "results": [{"question": "Q", "actual_answer": "A"}],
     })
 
-    with actor_context("Jay"):
+    with actor_context("57"):
         status, unchanged = ui.save_experiment_project_run_for_ui(experiment)
 
     assert status.startswith("❌")
