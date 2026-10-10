@@ -1189,7 +1189,7 @@ def test_project_answer_appends_project_history_without_separate_archive(monkeyp
         "project",
         "endpoint", "key", "embedding-endpoint", "embedding-key",
         "bolt", "neo4j", "user", "pass",
-        "answer-model", "問題", "混合檢索", 8, "停用", "證據擴展 V2",
+        "answer-model", "問題", "混合檢索", 8, "停用", "證據擴展",
         ui.DEFAULT_REASONING_EFFORT, 3,
     )
     assert len(answer_call["args"]) == 15
@@ -1200,7 +1200,7 @@ def test_project_answer_appends_project_history_without_separate_archive(monkeyp
     assert captured["answer_model"] == "answer-model"
     assert captured["retrieval_config"]["strategy_id"] == "hybrid"
     assert captured["retrieval_config"]["top_k"] == 8
-    assert captured["retrieval_config"]["expansion"]["id"] == "graph_v2"
+    assert captured["retrieval_config"]["expansion"]["id"] == "legacy_name_chunk"
     assert result[0].endswith("✅ 問答紀錄已加入目前專案。")
 
 
@@ -2114,7 +2114,7 @@ def test_inline_groups_round_trip_reranker_and_expansion_versions() -> None:
     groups = [{
         "name": "比較組", "answer_model": "model-a",
         "retrieval_config": _retrieval_config(
-            "混合檢索", 8, "LLM Reranker", "證據擴展 V2",
+            "混合檢索", 8, "LLM Reranker", "證據擴展",
         ),
     }]
 
@@ -2236,7 +2236,7 @@ def test_inline_experiment_groups_autosave_and_reload(tmp_path, monkeypatch) -> 
     groups = [{
         "name": "向量組", "answer_model": "gpt-4.1-mini",
         "retrieval_config": _retrieval_config(
-            "基本向量檢索", 5, "停用", "證據擴展 V2",
+            "基本向量檢索", 5, "停用", "證據擴展",
         ),
     }]
     questions = [{"number": 1, "question": "Q", "expected_answer": "A"}]
@@ -2275,7 +2275,7 @@ def test_inline_experiment_groups_autosave_and_reload(tmp_path, monkeypatch) -> 
     assert restored[11]["value"] == "基本向量檢索"
     assert restored[12]["value"] == 5
     assert restored[13]["value"] == "停用"
-    assert restored[14]["value"] == "證據擴展 V2"
+    assert restored[14]["value"] == "證據擴展"
     assert restored[15]["value"]["effective_search_ratio"] == 3
     assert restored[16]["visible"] is True
     assert restored[8 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS]["value"] == "gpt-6-luna"
@@ -2373,7 +2373,7 @@ def test_experiment_reload_ignores_legacy_group_settings_backup(tmp_path, monkey
     groups = [{
         "name": "備援組", "answer_model": "disconnected-model",
         "judge_model": "judge-model",
-        "retrieval_config": _retrieval_config("基本向量檢索", 4, "停用", "證據擴展 V2"),
+        "retrieval_config": _retrieval_config("基本向量檢索", 4, "停用", "證據擴展"),
     }]
     ui.save_project(project["project_id"], {
         "experiment": {"groups": [], "summary_rows": [["備援組", 1]]},
@@ -2723,7 +2723,7 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
     project = ui.create_project("experiment-export")
     groups = [{
         "name": "向量組", "answer_model": "model-a", "judge_model": "judge-a",
-        "retrieval_config": _retrieval_config("基本向量檢索", 6, "停用", "證據擴展 V2"),
+        "retrieval_config": _retrieval_config("基本向量檢索", 6, "停用", "證據擴展"),
     }]
     result = {
         "group_index": 0, "group_name": "向量組", "number": 2,
@@ -2764,7 +2764,7 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
             "parameters": {
                 "answer_model": "model-a",
                 "retrieval_config": _retrieval_config(
-                    "基本向量檢索", 6, "停用", "證據擴展 V2",
+                    "基本向量檢索", 6, "停用", "證據擴展",
                 ),
         },
         "summary": {
@@ -2873,7 +2873,7 @@ def test_run_experiment_groups_outputs_each_group_summary_and_details(monkeypatc
         {"name": "向量", "answer_model": "model-a", "judge_model": "judge-x",
          "retrieval_config": _retrieval_config("基本向量檢索", 3)},
         {"name": "混合擴展", "answer_model": "model-b", "judge_model": "judge-y",
-         "retrieval_config": _retrieval_config("混合檢索", 12, "Reranker", "證據擴展 V2")},
+         "retrieval_config": _retrieval_config("混合檢索", 12, "Reranker", "證據擴展")},
     ]
 
     status, summaries, details, results = ui.run_experiment_groups_for_ui(
@@ -2884,7 +2884,7 @@ def test_run_experiment_groups_outputs_each_group_summary_and_details(monkeypatc
     assert status.startswith("✅ 已完成 2 個實驗組")
     assert summaries == [
         ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000", "", "未分類題目集"],
-        ["混合擴展", "model-b", "Reranker", "證據擴展 V2", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000", "", "未分類題目集"],
+        ["混合擴展", "model-b", "Reranker", "證據擴展", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000", "", "未分類題目集"],
     ]
     assert len(details) == len(results) == 4
     assert captured["workers"] == 2
@@ -3568,7 +3568,7 @@ def test_answer_question_for_ui_keeps_expanded_evidence_without_reranker(tmp_pat
     status, answer, _rows = ui.answer_question_for_ui(
         "http://models/v1", "key", "http://embed/v1", "embed-key",
         "bolt://db", "neo4j", "user", "password",
-        "answer", "問題", "混合檢索", 4, "停用", "證據擴展 V2",
+        "answer", "問題", "混合檢索", 4, "停用", "證據擴展",
     )
 
     assert status.startswith("✅ 混合檢索")
@@ -3648,14 +3648,14 @@ def test_evaluation_preferences_save_new_modes(monkeypatch) -> None:
 
     status = ui.save_evaluation_preferences_for_ui(
         "project", "generation-model", "test-model", 12, "混合檢索", 6,
-        False, 5, "LLM Reranker", "證據擴展 V2", "judge-model",
+        False, 5, "LLM Reranker", "證據擴展", "judge-model",
         strategy_params_json={"effective_search_ratio": 7},
     )
 
     assert status.startswith("✅")
     preferences = captured["evaluation"]["preferences"]
     expected_config = ui._retrieval_config_from_controls(
-        "混合檢索", 6, "LLM Reranker", "證據擴展 V2",
+        "混合檢索", 6, "LLM Reranker", "證據擴展",
         {"effective_search_ratio": 7},
     ).to_dict()
     assert preferences["retrieval_config"] == expected_config
@@ -3663,7 +3663,7 @@ def test_evaluation_preferences_save_new_modes(monkeypatch) -> None:
 
 def test_load_evaluation_restores_retrieval_modes(monkeypatch) -> None:
     retrieval = ui._retrieval_config_from_controls(
-        "基本向量檢索", 9, "LLM Reranker", "證據擴展 V2",
+        "基本向量檢索", 9, "LLM Reranker", "證據擴展",
         {"effective_search_ratio": 6},
     ).to_dict()
     monkeypatch.setattr(ui, "load_project", lambda _project_id: {"evaluation": {
@@ -3674,7 +3674,7 @@ def test_load_evaluation_restores_retrieval_modes(monkeypatch) -> None:
 
     loaded = ui.load_evaluation_for_ui("project")
 
-    assert loaded[9:11] == ("LLM Reranker", "證據擴展 V2")
+    assert loaded[9:11] == ("LLM Reranker", "證據擴展")
     assert loaded[17] == {"effective_search_ratio": 6}
     assert loaded[18]["visible"] is True and loaded[18]["value"] == 6
     assert loaded[19]["visible"] is False

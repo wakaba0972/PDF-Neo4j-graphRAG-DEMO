@@ -16,7 +16,7 @@ from manual_graphrag.retrieval_strategies import hybrid, vector
 
 def _retrieval_config(
     strategy_id="hybrid", top_k=3, candidate_top_k=None,
-    expansion_id="disabled", hops=4,
+    expansion_id="disabled",
 ):
     params = {
         "candidate_top_k": candidate_top_k or top_k,
@@ -24,11 +24,10 @@ def _retrieval_config(
     }
     if strategy_id == "hybrid":
         params["ranker"] = "naive"
-    expansion_params = {"hops": hops} if expansion_id == "graph_v2" else {}
     return RetrievalConfig(
         strategy_id, top_k, params,
         {"id": "disabled", "params": {}},
-        {"id": expansion_id, "params": expansion_params},
+        {"id": expansion_id, "params": {}},
     ).validated()
 
 
@@ -566,23 +565,6 @@ class ExpansionSearchSession:
                     "source_references_json": "[]",
                 },
             }])
-        if "MATCH path = (seed)-[" in query:
-            return FakeResult(rows=[
-                {"evidence": {
-                    "evidence_id": "relation-misfire-spark-plug", "kind": "關係",
-                    "name": "", "source": "第 1 缸失火", "target": "火星塞",
-                    "text": "第 1 缸失火可能由火星塞造成", "source_pages": [3],
-                    "source_chunk_numbers": [3], "source_documents": ["car.pdf"],
-                    "source_references_json": "[]",
-                }, "distance": 2},
-                {"evidence": {
-                    "evidence_id": "entity-spark-plug", "kind": "實體",
-                    "name": "火星塞", "source": "", "target": "",
-                    "text": "實體：火星塞", "source_pages": [2],
-                    "source_chunk_numbers": [2], "source_documents": ["car.pdf"],
-                    "source_references_json": "[]",
-                }, "distance": 3},
-            ])
         if 'kind: "原文"' in query:
             rows = [
                 {
@@ -630,49 +612,6 @@ class ExpansionRetriever:
         })()
 
 
-def test_graph_expansion_fetches_new_source_chunks_once(monkeypatch) -> None:
-    session = ExpansionSearchSession()
-    monkeypatch.setattr(
-        neo4j_service.GraphDatabase,
-        "driver",
-        lambda *args, **kwargs: SearchDriver(session),
-    )
-    monkeypatch.setattr(
-        hybrid, "HybridCypherRetriever", ExpansionRetriever
-    )
-
-    results = neo4j_service.search_graph_evidence(
-        "bolt://db",
-        "neo4j",
-        "user",
-        "password",
-        "run-1",
-        "P0301 怎麼處理",
-        [0.1],
-        _retrieval_config(top_k=5, expansion_id="graph_v2"),
-    )
-
-    assert [item["evidence_id"] for item in results] == [
-        "entity-p0301",
-        "relation-misfire-spark-plug",
-        "entity-spark-plug",
-        "chunk-1",
-        "chunk-3",
-        "chunk-2",
-    ]
-    source_queries = [
-        parameters["chunk_numbers"]
-        for query, parameters in session.calls
-        if 'kind: "原文"' in query
-    ]
-    assert source_queries == [[1, 3, 2]]
-    expansion_query = next(query for query, _parameters in session.calls if "MATCH path = (seed)-[" in query)
-    assert "EXTRACTED_RELATION" in expansion_query
-    assert "*1..4" in expansion_query
-    assert "WHERE NOT (candidate.evidence_id IN $seed_ids)" in expansion_query
-    assert "name IN $names" not in expansion_query
-
-
 def test_graph_expansion_can_be_disabled(monkeypatch) -> None:
     session = ExpansionSearchSession()
     monkeypatch.setattr(
@@ -718,9 +657,6 @@ def test_legacy_graph_expansion_uses_name_and_chunk_matching(monkeypatch) -> Non
     )
     assert "candidate.name IN $names" in legacy_query
     assert "source_chunk_numbers" in legacy_query
-    assert not any("MATCH path = (seed)-[" in query for query, _parameters in session.calls)
-
-
 def test_ensure_project_database_creates_then_checks_database(monkeypatch) -> None:
     class Session:
         def __init__(self, database):

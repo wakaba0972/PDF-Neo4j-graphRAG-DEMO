@@ -168,13 +168,12 @@ def register_retrieval_strategy(
 
 
 RERANKER_IDS = {"disabled", "lexical", "llm"}
-EXPANSION_IDS = {"disabled", "legacy_name_chunk", "graph_v2"}
+EXPANSION_IDS = {"disabled", "legacy_name_chunk"}
 RERANKER_LABEL_IDS = {
     "停用": "disabled", "Reranker": "lexical", "LLM Reranker": "llm",
 }
 EXPANSION_LABEL_IDS = {
     "停用": "disabled", "證據擴展": "legacy_name_chunk",
-    "證據擴展 V2": "graph_v2",
 }
 RERANKER_ID_LABELS = {value: key for key, value in RERANKER_LABEL_IDS.items()}
 EXPANSION_ID_LABELS = {value: key for key, value in EXPANSION_LABEL_IDS.items()}
@@ -236,13 +235,7 @@ class RetrievalConfig:
                 raise ValueError(f"{component['id']} 不接受 Reranker 參數")
             if component_name == "expansion":
                 params = component.get("params", {})
-                if component["id"] == "graph_v2":
-                    if set(params) - {"hops"}:
-                        raise ValueError("graph_v2 僅支援 hops 參數")
-                    hops = params.get("hops", 4)
-                    if isinstance(hops, bool) or not isinstance(hops, int) or not 1 <= hops <= 6:
-                        raise ValueError("graph_v2.hops 必須介於 1 到 6")
-                elif params:
+                if params:
                     raise ValueError(f"{component['id']} 不接受擴展參數")
         return self
 
@@ -287,13 +280,12 @@ class RetrievalConfig:
             for name, parameter in strategy.parameters.items()
             if name not in params and parameter.default is not None
         })
-        expansion_params = {"hops": 4} if expansion_id == "graph_v2" else {}
         return cls(
             strategy_id=strategy_id,
             top_k=selected_top_k,
             params=params,
             reranker={"id": reranker_id, "params": {}},
-            expansion={"id": expansion_id, "params": expansion_params},
+            expansion={"id": expansion_id, "params": {}},
         ).validated()
 
     def ui_values(self) -> tuple[str, int, str, str]:
@@ -324,12 +316,17 @@ class RetrievalConfig:
             and params["candidate_top_k"] < value["top_k"]
         ):
             params["candidate_top_k"] = value["top_k"]
+        expansion = dict(value["expansion"])
+        if expansion.get("id") == "graph_v2":
+            # Saved projects may still carry the removed V2 mode. Load them
+            # safely with expansion disabled rather than breaking the project.
+            expansion = {"id": "disabled", "params": {}}
         config = cls(
             strategy_id=value["strategy_id"],
             top_k=value["top_k"],
             params=params,
             reranker=value["reranker"],
-            expansion=value["expansion"],
+            expansion=expansion,
         )
         return config.validated()
 

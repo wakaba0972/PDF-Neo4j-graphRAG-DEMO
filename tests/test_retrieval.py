@@ -23,7 +23,7 @@ from manual_graphrag.retrieval_strategies.registry import load_strategy_specs
 
 def test_retrieval_config_keeps_stable_id_and_strategy_parameters() -> None:
     config = RetrievalConfig.from_ui(
-        "混合檢索", 8, "LLM Reranker", "證據擴展 V2", rerank_candidates=True,
+        "混合檢索", 8, "LLM Reranker", "證據擴展", rerank_candidates=True,
     )
 
     assert config.to_dict() == {
@@ -35,9 +35,21 @@ def test_retrieval_config_keeps_stable_id_and_strategy_parameters() -> None:
             "ranker": "naive",
         },
         "reranker": {"id": "llm", "params": {}},
-        "expansion": {"id": "graph_v2", "params": {"hops": 4}},
+        "expansion": {"id": "legacy_name_chunk", "params": {}},
     }
-    assert config.ui_values() == ("混合檢索", 8, "LLM Reranker", "證據擴展 V2")
+    assert config.ui_values() == ("混合檢索", 8, "LLM Reranker", "證據擴展")
+
+
+def test_removed_graph_v2_settings_load_as_disabled() -> None:
+    stored = RetrievalConfig.from_ui(
+        "混合檢索", 8, "停用", "停用",
+    ).to_dict()
+    stored["expansion"] = {"id": "graph_v2", "params": {"hops": 4}}
+
+    loaded = RetrievalConfig.from_dict(stored)
+
+    assert loaded.expansion == {"id": "disabled", "params": {}}
+    assert loaded.ui_values()[-1] == "停用"
 
 
 def test_retrieval_config_rejects_old_shape() -> None:

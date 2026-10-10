@@ -12,7 +12,7 @@ from .graph_service import (
 RERANK_CANDIDATE_MULTIPLIER = 3
 RERANK_MAX_CANDIDATES = 50
 RERANKER_MODES = ("停用", "Reranker", "LLM Reranker")
-EVIDENCE_EXPANSION_MODES = ("停用", "證據擴展", "證據擴展 V2")
+EVIDENCE_EXPANSION_MODES = ("停用", "證據擴展")
 
 
 def _search_terms(text: str) -> set[str]:

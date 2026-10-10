@@ -212,7 +212,6 @@ def search_graph_evidence(
     config: RetrievalConfig,
 ) -> list[dict[str, Any]]:
     config.validated()
-    graph_hops = config.expansion.get("params", {}).get("hops", 4)
     target_vector_index = vector_index_name(len(embedding))
     retrieval_top_k = config.params.get("candidate_top_k", config.top_k)
     retrieval_query = """
@@ -240,10 +239,6 @@ def search_graph_evidence(
             expansion_id = config.expansion["id"]
             if expansion_id != "disabled" and selected:
                 with driver.session(database=database.strip()) as session:
-                    seed_ids = list(dict.fromkeys(
-                        item.get("evidence_id", "") for item in selected
-                        if item.get("evidence_id")
-                    ))
                     def fetch_source_chunks(
                         target_chunk_numbers: list[int],
                     ) -> list[dict[str, Any]]:
@@ -340,42 +335,6 @@ def search_graph_evidence(
                             item for item in fetch_source_chunks(related_chunk_numbers)
                             if item.get("evidence_id", "") not in selected_ids
                         )
-                        expanded_records = []
-                    elif seed_ids:
-                        expanded_records = session.run(
-                            f"""
-                            MATCH (seed:GraphEvidence {{run_id: $run_id}})
-                            WHERE seed.evidence_id IN $seed_ids
-                            MATCH path = (seed)-[
-                                :REPRESENTS|EVIDENCE_SOURCE|EVIDENCE_TARGET|
-                                 MENTIONS_ENTITY|EXTRACTED_RELATION*1..{graph_hops}
-                            ]-(candidate:GraphEvidence {{run_id: $run_id}})
-                            WHERE NOT (candidate.evidence_id IN $seed_ids)
-                            WITH candidate, min(length(path)) AS distance
-                            RETURN candidate {{
-                                .evidence_id, .kind, .name, .source, .target, .text,
-                                .source_pages, .source_chunk_numbers, .source_documents,
-                                .source_references_json
-                            }} AS evidence, distance
-                            ORDER BY distance, candidate.evidence_id
-                            LIMIT $top_k
-                            """,
-                            run_id=run_id,
-                            seed_ids=seed_ids,
-                            top_k=retrieval_top_k,
-                        ).data()
-                    else:
-                        expanded_records = []
-                    selected_ids = {item.get("evidence_id", "") for item in selected}
-                    related_evidence = [
-                        _expanded_evidence(record["evidence"])
-                        for record in expanded_records
-                        if isinstance(record.get("evidence"), dict)
-                    ]
-                    selected.extend(
-                        item for item in related_evidence
-                        if item.get("evidence_id", "") not in selected_ids
-                    )
                     selected_ids = {item.get("evidence_id", "") for item in selected}
 
                     graph_chunk_numbers = list(dict.fromkeys(

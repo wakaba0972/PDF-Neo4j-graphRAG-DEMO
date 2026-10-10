@@ -5940,7 +5940,7 @@ def build_app() -> gr.Blocks:
         with gr.Tab("1-4 問答測試", interactive=False) as qa_tab:
             gr.Markdown(
                 "直接使用連線設定中的 Neo4j；預設查詢最近更新的建圖結果。"
-                "可選擇使用 LLM Reranker 重排候選，或啟用證據擴展 V2。"
+                "可選擇使用 LLM Reranker 重排候選，或啟用證據擴展。"
             )
             answer_model = gr.Dropdown(
                 choices=llm_choices,
