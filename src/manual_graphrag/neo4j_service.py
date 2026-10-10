@@ -210,6 +210,11 @@ def search_graph_evidence(
     question: str,
     embedding: list[float],
     config: RetrievalConfig,
+    *,
+    model_base_url: str = "",
+    model_api_key: str = "",
+    model: str = "",
+    reasoning_effort: str = "low",
 ) -> list[dict[str, Any]]:
     config.validated()
     target_vector_index = vector_index_name(len(embedding))
@@ -233,6 +238,10 @@ def search_graph_evidence(
                 retrieval_query=retrieval_query,
                 result_formatter=strategy.result_formatter,
                 retry=_retry_read,
+                model_base_url=model_base_url,
+                model_api_key=model_api_key,
+                model=model,
+                reasoning_effort=reasoning_effort,
             )
             selected = strategy.retrieve(context, config)[:retrieval_top_k]
 

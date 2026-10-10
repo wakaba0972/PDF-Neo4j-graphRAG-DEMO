@@ -1,0 +1,48 @@
+id: agentic
+name: Agentic Search
+order: 30
+implementation:
+  file: agentic/strategy.py
+  class: AgenticRetrievalStrategy
+parameters:
+  candidate_top_k:
+    type: integer
+    minimum: 1
+    maximum: 50
+    minimum_is_top_k: true
+    visible: false
+  seed_top_k:
+    type: integer
+    label: 起點證據數
+    default: 8
+    minimum: 1
+    maximum: 30
+    control: slider
+  max_hops:
+    type: integer
+    label: 最大圖譜跳數
+    default: 2
+    minimum: 1
+    maximum: 4
+    control: slider
+  max_branches:
+    type: integer
+    label: 每輪最多擴展實體數
+    default: 4
+    minimum: 1
+    maximum: 10
+    control: slider
+  hop_decay:
+    type: number
+    label: 每跳分數衰減
+    default: 0.8
+    minimum: 0.1
+    maximum: 1.0
+    control: slider
+  effective_search_ratio:
+    type: integer
+    label: 起點有效搜尋比例
+    default: 3
+    minimum: 1
+    maximum: 10
+    control: slider

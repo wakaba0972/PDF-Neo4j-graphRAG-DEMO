@@ -1131,7 +1131,14 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert loaded[0]["project_id"] == created["project_id"]
     assert loaded[11:13] == (1200, 100)
     assert loaded[22][0].text == "內容"
-    assert loaded[-1] == 6
+    parameter_entries = ui._strategy_parameter_entries()
+    assert loaded[-len(parameter_entries) - 1] == {"effective_search_ratio": 6}
+    hybrid_ratio = next(
+        update for (strategy_id, name, _spec), update
+        in zip(parameter_entries, loaded[-len(parameter_entries):])
+        if strategy_id == "hybrid" and name == "effective_search_ratio"
+    )
+    assert hybrid_ratio["value"] == 6 and hybrid_ratio["visible"] is True
     stored_project = ui.load_project(created["project_id"])
     assert "model_endpoint" not in stored_project["settings"]
     assert "api_key" not in stored_project["settings"]
@@ -2154,11 +2161,11 @@ def test_inline_experiment_groups_round_trip_strategy_specific_params() -> None:
 def test_strategy_parameter_controls_are_native_gradio_components() -> None:
     controls = ui._create_strategy_parameter_controls()
 
-    assert len(controls) == 1
-    assert isinstance(controls[0], ui.gr.Slider)
-    assert controls[0].label == "有效搜尋比例"
-    assert controls[0].minimum == 1
-    assert controls[0].maximum == 10
+    assert len(controls) == len(ui._visible_strategy_parameters())
+    controls_by_label = {control.label: control for control in controls}
+    assert isinstance(controls_by_label["有效搜尋比例"], ui.gr.Slider)
+    assert isinstance(controls_by_label["最大圖譜跳數"], ui.gr.Slider)
+    assert controls_by_label["最大圖譜跳數"].maximum == 4
 
 
 def test_strategy_specific_params_are_validated_from_json() -> None:
@@ -2176,10 +2183,9 @@ def test_strategy_specific_params_are_validated_from_json() -> None:
 def test_declared_strategy_parameters_render_as_native_gradio_controls() -> None:
     controls = ui._create_strategy_parameter_controls()
 
-    assert len(controls) == 1
-    assert isinstance(controls[0], ui.gr.Slider)
-    assert controls[0].label == "有效搜尋比例"
-    assert controls[0].get_config().get("value") == 3
+    controls_by_label = {control.label: control for control in controls}
+    assert controls_by_label["有效搜尋比例"].get_config().get("value") == 3
+    assert controls_by_label["最大圖譜跳數"].get_config().get("value") == 2
 
 
 def test_native_strategy_parameter_value_is_saved_without_json_encoding() -> None:
@@ -2200,7 +2206,9 @@ def test_experiment_strategy_controls_show_only_selected_strategy_parameters() -
     )
 
     assert synced[0] == {"effective_search_ratio": 6}
-    assert [item["visible"] for item in synced[1:]] == [True, False]
+    assert [item["visible"] for item in synced[1:]] == [
+        strategy_id == "vector" for strategy_id, _name, _spec in entries
+    ]
 
 
 def test_single_evaluation_strategy_controls_sync_active_parameters() -> None:
@@ -2211,7 +2219,9 @@ def test_single_evaluation_strategy_controls_sync_active_parameters() -> None:
     synced = ui._sync_single_strategy_parameter_controls("基本向量檢索", *values)
 
     assert synced[0] == {"effective_search_ratio": 6}
-    assert [item["visible"] for item in synced[1:]] == [True, False]
+    assert [item["visible"] for item in synced[1:]] == [
+        strategy_id == "vector" for strategy_id, _name, _spec in entries
+    ]
 
 
 def test_experiment_group_ui_renders_and_saves_new_strategy_parameter(request) -> None:
@@ -2231,16 +2241,22 @@ def test_experiment_group_ui_renders_and_saves_new_strategy_parameter(request) -
     ))
 
     controls = ui._create_experiment_strategy_parameter_controls()
-    values = [3, 3, 7]
+    entries = ui._strategy_parameter_entries()
+    values = [
+        7 if strategy_id == "beam" else spec.default
+        for strategy_id, _name, spec in entries
+    ]
     synced = ui._sync_experiment_strategy_parameter_controls(
         "Beam 搜尋", "Beam 組", *values,
     )
 
-    assert len(controls) == 3
-    assert isinstance(controls[-1], ui.gr.Slider)
-    assert controls[-1].label == "搜尋寬度"
+    assert len(controls) == len(entries)
+    beam_control = next(control for control in controls if control.label == "搜尋寬度")
+    assert isinstance(beam_control, ui.gr.Slider)
     assert synced[0] == {"beam_width": 7}
-    assert [item["visible"] for item in synced[1:]] == [False, False, True]
+    assert [item["visible"] for item in synced[1:]] == [
+        strategy_id == "beam" for strategy_id, _name, _spec in entries
+    ]
 
 
 def test_inline_experiment_groups_autosave_and_reload(tmp_path, monkeypatch) -> None:
@@ -2605,6 +2621,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     assert sum(
         component.get("props", {}).get("choices") == [
             ("基本向量檢索", "基本向量檢索"), ("混合檢索", "混合檢索"),
+            ("Agentic Search", "Agentic Search"),
         ]
         and component.get("type") == "dropdown"
         for component in components
@@ -3556,6 +3573,54 @@ def test_answer_question_for_ui_can_disable_reranker(tmp_path, monkeypatch) -> N
         "0.0300", "3", "2", "",
     ]]
     assert not (tmp_path / "data" / "qa").exists()
+
+
+def test_answer_question_for_ui_passes_model_context_to_agentic_strategy(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ui, "load_latest_graph", lambda *_args: {
+        "run_id": "run-1", "document": "manual.pdf", "embedding_model": "embed",
+    })
+    monkeypatch.setattr(ui, "embedding_vectors", lambda *_args: [[0.1]])
+    captured = {}
+
+    def fake_search(*args, **kwargs):
+        captured["config"] = args[7]
+        captured["model_context"] = kwargs
+        return [{
+            "evidence_id": "chunk-agent", "kind": "原文", "text": "路徑原文",
+            "source_pages": [3], "source_chunk_numbers": [5],
+            "source_documents": ["manual.pdf"], "score": 0.8,
+            "fusion_score": 0.8, "matched_by": ["agentic-graph"],
+            "graph_path": [{
+                "from": "A", "to": "B", "traversed_from": "A",
+                "traversed_to": "B", "type": "影響",
+            }],
+        }]
+
+    monkeypatch.setattr(ui, "search_graph_evidence", fake_search)
+    monkeypatch.setattr(ui, "answer_graph_question", lambda *args: {
+        "answer": "根據路徑原文回答。", "evidence": args[-1],
+    })
+
+    status, answer, rows = ui.answer_question_for_ui(
+        "https://api.example/v1", "secret", "https://api.example/v1", "embed-key",
+        "bolt://db", "neo4j", "user", "password", "gpt-4.1-mini", "問題？",
+        "Agentic Search", 5, "停用", "停用", "low",
+        strategy_params={
+            "candidate_top_k": 5, "seed_top_k": 2, "max_hops": 1,
+            "max_branches": 3, "hop_decay": 0.7, "effective_search_ratio": 2,
+        },
+    )
+
+    assert status.startswith("✅ Agentic Search")
+    assert answer == "根據路徑原文回答。"
+    assert captured["config"].strategy_id == "agentic"
+    assert captured["config"].params["max_hops"] == 1
+    assert captured["model_context"] == {
+        "model_base_url": "https://api.example/v1", "model_api_key": "secret",
+        "model": "gpt-4.1-mini", "reasoning_effort": "low",
+    }
+    assert "A -[影響]-> B" in rows[0][2]
 
 
 def test_answer_question_for_ui_keeps_expanded_evidence_without_reranker(tmp_path, monkeypatch) -> None:

@@ -343,6 +343,10 @@ class RetrievalContext:
     retrieval_query: str
     result_formatter: Any
     retry: Any
+    model_base_url: str = ""
+    model_api_key: str = ""
+    model: str = ""
+    reasoning_effort: str = "low"
 
 
 class RetrievalStrategy(Protocol):

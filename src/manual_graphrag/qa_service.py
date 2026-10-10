@@ -8,6 +8,7 @@ from .graph_service import (
     GPT_6_LUNA_MODEL, GPT_6_LUNA_REASONING_EFFORTS,
     _api_url, _chat_response_content, _extract_json_text, _post_json,
 )
+from .retrieval import RETRIEVAL_STRATEGIES
 
 RERANK_CANDIDATE_MULTIPLIER = 3
 RERANK_MAX_CANDIDATES = 50
@@ -221,7 +222,7 @@ def answer_graph_question(
         raise ValueError("請輸入問題")
     if not answer_model.strip():
         raise ValueError("請選擇問答 LLM")
-    if strategy_id not in {"vector", "hybrid"}:
+    if strategy_id not in RETRIEVAL_STRATEGIES.ids():
         raise ValueError("不支援的檢索策略 ID")
     if not evidence:
         raise ValueError("Neo4j 檢索找不到相關證據")

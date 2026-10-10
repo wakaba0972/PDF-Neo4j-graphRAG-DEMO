@@ -20,11 +20,12 @@ def test_answer_graph_question_omits_max_tokens(monkeypatch) -> None:
         "secret",
         "model-a",
         "問題",
-        "vector",
-        [{"text": "證據"}],
+        "agentic",
+        [{"text": "證據", "graph_path": [{"from": "A", "type": "影響", "to": "B"}]}],
     )
 
     assert result["answer"] == "答案"
+    assert result["evidence"][0]["graph_path"][0]["to"] == "B"
     assert captured["url"] == "http://models/v1/chat/completions"
     assert captured["api_key"] == "secret"
     assert "max_tokens" not in captured["payload"]

@@ -805,9 +805,7 @@ def _retrieval_config_from_controls(
         # Single numeric native controls (for example a Gradio Slider) are
         # accepted directly and mapped to the matching declared parameter.
         parameter_names = {
-            name
-            for strategy_id in RETRIEVAL_STRATEGIES.ids()
-            for name, spec in RETRIEVAL_STRATEGIES.get_spec(strategy_id).parameters.items()
+            name for name, spec in RETRIEVAL_STRATEGIES.get_spec(config.strategy_id).parameters.items()
             if spec.visible_in_ui and spec.value_type in (int, float)
         }
         if len(parameter_names) != 1:
@@ -931,6 +929,23 @@ def _evaluation_strategy_parameter_values(config: RetrievalConfig) -> tuple[Any,
     return (
         _visible_params_for_strategy(config),
         *_experiment_strategy_parameter_updates(config, True),
+    )
+
+
+def _single_strategy_parameter_updates(config: RetrievalConfig) -> tuple[Any, ...]:
+    """Return saved params plus per-strategy native control updates."""
+    config.validated()
+    entries = _strategy_parameter_entries()
+    params = _visible_params_for_strategy(config)
+    return (
+        params,
+        *[
+            gr.update(
+                value=params.get(name, spec.default),
+                visible=(strategy_id == config.strategy_id),
+            )
+            for strategy_id, name, spec in entries
+        ],
     )
 
 
@@ -1058,7 +1073,7 @@ def save_project_for_ui(
     graph_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     extraction_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     answer_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
-    retrieval_strategy_params_json: str = "{}",
+    retrieval_strategy_params_json: Any = None,
 ) -> tuple[dict[str, Any], str]:
     if not project_id:
         return {}, "❌ 請先建立或載入專案。"
@@ -1177,7 +1192,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
             visible=str(get("answer_model", DEFAULT_LLM_MODEL) or "").casefold() == GPT_6_LUNA_MODEL,
             choices=list(GPT_6_LUNA_REASONING_EFFORTS),
         ),
-        _strategy_parameter_value(project_retrieval, "effective_search_ratio"),
+        *_single_strategy_parameter_updates(project_retrieval),
     )
 
 
@@ -5536,6 +5551,10 @@ def answer_question_for_ui(
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
             graph_state["run_id"], question.strip(), question_vector,
             retrieval_config,
+            model_base_url=model_endpoint,
+            model_api_key=api_key,
+            model=answer_model,
+            reasoning_effort=reasoning_effort or "low",
         )
         if retrieval_config.reranker["id"] == "llm":
             evidence = rerank_evidence(
@@ -5559,7 +5578,19 @@ def answer_question_for_ui(
         [
             item["kind"],
             item["text"],
-            ", ".join(item.get("matched_by", [])),
+            ", ".join(item.get("matched_by", [])) + (
+                "｜路徑：" + " → ".join(
+                    f"{step.get('traversed_from', step.get('from', ''))} "
+                    f"-[{step.get('type', '')}]-> "
+                    f"{step.get('traversed_to', step.get('to', ''))}"
+                    + (
+                        f"（圖譜方向：{step.get('from', '')} → {step.get('to', '')}）"
+                        if step.get("traversed_from", step.get("from")) != step.get("from")
+                        else ""
+                    )
+                    for step in item.get("graph_path", [])
+                ) if item.get("graph_path") else ""
+            ),
             f"{item.get('fusion_score', 0.0):.4f}",
             _source_display(item)[1],
             _source_display(item)[0],
@@ -5923,6 +5954,7 @@ def build_app() -> gr.Blocks:
             gr.Markdown(
                 "直接使用連線設定中的 Neo4j；預設查詢最近更新的建圖結果。"
                 "可選擇使用 LLM Reranker 重排候選，或啟用證據擴展。"
+                "Agentic Search 每一跳會額外呼叫問答模型一次，由最大圖譜跳數限制；模型只選擇候選，不會執行任意 Cypher。"
             )
             answer_model = gr.Dropdown(
                 choices=llm_choices,
@@ -5947,7 +5979,13 @@ def build_app() -> gr.Blocks:
                     choices=list(EVIDENCE_EXPANSION_MODES), value="停用", label="證據擴展模式",
                     info="在策略檢索後，透過圖譜關係擴展候選證據。", allow_custom_value=False,
                 )
-            retrieval_strategy_params_json = _create_strategy_parameter_controls()[0]
+            default_qa_retrieval = RetrievalConfig.from_dict(_default_retrieval_config())
+            retrieval_strategy_params_state = gr.State(
+                _visible_params_for_strategy(default_qa_retrieval)
+            )
+            retrieval_strategy_parameter_controls = _create_experiment_strategy_parameter_controls(
+                initial_strategy_id=default_qa_retrieval.strategy_id,
+            )
             ask_button = gr.Button("送出問題", variant="primary")
             answer_status = gr.Markdown()
             gr.HTML(
@@ -7303,7 +7341,7 @@ def build_app() -> gr.Blocks:
             extraction_max_concurrent_requests, retrieval_mode,
             top_k, schema_editor, graph_reasoning_effort,
             extraction_reasoning_effort, answer_reasoning_effort,
-            retrieval_strategy_params_json,
+            retrieval_strategy_params_state,
         ]
         project_load_outputs = [
             project_state, project_status,
@@ -7321,7 +7359,8 @@ def build_app() -> gr.Blocks:
             chunk_table, page_status,
             entity_table, relationship_table, build_status, import_status,
             graph_reasoning_effort, extraction_reasoning_effort,
-            answer_reasoning_effort, retrieval_strategy_params_json,
+            answer_reasoning_effort, retrieval_strategy_params_state,
+            *retrieval_strategy_parameter_controls,
         ]
         for effort_control in [
             graph_reasoning_effort, extraction_reasoning_effort, answer_reasoning_effort,
@@ -7330,7 +7369,18 @@ def build_app() -> gr.Blocks:
                 save_project_for_ui, inputs=project_setting_inputs,
                 outputs=[project_state, project_status], show_progress="hidden",
             )
-        for retrieval_control in [retrieval_mode, top_k, retrieval_strategy_params_json]:
+        qa_strategy_parameter_inputs = [retrieval_mode, *retrieval_strategy_parameter_controls]
+        for retrieval_control in qa_strategy_parameter_inputs:
+            retrieval_control.input(
+                _sync_single_strategy_parameter_controls,
+                inputs=qa_strategy_parameter_inputs,
+                outputs=[retrieval_strategy_params_state, *retrieval_strategy_parameter_controls],
+                show_progress="hidden",
+            ).then(
+                save_project_for_ui, inputs=project_setting_inputs,
+                outputs=[project_state, project_status], show_progress="hidden",
+            )
+        for retrieval_control in [top_k, use_reranker, expand_evidence]:
             retrieval_control.input(
                 save_project_for_ui, inputs=project_setting_inputs,
                 outputs=[project_state, project_status], show_progress="hidden",
@@ -7795,7 +7845,7 @@ def build_app() -> gr.Blocks:
                 use_reranker,
                 expand_evidence,
                 answer_reasoning_effort,
-                retrieval_strategy_params_json,
+                retrieval_strategy_params_state,
             ],
             outputs=[answer_status, answer, answer_sources],
         )
