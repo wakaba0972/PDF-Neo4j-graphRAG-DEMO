@@ -2689,16 +2689,9 @@ def _evaluation_summary(results: list[dict[str, Any]], *, loaded: bool = False) 
     passed = sum(_result_score(item) == 2 for item in results)
     partial = sum(_result_score(item) == 1 for item in results)
     total = len(results)
-    recall_at_5 = sum(bool(item.get("recall_at_5")) for item in results) / total
-    recall_at_10 = sum(
-        bool(item.get(
-            "recall_at_10",
-            item.get("retrieval_rank") is not None
-            and int(item["retrieval_rank"]) <= 10,
-        ))
-        for item in results
-    ) / total
-    mrr = sum(float(item.get("reciprocal_rank", 0)) for item in results) / total
+    evidence_hit_rate = _mean_result_metric(results, "evidence_hit")
+    evidence_precision = _mean_result_metric(results, "evidence_precision")
+    document_hit_rate = _mean_result_metric(results, "document_hit")
 
     document_totals: dict[str, list[int]] = {}
     for item in results:
@@ -2715,11 +2708,16 @@ def _evaluation_summary(results: list[dict[str, Any]], *, loaded: bool = False) 
     heading = "已載入測試結果" if loaded else "測試完成"
     failed = sum(_result_score(item) == 0 for item in results)
     accuracy = sum(_result_score(item) for item in results) / (2 * total) * 100
+    def percent(value: float | None) -> str:
+        return f"{value:.1%}" if value is not None else "—"
+
     return (
         f"## {heading}｜完全正確 {passed} 題 / {total} 題  "
         f"\n部分正確：{partial} 題｜錯誤：{failed} 題｜得分正確率：{accuracy:.1f}%"
         f"\n\n### 各 PDF 結果\n{document_summary}"
-        f"  \nRecall@5：{recall_at_5:.1%}｜Recall@10：{recall_at_10:.1%}｜MRR：{mrr:.3f}"
+        f"  \nEvidence Hit Rate：{percent(evidence_hit_rate)}"
+        f"｜Evidence Precision：{percent(evidence_precision)}"
+        f"｜Document Hit Rate：{percent(document_hit_rate)}"
     )
 
 
@@ -2791,27 +2789,29 @@ def _preserve_source_document_ids(
     return questions
 
 
-def _retrieval_rank(
+def _retrieval_metrics(
     question: dict[str, Any], rows: list[list[object]],
     document_ids_by_name: dict[str, str] | None = None,
-) -> int | None:
+) -> dict[str, bool | float | None]:
     document_ids_by_name = document_ids_by_name or {}
     references = question.get("answer_sources") or _legacy_answer_sources(question)
-    expected_sources: set[tuple[tuple[str, str], int]] = set()
+
+    def identity(name: str, document_id: str = "") -> tuple[str, str] | None:
+        if document_id:
+            return ("id", document_id)
+        if name in document_ids_by_name:
+            return ("id", document_ids_by_name[name])
+        return ("name", name) if name else None
+
+    gold_sources: set[tuple[tuple[str, str], int]] = set()
     for reference in references:
         name = str(reference.get("document_name") or "")
         document_id = str(reference.get("document_id") or "")
+        source_identity = identity(name, document_id)
         for page in reference.get("pages", []):
-            identity = (
-                ("id", document_id or document_ids_by_name[name])
-                if document_id or name in document_ids_by_name
-                else ("name", name)
-            )
-            if document_id or name:
-                expected_sources.add((identity, int(page)))
-                if document_id and document_id not in document_ids_by_name.values() and name:
-                    expected_sources.add((("name", name), int(page)))
-    if not expected_sources:
+            if source_identity:
+                gold_sources.add((source_identity, int(page)))
+    if not gold_sources:
         document = str(question.get("document") or "")
         expected_pages = {
             int(value) for value in question.get(
@@ -2819,33 +2819,50 @@ def _retrieval_rank(
             )
         }
         if document and expected_pages:
-            identity = (
-                ("id", document_ids_by_name[document])
-                if document in document_ids_by_name else ("name", document)
-            )
-            expected_sources = {(identity, page) for page in expected_pages}
-    if not expected_sources:
-        return None
-    ranked_pages: list[tuple[tuple[str, str], int]] = []
-    seen_pages: set[tuple[tuple[str, str], int]] = set()
+            source_identity = identity(document)
+            if source_identity:
+                gold_sources = {(source_identity, page) for page in expected_pages}
+    if not gold_sources:
+        return {
+            "evidence_hit": None,
+            "evidence_precision": None,
+            "document_hit": None,
+        }
+
+    retrieved_sources: set[tuple[tuple[str, str], int]] = set()
+    retrieved_documents: set[tuple[str, str]] = set()
     for row in rows:
         documents = [value for value in re.split(r"[、\n]", str(row[6])) if value]
         for source_document in documents:
+            source_identity = identity(source_document)
+            if source_identity:
+                retrieved_documents.add(source_identity)
             pages = _source_values_for_document(row[4], row[6], source_document)
-            for page in sorted(pages):
-                identity = (
-                    ("id", document_ids_by_name[source_document])
-                    if source_document in document_ids_by_name
-                    else ("name", source_document)
-                )
-                source = (identity, page)
-                if source not in seen_pages:
-                    seen_pages.add(source)
-                    ranked_pages.append(source)
-    for rank, source in enumerate(ranked_pages, start=1):
-        if source in expected_sources:
-            return rank
-    return None
+            if source_identity:
+                retrieved_sources.update((source_identity, page) for page in pages)
+
+    matched_sources = retrieved_sources & gold_sources
+    gold_documents = {source_identity for source_identity, _page in gold_sources}
+    return {
+        "evidence_hit": bool(matched_sources),
+        "evidence_precision": (
+            len(matched_sources) / len(retrieved_sources) if retrieved_sources else 0.0
+        ),
+        "document_hit": bool(gold_documents & retrieved_documents),
+    }
+
+
+def _mean_result_metric(results: list[dict[str, Any]], name: str) -> float | None:
+    values = []
+    for item in results:
+        value = item.get(name)
+        if value is None:
+            continue
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return sum(values) / len(values) if values else None
 
 
 def load_evaluation_for_ui(project_id: str) -> tuple[Any, ...]:
@@ -3100,11 +3117,7 @@ def generate_evaluation_answers_for_ui(
     except (TypeError, ValueError, OverflowError) as exc:
         return f"❌ {exc}", evaluation, []
     _, _, reranker_mode, expansion_mode = retrieval_config.ui_values()
-    # Recall@10 requires fetching at least ten candidates, even when the
-    # selected answer Top K is lower. Keep the internal candidate budget in
-    # sync with that effective value before passing explicit strategy params;
-    # otherwise the downstream config validator rejects candidate_top_k < 10.
-    answer_top_k = max(int(top_k), 10)
+    answer_top_k = int(top_k)
     answer_strategy_params = dict(retrieval_config.params)
     if "candidate_top_k" in answer_strategy_params:
         answer_strategy_params["candidate_top_k"] = max(
@@ -3130,7 +3143,7 @@ def generate_evaluation_answers_for_ui(
             evidence_expansion_mode=expansion_mode,
             strategy_params=answer_strategy_params,
         )
-        rank = _retrieval_rank(item, evidence_rows, document_ids_by_name)
+        retrieval_metrics = _retrieval_metrics(item, evidence_rows, document_ids_by_name)
         return {
             **item,
             "answer_model": model,
@@ -3138,10 +3151,7 @@ def generate_evaluation_answers_for_ui(
             **_reasoning_effort_record(model, answer_reasoning_effort, "answer_reasoning_effort"),
             "actual_answer": actual,
             "answer_status": status,
-            "retrieval_rank": rank,
-            "recall_at_5": rank is not None and rank <= 5,
-            "recall_at_10": rank is not None and rank <= 10,
-            "reciprocal_rank": 1 / rank if rank else 0.0,
+            **retrieval_metrics,
         }
 
     answers: list[dict[str, Any] | None] = [None] * len(questions)
@@ -3273,13 +3283,13 @@ def run_evaluation_for_ui(
         status, actual, evidence_rows = answer_question_for_ui(
             model_endpoint, api_key, embedding_api_base, embedding_api_key,
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
-            model, item["question"], retrieval_mode, max(int(top_k), 10),
+            model, item["question"], retrieval_mode, int(top_k),
             reranker_mode, expansion_mode,
             **_reasoning_effort_kwargs(model, answer_reasoning_effort),
             reranker_mode=reranker_mode,
             evidence_expansion_mode=expansion_mode,
         )
-        retrieval_rank = _retrieval_rank(item, evidence_rows, document_ids_by_name)
+        retrieval_metrics = _retrieval_metrics(item, evidence_rows, document_ids_by_name)
         if status.startswith("✅"):
             try:
                 judgment = judge_evaluation_answer(
@@ -3310,10 +3320,7 @@ def run_evaluation_for_ui(
             **_reasoning_effort_record(model, answer_reasoning_effort, "answer_reasoning_effort"),
             **_reasoning_effort_record(effective_judge_model, judge_reasoning_effort, "judge_reasoning_effort"),
             "actual_answer": actual,
-            "retrieval_rank": retrieval_rank,
-            "recall_at_5": retrieval_rank is not None and retrieval_rank <= 5,
-            "recall_at_10": retrieval_rank is not None and retrieval_rank <= 10,
-            "reciprocal_rank": 1 / retrieval_rank if retrieval_rank else 0.0,
+            **retrieval_metrics,
             **_normalize_judgment(judgment),
         }
 
@@ -3423,7 +3430,7 @@ def run_experiment_groups_for_ui(
                 group.get("answer_reasoning_effort"),
             ),
         )
-        rank = _retrieval_rank(item, evidence_rows, document_ids_by_name)
+        retrieval_metrics = _retrieval_metrics(item, evidence_rows, document_ids_by_name)
         if status.startswith("✅"):
             try:
                 judgment = judge_evaluation_answer(
@@ -3464,10 +3471,7 @@ def run_experiment_groups_for_ui(
             "expected_answer": item["expected_answer"],
             "document": item.get("document", ""),
             "actual_answer": actual,
-            "retrieval_rank": rank,
-            "recall_at_5": rank is not None and rank <= 5,
-            "recall_at_10": rank is not None and rank <= 10,
-            "reciprocal_rank": 1 / rank if rank else 0.0,
+            **retrieval_metrics,
             **_normalize_judgment(judgment),
         }
 
@@ -3501,7 +3505,6 @@ def run_experiment_groups_for_ui(
         item["expected_answer"], item["actual_answer"],
         _result_score(item),
         item.get("verification_changed"), item["reason"],
-        item["retrieval_rank"],
     ] for item in completed_results]
     status = f"✅ 已完成 {len(groups)} 個實驗組，共 {len(tasks)} 個題次；結果已自動儲存。"
     if persist:
@@ -3515,6 +3518,7 @@ def run_experiment_groups_for_ui(
                 "judge_reasoning_effort": effective_judge_effort,
                 "verification_enabled": bool(verification_enabled),
                 "results": completed_results, "summary_rows": summary_rows,
+                "retrieval_metrics_version": 1,
                 "detail_rows": detail_rows, "status": status,
             })
         except (OSError, ValueError) as exc:
@@ -3544,14 +3548,17 @@ def _single_experiment_summary_rows(
             source_project_name = next(
                 (item.get("source_project_name", "") for item in selected), "",
             )
+            hit_rate = _mean_result_metric(selected, "evidence_hit")
+            precision = _mean_result_metric(selected, "evidence_precision")
+            document_hit_rate = _mean_result_metric(selected, "document_hit")
             summaries.append([
                 group["name"], group["answer_model"], _group_reranker_mode(group),
                 _group_expansion_mode(group), judge_model, total,
                 f"{correct} / {total}", sum(_result_score(item) == 1 for item in selected),
                 f"{weighted_accuracy:.1%}" if total else "—",
-                f"{sum(bool(item.get('recall_at_5')) for item in selected) / total:.1%}" if total else "—",
-                f"{sum(bool(item.get('recall_at_10')) for item in selected) / total:.1%}" if total else "—",
-                f"{sum(float(item.get('reciprocal_rank', 0)) for item in selected) / total:.3f}" if total else "—",
+                f"{hit_rate:.1%}" if hit_rate is not None else "—",
+                f"{precision:.1%}" if precision is not None else "—",
+                f"{document_hit_rate:.1%}" if document_hit_rate is not None else "—",
                 source_project_name, set_name,
             ])
     return summaries
@@ -3628,7 +3635,7 @@ def generate_experiment_answers_for_ui(
             **_reasoning_effort_kwargs(group["answer_model"], group.get("answer_reasoning_effort")),
             strategy_params=_group_retrieval_config(group).params,
         )
-        rank = _retrieval_rank(question, evidence_rows, document_ids_by_name)
+        retrieval_metrics = _retrieval_metrics(question, evidence_rows, document_ids_by_name)
         return {
             "group_index": group_index, "group_name": group["name"],
             "answer_model": group["answer_model"],
@@ -3641,10 +3648,7 @@ def generate_experiment_answers_for_ui(
             "question_set_name": question.get("question_set_name", "未分類題目集"),
             "question": question["question"], "expected_answer": question["expected_answer"],
             "document": question.get("document", ""), "actual_answer": actual,
-            "answer_status": status, "retrieval_rank": rank,
-            "recall_at_5": rank is not None and rank <= 5,
-            "recall_at_10": rank is not None and rank <= 10,
-            "reciprocal_rank": 1 / rank if rank else 0.0,
+            "answer_status": status, **retrieval_metrics,
         }
 
     try:
@@ -3745,6 +3749,7 @@ def evaluate_experiment_answers_for_ui(
         _save_experiment_data(project_id, {
             **previous, "pending_answers": pending_answers, "results": results,
             "summary_rows": summary, "detail_rows": details,
+            "retrieval_metrics_version": 1,
             "judge_model": judge_model, "judge_reasoning_effort": judge_reasoning_effort,
             "judge_max_concurrent_requests": concurrency, "status": status,
         })
@@ -3808,6 +3813,7 @@ def update_manual_experiment_result_for_ui(
         details = _single_experiment_detail_rows(current)
         _save_experiment_data(project_id, {
             **data, "results": current, "summary_rows": summary,
+            "retrieval_metrics_version": 1,
             "detail_rows": details,
         })
     except (OSError, TypeError, ValueError) as exc:
@@ -3852,6 +3858,7 @@ def export_experiment_results_for_ui(
             return "❌ 尚無實驗結果可匯出。", None, None
 
         summaries = {}
+        retrieval_metrics_version = int(experiment.get("retrieval_metrics_version", 0) or 0)
         for row in summary_rows:
             if not row:
                 continue
@@ -3860,21 +3867,23 @@ def export_experiment_results_for_ui(
                     "answer_model": row[1], "judge_model": row[4],
                     "question_count": row[5], "correct_total": row[6],
                     "partial_count": row[7], "accuracy": row[8],
-                    "recall_at_5": row[9], "recall_at_10": row[10], "mrr": row[11],
+                    "evidence_hit_rate": row[9] if retrieval_metrics_version else None,
+                    "evidence_precision": row[10] if retrieval_metrics_version else None,
+                    "document_hit_rate": row[11] if retrieval_metrics_version else None,
                 }
             elif len(row) >= 11:
                 summaries[str(row[0])] = {
                     "answer_model": row[1], "judge_model": row[4],
                     "question_count": row[5], "correct_total": row[6],
-                    "accuracy": row[7], "recall_at_5": row[8],
-                    "recall_at_10": row[9], "mrr": row[10],
+                    "accuracy": row[7], "evidence_hit_rate": None,
+                    "evidence_precision": None, "document_hit_rate": None,
                 }
             elif len(row) >= 9:
                 summaries[str(row[0])] = {
                     "answer_model": row[1], "judge_model": row[2],
                     "question_count": row[3], "correct_total": row[4],
-                    "accuracy": row[5], "recall_at_5": row[6],
-                    "recall_at_10": row[7], "mrr": row[8],
+                    "accuracy": row[5], "evidence_hit_rate": None,
+                    "evidence_precision": None, "document_hit_rate": None,
                 }
             else:
                 summaries[str(row[0])] = {
@@ -3882,14 +3891,15 @@ def export_experiment_results_for_ui(
                     "judge_model": row[2] if len(row) >= 8 else None,
                     "question_count": row[3] if len(row) >= 8 else row[1] if len(row) > 1 else 0,
                     "accuracy": row[4] if len(row) >= 8 else row[2] if len(row) > 2 else None,
-                    "recall_at_5": row[5] if len(row) >= 8 else row[3] if len(row) > 3 else None,
-                    "recall_at_10": row[6] if len(row) >= 8 else row[4] if len(row) > 4 else None,
-                    "mrr": row[7] if len(row) >= 8 else row[5] if len(row) > 5 else None,
+                    "evidence_hit_rate": None,
+                    "evidence_precision": None,
+                    "document_hit_rate": None,
                 }
         result_fields = (
             "number", "question", "document", "expected_answer", "actual_answer",
-            "answer_model", "judge_model", "score", "passed", "reason", "retrieval_rank", "recall_at_5", "recall_at_10",
-            "reciprocal_rank", "answer_reasoning_effort", "judge_reasoning_effort",
+            "answer_model", "judge_model", "score", "passed", "reason",
+            "evidence_hit", "evidence_precision", "document_hit",
+            "answer_reasoning_effort", "judge_reasoning_effort",
             "manual_judgment", "verification_enabled", "first_passed", "first_reason",
             "verification_passed", "verification_reason", "verification_changed",
             "verification_error",
@@ -3914,18 +3924,9 @@ def export_experiment_results_for_ui(
                 correct_count = sum(_result_score(result) == 2 for result in group_results)
                 partial_count = sum(_result_score(result) == 1 for result in group_results)
                 accuracy = sum(_result_score(result) for result in group_results) / (2 * question_count)
-                recall_at_5 = (
-                    sum(bool(result.get("recall_at_5")) for result in group_results)
-                    / question_count
-                )
-                recall_at_10 = (
-                    sum(bool(result.get("recall_at_10")) for result in group_results)
-                    / question_count
-                )
-                mrr = (
-                    sum(float(result.get("reciprocal_rank", 0) or 0) for result in group_results)
-                    / question_count
-                )
+                evidence_hit_rate = _mean_result_metric(group_results, "evidence_hit")
+                evidence_precision = _mean_result_metric(group_results, "evidence_precision")
+                document_hit_rate = _mean_result_metric(group_results, "document_hit")
             else:
                 question_count = int(saved_summary.get("question_count", 0) or 0)
                 raw_accuracy = saved_summary.get("accuracy", 0) or 0
@@ -3949,12 +3950,9 @@ def export_experiment_results_for_ui(
                     except (TypeError, ValueError):
                         return None
 
-                recall_at_5 = rate(saved_summary.get("recall_at_5"))
-                recall_at_10 = rate(saved_summary.get("recall_at_10"))
-                try:
-                    mrr = float(saved_summary.get("mrr")) if saved_summary.get("mrr") is not None else None
-                except (TypeError, ValueError):
-                    mrr = None
+                evidence_hit_rate = rate(saved_summary.get("evidence_hit_rate"))
+                evidence_precision = rate(saved_summary.get("evidence_precision"))
+                document_hit_rate = rate(saved_summary.get("document_hit_rate"))
             summary = {
                 "answer_model": saved_summary.get("answer_model") or group.get("answer_model"),
                 "judge_model": (
@@ -3966,9 +3964,9 @@ def export_experiment_results_for_ui(
                 "partial_count": partial_count,
                 "correct_total": f"{correct_count} / {question_count}",
                 "accuracy": accuracy,
-                "recall_at_5": recall_at_5,
-                "recall_at_10": recall_at_10,
-                "mrr": mrr,
+                "evidence_hit_rate": evidence_hit_rate,
+                "evidence_precision": evidence_precision,
+                "document_hit_rate": document_hit_rate,
             }
             parameters = {
                 "answer_model": group.get("answer_model"),
@@ -4003,12 +4001,12 @@ def export_experiment_results_for_ui(
             "partial_count": sum(item["summary"]["partial_count"] for item in exported_groups),
             "correct_total": f"{total_correct} / {total_questions}",
             "accuracy": (weighted_metric("accuracy") or 0.0) if total_questions else 0.0,
-            "recall_at_5": weighted_metric("recall_at_5"),
-            "recall_at_10": weighted_metric("recall_at_10"),
-            "mrr": weighted_metric("mrr"),
+            "evidence_hit_rate": weighted_metric("evidence_hit_rate"),
+            "evidence_precision": weighted_metric("evidence_precision"),
+            "document_hit_rate": weighted_metric("document_hit_rate"),
         }
         payload = {
-            "schema_version": 4,
+            "schema_version": 5,
             "project": {"project_id": project_id, "name": project.get("name", "")},
             "max_concurrent_requests": experiment.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
             "evaluation": {
@@ -4030,7 +4028,7 @@ def export_experiment_results_for_ui(
             payload,
         )
         compact_payload = {
-            "schema_version": 2,
+            "schema_version": 3,
             "format": "manual-graphrag-experiment-summary",
             "project": {"project_id": project_id, "name": project.get("name", "")},
             "max_concurrent_requests": experiment.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
@@ -4182,7 +4180,9 @@ def generate_experiment_project_answers_for_ui(
             **_reasoning_effort_kwargs(group["answer_model"], group.get("answer_reasoning_effort")),
             strategy_params=_group_retrieval_config(group).params,
         )
-        rank = _retrieval_rank(question, evidence_rows, _project_document_ids(member_id))
+        retrieval_metrics = _retrieval_metrics(
+            question, evidence_rows, _project_document_ids(member_id),
+        )
         return {
             "group_index": gi, "group_name": group["name"],
             "retrieval_config": _group_retrieval_config(group).to_dict(),
@@ -4192,10 +4192,7 @@ def generate_experiment_project_answers_for_ui(
             "question_set_name": question.get("question_set_name", "未分類題目集"),
             "question": question["question"], "expected_answer": question["expected_answer"],
             "document": question.get("document", ""), "actual_answer": actual,
-            "answer_status": status, "retrieval_rank": rank,
-            "recall_at_5": rank is not None and rank <= 5,
-            "recall_at_10": rank is not None and rank <= 10,
-            "reciprocal_rank": 1 / rank if rank else 0.0,
+            "answer_status": status, **retrieval_metrics,
         }
 
     try:
@@ -4289,6 +4286,7 @@ def evaluate_experiment_project_answers_for_ui(
         status = f"✅ 評測完成｜完全正確 {correct}、部分正確 {partial} / {len(results)} 個跨專案實驗題次；得分正確率 {rate:.1%}。"
         updated = save_experiment_project(project["experiment_project_id"], {
             "pending_answers": pending_answers, "results": results, "summary_rows": summary,
+            "retrieval_metrics_version": 1,
             "detail_rows": details, "judge_model": judge_model,
             "verification_enabled": bool(verification_enabled),
             "judge_reasoning_effort": judge_reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT,
@@ -4399,17 +4397,13 @@ def run_experiment_project_for_ui(
             })
 
     summary_rows = _single_experiment_summary_rows(groups, all_results, judge_model)
-    detail_rows = [[
-        item["group_name"], item["source_project_name"], item["answer_model"],
-        item["judge_model"], item["number"], item["question"], item.get("document", ""),
-        item["expected_answer"], item["actual_answer"],
-        _result_score(item), item.get("reason", ""),
-        item.get("retrieval_rank"), item.get("question_set_name", ""),
-    ] for item in all_results]
+    detail_rows = _experiment_project_detail_rows(all_results)
     status = f"✅ 已完成 {len(groups)} 個實驗組，涵蓋 {len(members)} 個專案、{len(all_results)} 個題次。"
     try:
         updated = save_experiment_project(project_id, {
             "results": all_results, "summary_rows": summary_rows,
+            "retrieval_metrics_version": 1,
+            "retrieval_metrics_version": 1,
             "detail_rows": detail_rows, "judge_model": judge_model,
             "judge_reasoning_effort": judge_reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT,
             "max_concurrent_requests": int(max_concurrent_requests), "status": status,
@@ -4916,22 +4910,12 @@ def human_review_results_for_ui(
         for bucket in retrieval_groups.values():
             group_items = bucket["items"]
             row: list[Any] = [bucket["name"], len(group_items)]
-            for source_name, formatter in (
-                ("recall_at_5", "percent"),
-                ("recall_at_10", "percent"),
-                ("reciprocal_rank", "decimal"),
+            for source_name in (
+                "evidence_hit", "evidence_precision", "document_hit",
             ):
                 values: list[float] = []
                 for item in group_items:
                     value = item.get(source_name)
-                    if value is None and item.get("retrieval_rank") is not None:
-                        try:
-                            rank = int(item["retrieval_rank"])
-                            value = (rank <= 5 if source_name == "recall_at_5" else
-                                     rank <= 10 if source_name == "recall_at_10" else
-                                     1 / rank if rank > 0 else 0.0)
-                        except (TypeError, ValueError, ZeroDivisionError):
-                            value = None
                     if value is not None:
                         try:
                             values.append(float(value))
@@ -4939,10 +4923,8 @@ def human_review_results_for_ui(
                             continue
                 if not values:
                     row.append("—")
-                elif formatter == "percent":
-                    row.append(f"{sum(values) / len(values):.1%}")
                 else:
-                    row.append(f"{sum(values) / len(values):.3f}")
+                    row.append(f"{sum(values) / len(values):.1%}")
             retrieval_summaries.append(row)
         retrieval_summaries.sort(key=lambda row: group_sort_key(str(row[0])))
         status = f"✅ 人工評測完成｜共 {len(details)} 個抽樣題次；保存時間 {run.get('saved_at', '')}。"
@@ -6155,7 +6137,8 @@ def build_app() -> gr.Blocks:
         with gr.Tab("1-6 單一專案實驗", interactive=False) as experiment_tab:
             gr.Markdown(
                 "使用 0-2 綁定至目前專案的題目集；建立多個不同回答／檢索設定的實驗組，"
-                "先生成各組回答，再獨立評測並比較答案正確率、Recall@5、Recall@10 與 MRR。"
+                "先生成各組回答，再獨立評測並比較答案正確率、Evidence Hit Rate、"
+                "Evidence Precision 與 Document Hit Rate。"
             )
             experiment_questions_state = gr.State([])
             with gr.Group():
@@ -6263,7 +6246,7 @@ def build_app() -> gr.Blocks:
             experiment_status = gr.Markdown()
             gr.Markdown("#### 實驗組摘要")
             experiment_summary_table = gr.Dataframe(
-                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Recall@5", "Recall@10", "MRR", "成員專案", "題目集"],
+                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
                 interactive=False, wrap=True,
             )
             gr.Markdown("#### 逐題結果")
@@ -6431,7 +6414,7 @@ def build_app() -> gr.Blocks:
             )
             experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並至 0-2 為成員專案綁定題目集。")
             experiment_project_summary_table = gr.Dataframe(
-                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Recall@5", "Recall@10", "MRR", "成員專案", "題目集"],
+                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
                 interactive=False, wrap=True,
             )
             experiment_project_details_table = gr.Dataframe(
@@ -6523,7 +6506,7 @@ def build_app() -> gr.Blocks:
             )
             human_review_results_status = gr.Markdown("選擇已完成的人工評測執行結果。")
             human_review_retrieval_summary_table = gr.Dataframe(
-                headers=["實驗組", "總測試題數", "Recall@5", "Recall@10", "MRR"],
+                headers=["實驗組", "總測試題數", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate"],
                 interactive=False, wrap=True,
             )
             human_review_summary_table = gr.Dataframe(

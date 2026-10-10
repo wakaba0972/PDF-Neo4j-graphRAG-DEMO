@@ -1437,7 +1437,7 @@ def test_generate_evaluation_processes_all_documents_sequentially_when_parallel_
     assert state["preferences"]["allow_parallel_generation"] is False
 
 
-def test_retrieval_rank_uses_document_page_even_when_chunk_differs() -> None:
+def test_retrieval_metrics_match_gold_document_page_even_when_chunk_differs() -> None:
     question = {
         "document": "manual.pdf",
         "source_pages": [1],
@@ -1448,20 +1448,21 @@ def test_retrieval_rank_uses_document_page_even_when_chunk_differs() -> None:
         ["原文", "同文件同頁但不同 chunk", "", "0.8", "manual.pdf：1", "manual.pdf：9", "manual.pdf"],
     ]
 
-    rank = ui._retrieval_rank(question, rows)
+    assert ui._retrieval_metrics(question, rows) == {
+        "evidence_hit": True, "evidence_precision": 0.5, "document_hit": True,
+    }
 
-    assert rank == 2
-    assert 1 / rank == 0.5
 
-
-def test_retrieval_rank_does_not_fall_back_to_chunk_without_expected_pages() -> None:
+def test_retrieval_metrics_are_unavailable_without_gold_pages() -> None:
     question = {"document": "manual.pdf", "source_chunk_numbers": [42]}
     rows = [["原文", "相同 chunk", "", "0.9", "manual.pdf：1", "manual.pdf：42", "manual.pdf"]]
 
-    assert ui._retrieval_rank(question, rows) is None
+    assert ui._retrieval_metrics(question, rows) == {
+        "evidence_hit": None, "evidence_precision": None, "document_hit": None,
+    }
 
 
-def test_retrieval_rank_counts_unique_document_pages() -> None:
+def test_retrieval_metrics_count_unique_document_pages() -> None:
     question = {"document": "manual.pdf", "source_pages": [1]}
     rows = [
         ["原文", "第 2 頁證據 A", "", "0.9", "manual.pdf：2", "manual.pdf：4", "manual.pdf"],
@@ -1469,14 +1470,27 @@ def test_retrieval_rank_counts_unique_document_pages() -> None:
         ["原文", "第 1 頁證據", "", "0.7", "manual.pdf：1", "manual.pdf：6", "manual.pdf"],
     ]
 
-    assert ui._retrieval_rank(question, rows) == 2
+    assert ui._retrieval_metrics(question, rows) == {
+        "evidence_hit": True, "evidence_precision": 0.5, "document_hit": True,
+    }
 
 
-def test_retrieval_rank_maps_legacy_source_name_to_document_id() -> None:
+def test_document_hit_does_not_require_exact_gold_page() -> None:
+    question = {"answer_sources": [{"document_name": "manual.pdf", "pages": [4]}]}
+    rows = [["原文", "同文件其他頁", "", "0.9", "manual.pdf：5", "manual.pdf：6", "manual.pdf"]]
+
+    assert ui._retrieval_metrics(question, rows) == {
+        "evidence_hit": False, "evidence_precision": 0.0, "document_hit": True,
+    }
+
+
+def test_retrieval_metrics_map_source_name_to_document_id() -> None:
     question = {"document": "manual.pdf", "answer_source_pages": [1]}
     rows = [["原文", "同文件同頁", "", "0.9", "manual.pdf：1", "manual.pdf：7", "manual.pdf"]]
 
-    assert ui._retrieval_rank(question, rows, {"manual.pdf": "stable-document-id"}) == 1
+    assert ui._retrieval_metrics(
+        question, rows, {"manual.pdf": "stable-document-id"},
+    ) == {"evidence_hit": True, "evidence_precision": 1.0, "document_hit": True}
 
 
 def test_run_evaluation_for_ui_judges_and_saves(monkeypatch) -> None:
@@ -1514,9 +1528,9 @@ def test_run_evaluation_for_ui_judges_and_saves(monkeypatch) -> None:
     assert "manual.pdf：完全正確 1 / 1" in status
     assert "錯誤：0 題" in status
     assert "得分正確率：100.0%" in status
-    assert "Recall@5：100.0%" in status
-    assert "Recall@10：100.0%" in status
-    assert "MRR：1.000" in status
+    assert "Evidence Hit Rate：100.0%" in status
+    assert "Evidence Precision：100.0%" in status
+    assert "Document Hit Rate：100.0%" in status
     assert rows[0][3:] == ["manual.pdf", "實際答案", 2, None, "正確"]
     assert captured["test_workers"] == 2
     assert updated["results"][0]["passed"] is True
@@ -1543,8 +1557,8 @@ def test_generate_answers_defers_display_and_evaluation(monkeypatch) -> None:
     assert pending["results"] == []
     assert pending["pending_answers"][0]["actual_answer"] == "隱藏的回答"
     assert len(answer_calls) == 1
-    assert answer_calls[0][0][11] == 10
-    assert answer_calls[0][1]["strategy_params"]["candidate_top_k"] == 10
+    assert answer_calls[0][0][11] == 5
+    assert answer_calls[0][1]["strategy_params"]["candidate_top_k"] == 5
     assert captured["evaluation"] == pending
 
 
@@ -1563,8 +1577,7 @@ def test_evaluation_judges_saved_answers_without_generating_again(monkeypatch) -
     first_answer = {
             "number": 1, "question": "Q", "expected_answer": "A",
             "actual_answer": "回答內容", "answer_status": "✅ 完成",
-            "retrieval_rank": 1, "recall_at_5": True, "recall_at_10": True,
-            "reciprocal_rank": 1.0,
+            "evidence_hit": True, "evidence_precision": 1.0, "document_hit": True,
     }
     evaluation = {
         "questions": [{"number": 1, "question": "Q", "expected_answer": "A"}],
@@ -1694,11 +1707,11 @@ def test_experiment_summaries_report_each_question_set_separately() -> None:
     }]
     results = [
         {"group_index": 0, "group_name": "A", "question_set_id": "set-a",
-         "question_set_name": "手冊題", "score": 2, "recall_at_5": True,
-         "recall_at_10": True, "reciprocal_rank": 1.0},
+         "question_set_name": "手冊題", "score": 2,
+         "evidence_hit": True, "evidence_precision": 1.0, "document_hit": True},
         {"group_index": 0, "group_name": "A", "question_set_id": "set-b",
-         "question_set_name": "故障題", "score": 0, "recall_at_5": False,
-         "recall_at_10": False, "reciprocal_rank": 0.0},
+         "question_set_name": "故障題", "score": 0,
+         "evidence_hit": False, "evidence_precision": 0.0, "document_hit": False},
     ]
 
     summaries = ui._single_experiment_summary_rows(groups, results, "judge")
@@ -1735,7 +1748,7 @@ def test_run_evaluation_for_ui_forwards_credentials_to_answer_question_for_ui(mo
     assert captured["args"] == (
         "endpoint", "key", "embed-endpoint", "embed-key",
         "bolt", "neo4j", "user", "pass",
-        "model", "Q", "混合檢索", 10, "停用", "停用",
+        "model", "Q", "混合檢索", 8, "停用", "停用",
     )
 
 
@@ -2050,20 +2063,20 @@ def test_import_and_roundtrip_cross_document_provenance(tmp_path) -> None:
 
     assert reparsed[0]["question_sources"] == sources
     assert reparsed[0]["answer_sources"] == [sources[1]]
-    ranked = ui._retrieval_rank(reparsed[0], [
+    metrics = ui._retrieval_metrics(reparsed[0], [
         ["原文", "錯誤文件同頁", "", "0.9", "other.pdf：7", "other.pdf：2", "other.pdf"],
         ["原文", "命中答案來源", "", "0.8", "part-b.pdf：7, 8", "part-b.pdf：9", "part-b.pdf"],
-    ])
-    assert ranked == 2
-    renamed_rank = ui._retrieval_rank(
+    ], {"part-b.pdf": sources[1]["document_id"], "other.pdf": "other-id"})
+    assert metrics == {"evidence_hit": True, "evidence_precision": 2 / 3, "document_hit": True}
+    renamed_metrics = ui._retrieval_metrics(
         reparsed[0], [["原文", "相同內容的新檔名", "", "0.9", "renamed.pdf：7, 8", "renamed.pdf：9", "renamed.pdf"]],
         {"renamed.pdf": sources[1]["document_id"]},
     )
-    assert renamed_rank == 1
-    assert ui._retrieval_rank(
+    assert renamed_metrics == {"evidence_hit": True, "evidence_precision": 1.0, "document_hit": True}
+    assert ui._retrieval_metrics(
         reparsed[0], [["原文", "不同文件但同名", "", "0.9", "part-b.pdf：7, 8", "part-b.pdf：9", "part-b.pdf"]],
         {"part-b.pdf": "different-document-id"},
-    ) is None
+    ) == {"evidence_hit": False, "evidence_precision": 0.0, "document_hit": False}
 
     csv_file = tmp_path / "cross-document.csv"
     with csv_file.open("w", encoding="utf-8", newline="") as handle:
@@ -2475,8 +2488,8 @@ def test_evaluate_experiment_answers_and_manual_edit_recompute_summary(monkeypat
     pending = [{
         "group_index": 0, "group_name": "G", "answer_model": "answer-model",
         "number": 1, "question": "Q", "expected_answer": "A", "actual_answer": "答案",
-        "answer_status": "✅ 完成", "retrieval_rank": 1, "recall_at_5": True,
-        "recall_at_10": True, "reciprocal_rank": 1.0,
+        "answer_status": "✅ 完成", "evidence_hit": True,
+        "evidence_precision": 1.0, "document_hit": True,
     }]
 
     status, results, summaries, details = ui.evaluate_experiment_answers_for_ui(
@@ -2730,8 +2743,7 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
         "answer_model": "model-a", "judge_model": "judge-a",
         "question": "問題二", "document": "manual.pdf", "expected_answer": "標準答案",
         "actual_answer": "模型答案", "passed": True, "reason": "正確",
-        "retrieval_rank": 1, "recall_at_5": True, "recall_at_10": True,
-        "reciprocal_rank": 1.0,
+        "evidence_hit": True, "evidence_precision": 1.0, "document_hit": True,
     }
     ui.save_project(project["project_id"], {"experiment": {
         "questions": [{"question": "問題二"}], "groups": groups,
@@ -2746,7 +2758,7 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
     compact = json.loads(Path(compact_file_path).read_text(encoding="utf-8"))
 
     assert status.startswith("✅ 已匯出 1 個實驗組；總答對 1 / 1")
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
     assert "status" not in payload
     assert payload["project"] == {
         "project_id": project["project_id"], "name": "experiment-export",
@@ -2757,7 +2769,8 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
     }
     assert payload["summary"] == {
         "question_count": 1, "correct_count": 1, "partial_count": 0, "correct_total": "1 / 1",
-        "accuracy": 1.0, "recall_at_5": 1.0, "recall_at_10": 1.0, "mrr": 1.0,
+        "accuracy": 1.0, "evidence_hit_rate": 1.0,
+        "evidence_precision": 1.0, "document_hit_rate": 1.0,
     }
     assert payload["groups"][0] == {
         "name": "向量組",
@@ -2770,8 +2783,8 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
         "summary": {
             "answer_model": "model-a", "judge_model": "judge-a",
             "question_count": 1, "correct_count": 1, "partial_count": 0, "correct_total": "1 / 1",
-            "accuracy": 1.0, "recall_at_5": 1.0,
-            "recall_at_10": 1.0, "mrr": 1.0,
+            "accuracy": 1.0, "evidence_hit_rate": 1.0,
+            "evidence_precision": 1.0, "document_hit_rate": 1.0,
         },
         "results": [{
             key: value for key, value in result.items()
@@ -2803,8 +2816,7 @@ def test_export_experiment_results_syncs_latest_manual_judgment(tmp_path, monkey
         "answer_model": "model-a", "judge_model": "judge-a",
         "question": "問題", "document": "manual.pdf", "expected_answer": "標準答案",
         "actual_answer": "模型答案", "passed": True, "reason": "正確",
-        "retrieval_rank": 1, "recall_at_5": True, "recall_at_10": True,
-        "reciprocal_rank": 1.0,
+        "evidence_hit": True, "evidence_precision": 1.0, "document_hit": True,
     }
     ui.save_project(project["project_id"], {"experiment": {
         "groups": [group], "judge_model": "judge-a", "results": [result],
@@ -2824,13 +2836,14 @@ def test_export_experiment_results_syncs_latest_manual_judgment(tmp_path, monkey
     assert exported["groups"][0]["summary"] == {
         "answer_model": "model-a", "judge_model": "judge-a",
         "question_count": 1, "correct_count": 0, "partial_count": 1, "correct_total": "0 / 1",
-        "accuracy": 0.5, "recall_at_5": 1.0, "recall_at_10": 1.0, "mrr": 1.0,
+        "accuracy": 0.5, "evidence_hit_rate": 1.0,
+        "evidence_precision": 1.0, "document_hit_rate": 1.0,
     }
     assert exported["summary"]["correct_total"] == "0 / 1"
     assert exported["summary"]["partial_count"] == 1
     assert exported["summary"]["accuracy"] == 0.5
     assert compact["summary"]["correct_total"] == "0 / 1"
-    assert compact["schema_version"] == 2
+    assert compact["schema_version"] == 3
     assert compact["summary"]["accuracy"] == 0.5
     assert compact["groups"][0]["summary"]["correct_total"] == "0 / 1"
     _second_status, second_file_path, second_compact_file_path = ui.export_experiment_results_for_ui(
@@ -2883,8 +2896,8 @@ def test_run_experiment_groups_outputs_each_group_summary_and_details(monkeypatc
 
     assert status.startswith("✅ 已完成 2 個實驗組")
     assert summaries == [
-        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000", "", "未分類題目集"],
-        ["混合擴展", "model-b", "Reranker", "證據擴展", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "1.000", "", "未分類題目集"],
+        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
+        ["混合擴展", "model-b", "Reranker", "證據擴展", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
     ]
     assert len(details) == len(results) == 4
     assert captured["workers"] == 2
@@ -3688,14 +3701,14 @@ def test_load_evaluation_restores_saved_summary(monkeypatch) -> None:
                 {
                     "number": 1, "question": "Q1", "expected_answer": "A1",
                     "document": "manual.pdf", "actual_answer": "A1", "passed": True,
-                    "reason": "正確", "recall_at_5": True, "reciprocal_rank": 0.5,
-                    "retrieval_rank": 2,
+                    "reason": "正確", "evidence_hit": True,
+                    "evidence_precision": 0.5, "document_hit": True,
                 },
                 {
                     "number": 2, "question": "Q2", "expected_answer": "A2",
                     "document": "manual.pdf", "actual_answer": "", "passed": False,
-                    "reason": "錯誤", "recall_at_5": False, "reciprocal_rank": 0.0,
-                    "retrieval_rank": None,
+                    "reason": "錯誤", "evidence_hit": False,
+                    "evidence_precision": 0.0, "document_hit": False,
                 },
             ],
         }
@@ -3705,9 +3718,9 @@ def test_load_evaluation_restores_saved_summary(monkeypatch) -> None:
 
     assert "已載入測試結果" in loaded[-2]
     assert "得分正確率：50.0%" in loaded[-2]
-    assert "Recall@5：50.0%" in loaded[-2]
-    assert "Recall@10：50.0%" in loaded[-2]
-    assert "MRR：0.250" in loaded[-2]
+    assert "Evidence Hit Rate：50.0%" in loaded[-2]
+    assert "Evidence Precision：25.0%" in loaded[-2]
+    assert "Document Hit Rate：50.0%" in loaded[-2]
     assert len(loaded[2]) == 2
 
 
@@ -4040,8 +4053,8 @@ def test_multi_project_experiment_runs_each_projects_own_database(tmp_path, monk
             "judge_model": "judge", "number": 1,
             "question": questions[0]["question"], "expected_answer": "A",
             "actual_answer": "A", "passed": project_id == members[0]["project_id"],
-            "reason": "判定", "retrieval_rank": 1, "recall_at_5": True,
-            "recall_at_10": True, "reciprocal_rank": 1.0,
+            "reason": "判定", "evidence_hit": True,
+            "evidence_precision": 1.0, "document_hit": True,
         }]
 
     monkeypatch.setattr(ui, "run_experiment_groups_for_ui", run_single)
@@ -4125,8 +4138,9 @@ def test_saved_experiment_run_is_sampled_distributed_and_compared_with_human_sco
             "expected_answer": "標準答案", "actual_answer": f"回答 {index + 1}",
             "score": index % 3, "passed": index % 3 == 2,
             "reason": "AI 理由", "judge_model": "judge-model",
-            "recall_at_5": index < 2, "recall_at_10": index < 4,
-            "reciprocal_rank": [1.0, 0.5, 0.0, 0.25, 0.1][index],
+            "evidence_hit": index < 2,
+            "evidence_precision": [1.0, 0.5, 0.0, 0.25, 0.1][index],
+            "document_hit": index < 3,
         }
         for index in range(5)
     ]
@@ -4180,7 +4194,7 @@ def test_saved_experiment_run_is_sampled_distributed_and_compared_with_human_sco
     assert summaries[0][3] == 5
     assert summaries[0][4] == "0.80"
     assert summaries[0][5] == "1.20"
-    assert retrieval_summaries == [["向量組", 5, "40.0%", "80.0%", "0.370"]]
+    assert retrieval_summaries == [["向量組", 5, "40.0%", "37.0%", "60.0%"]]
     assert len(details) == 5
     assert {row[12] for row in details} == set(ui.KNOWN_USERS)
     assert {row[13] for row in details} == set(ui.KNOWN_USERS)
@@ -4226,12 +4240,12 @@ def test_human_review_results_show_retrieval_metrics_for_each_experiment_group(t
     monkeypatch.chdir(tmp_path)
     experiment = ui.create_experiment_project("檢索指標彙總")
     results = [
-        {"group_index": 0, "group_name": "向量組", "score": 2, "recall_at_5": True,
-         "recall_at_10": True, "reciprocal_rank": 1.0},
-        {"group_index": 0, "group_name": "向量組", "score": 2, "recall_at_5": False,
-         "recall_at_10": True, "reciprocal_rank": 0.5},
-        {"group_index": 1, "group_name": "混合組", "score": 2, "recall_at_5": False,
-         "recall_at_10": True, "reciprocal_rank": 1 / 6},
+        {"group_index": 0, "group_name": "向量組", "score": 2, "evidence_hit": True,
+         "evidence_precision": 0.5, "document_hit": True},
+        {"group_index": 0, "group_name": "向量組", "score": 2, "evidence_hit": False,
+         "evidence_precision": 1.0, "document_hit": True},
+        {"group_index": 1, "group_name": "混合組", "score": 2, "evidence_hit": False,
+         "evidence_precision": 0.25, "document_hit": True},
     ]
     experiment = ui.save_experiment_project(experiment["experiment_project_id"], {
         "groups": [{"name": "向量組"}, {"name": "混合組"}], "results": results,
@@ -4252,8 +4266,8 @@ def test_human_review_results_show_retrieval_metrics_for_each_experiment_group(t
 
     assert [row[0] for row in human_summaries] == ["向量組", "混合組"]
     assert retrieval_summaries == [
-        ["向量組", 2, "50.0%", "100.0%", "0.750"],
-        ["混合組", 1, "0.0%", "100.0%", "0.167"],
+        ["向量組", 2, "50.0%", "75.0%", "100.0%"],
+        ["混合組", 1, "0.0%", "25.0%", "100.0%"],
     ]
 
 
