@@ -80,9 +80,11 @@ from .project_store import (
 from .question_set_store import (
     bound_question_sets,
     create_question_set,
+    delete_question_set,
     list_question_sets,
     migrate_all_project_question_sets,
     migrate_project_question_sets,
+    question_set_binding_projects,
     set_project_question_set_bindings,
 )
 from .qa_service import (
@@ -1545,6 +1547,78 @@ def import_central_question_set_for_ui(file_path: str | None, name: str | None =
         return f"❌ 題目集匯入失敗：{exc}", selector, rows, gr.update()
     status, selector, _rows = central_question_sets_for_ui(item["question_set_id"])
     return f"✅ 已匯入中央題目集「{clean_name}」，共 {len(questions)} 題。", selector, _evaluation_question_rows(questions), gr.update(value=None)
+
+
+def request_central_question_set_deletion_for_ui(
+    question_set_id: str | None,
+) -> tuple[Any, Any, Any, Any]:
+    if not question_set_id:
+        return (
+            gr.update(value="請先選擇要刪除的題目集。", visible=True),
+            gr.update(visible=False), gr.update(visible=False), gr.update(interactive=True),
+        )
+    selected = next(
+        (item for item in list_question_sets() if item["question_set_id"] == question_set_id),
+        None,
+    )
+    if selected is None:
+        status, selector, _rows = central_question_sets_for_ui()
+        return (
+            gr.update(value="找不到選取的題目集，清單已重新整理。", visible=True),
+            gr.update(visible=False), gr.update(visible=False),
+            gr.update(choices=selector["choices"], value=selector["value"], interactive=True),
+        )
+    bound_projects = question_set_binding_projects(question_set_id)
+    usage = (
+        f"目前有 {len(bound_projects)} 個專案綁定此題目集；刪除後，這些專案將無法再使用它。"
+        if bound_projects else "目前沒有專案綁定此題目集。"
+    )
+    return (
+        gr.update(
+            value=f"⚠️ 確定刪除中央題目集「{selected['name']}」（{len(selected.get('questions') or [])} 題）？{usage}",
+            visible=True,
+        ),
+        gr.update(visible=True), gr.update(visible=True), gr.update(interactive=False),
+    )
+
+
+def cancel_central_question_set_deletion_for_ui() -> tuple[Any, Any, Any, Any]:
+    return (
+        gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
+        gr.update(interactive=True),
+    )
+
+
+def delete_confirmed_central_question_set_for_ui(
+    question_set_id: str | None,
+) -> tuple[str, Any, list[list[object]], Any, Any, Any]:
+    try:
+        if not question_set_id:
+            raise ValueError("請先選擇要刪除的題目集")
+        target = next(
+            (item for item in list_question_sets() if item["question_set_id"] == question_set_id),
+            None,
+        )
+        if target is None:
+            raise ValueError("找不到選取的題目集，請重新整理清單後再試")
+        bound_count = len(question_set_binding_projects(question_set_id))
+        delete_question_set(question_set_id)
+        status, selector, rows = central_question_sets_for_ui()
+        return (
+            f"✅ 已刪除中央題目集「{target['name']}」。原綁定的 {bound_count} 個專案將無法再使用此題目集。{status}",
+            gr.update(
+                choices=selector["choices"], value=selector["value"], interactive=True,
+            ), rows, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        status, selector, rows = central_question_sets_for_ui(question_set_id)
+        return (
+            f"❌ 題目集刪除失敗：{exc}",
+            gr.update(
+                choices=selector["choices"], value=selector["value"], interactive=True,
+            ), rows,
+            gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
+        )
 
 
 def project_question_set_bindings_for_ui(
@@ -5906,7 +5980,21 @@ def build_app() -> gr.Blocks:
                 central_question_name = gr.Textbox(label="題目集名稱（可留空使用檔名）")
                 import_central_question_button = gr.Button("匯入中央題庫", variant="primary")
             central_question_status = gr.Markdown("尚未載入中央題庫。")
-            central_question_selector = gr.Dropdown(choices=[], value=None, label="已匯入中央題目集")
+            with gr.Row():
+                central_question_selector = gr.Dropdown(
+                    choices=[], value=None, label="已匯入中央題目集", scale=5,
+                )
+                delete_central_question_set_button = gr.Button(
+                    "刪除所選題目集", variant="stop", scale=1,
+                )
+            with gr.Row():
+                central_question_delete_confirmation = gr.Markdown(visible=False)
+                confirm_delete_central_question_set_button = gr.Button(
+                    "確認刪除", variant="stop", visible=False,
+                )
+                cancel_delete_central_question_set_button = gr.Button(
+                    "取消", visible=False,
+                )
             central_question_table = gr.Dataframe(
                 headers=["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"],
                 datatype=["number", "str", "str", "str", "str"], interactive=False, wrap=True,
@@ -6843,6 +6931,32 @@ def build_app() -> gr.Blocks:
             import_central_question_set_for_ui,
             inputs=[central_question_file, central_question_name],
             outputs=[central_question_status, central_question_selector, central_question_table, central_question_file],
+        )
+        delete_central_question_set_button.click(
+            request_central_question_set_deletion_for_ui,
+            inputs=central_question_selector,
+            outputs=[central_question_delete_confirmation,
+                     confirm_delete_central_question_set_button,
+                     cancel_delete_central_question_set_button,
+                     central_question_selector],
+            show_progress="hidden",
+        )
+        confirm_delete_central_question_set_button.click(
+            delete_confirmed_central_question_set_for_ui,
+            inputs=central_question_selector,
+            outputs=[central_question_status, central_question_selector,
+                     central_question_table, central_question_delete_confirmation,
+                     confirm_delete_central_question_set_button,
+                     cancel_delete_central_question_set_button],
+            show_progress="hidden",
+        )
+        cancel_delete_central_question_set_button.click(
+            cancel_central_question_set_deletion_for_ui,
+            outputs=[central_question_delete_confirmation,
+                     confirm_delete_central_question_set_button,
+                     cancel_delete_central_question_set_button,
+                     central_question_selector],
+            show_progress="hidden",
         )
         refresh_binding_projects_event = question_set_binding_tab.select(
             refresh_binding_project_choices_for_ui, inputs=binding_project_selector,

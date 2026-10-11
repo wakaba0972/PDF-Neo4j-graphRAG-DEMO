@@ -664,13 +664,9 @@ def test_delete_button_uses_gradio_confirmation_components() -> None:
         item for item in app.config["dependencies"]
         if any(target[0] == button["id"] for target in item.get("targets", []))
     )
-    confirm_button = next(
-        component for component in app.config["components"]
-        if component.get("props", {}).get("value") == "確認刪除"
-    )
     confirm_dependency = next(
         item for item in app.config["dependencies"]
-        if any(target[0] == confirm_button["id"] for target in item.get("targets", []))
+        if item.get("api_name") == "delete_confirmed_project_for_ui"
     )
     assert dependency.get("js") is None
     assert dependency["api_name"] == "request_project_deletion_for_ui"
@@ -1041,7 +1037,58 @@ def test_question_set_manager_imports_centrally_and_binding_is_project_scoped(tm
     assert refreshed_selector["value"] == [question_set_id]
 
     components = build_app().config["components"]
-    assert not any(component.get("props", {}).get("value") == "刪除中央題目集" for component in components)
+    assert any(component.get("props", {}).get("value") == "刪除所選題目集" for component in components)
+
+
+def test_central_question_set_delete_requires_confirmation_and_refreshes(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("central-set-bound-project")
+    question_set = ui.create_question_set(
+        "中央刪除測試", [{"number": 1, "question": "Q", "expected_answer": "A"}],
+    )
+    ui.set_project_question_set_bindings(project["project_id"], [question_set["question_set_id"]])
+
+    request = ui.request_central_question_set_deletion_for_ui(question_set["question_set_id"])
+
+    assert "確定刪除中央題目集" in request[0]["value"]
+    assert "目前有 1 個專案綁定" in request[0]["value"]
+    assert request[1]["visible"] is True
+    assert request[2]["visible"] is True
+    assert request[3]["interactive"] is False
+    assert ui.list_question_sets()
+
+    cancel = ui.cancel_central_question_set_deletion_for_ui()
+    assert cancel[0]["visible"] is False
+    assert cancel[3]["interactive"] is True
+    assert ui.list_question_sets()
+
+    status, selector, rows, confirmation, confirm_button, cancel_button = (
+        ui.delete_confirmed_central_question_set_for_ui(question_set["question_set_id"])
+    )
+    assert status.startswith("✅ 已刪除中央題目集「中央刪除測試」")
+    assert "原綁定的 1 個專案" in status
+    assert selector["choices"] == []
+    assert selector["interactive"] is True
+    assert rows == []
+    assert confirmation["visible"] is False
+    assert confirm_button["visible"] is False
+    assert cancel_button["visible"] is False
+    assert ui.list_question_sets() == []
+    assert ui.bound_question_sets(ui.load_project(project["project_id"])) == []
+
+
+def test_central_question_set_delete_callback_is_registered() -> None:
+    app = build_app()
+    component = next(
+        item for item in app.config["components"]
+        if item.get("props", {}).get("value") == "確認刪除"
+    )
+    assert component["props"]["visible"] is False
+    dependency = next(
+        item for item in app.config["dependencies"]
+        if item.get("api_name") == "delete_confirmed_central_question_set_for_ui"
+    )
+    assert len(dependency["outputs"]) == 6
 
 
 def test_single_experiment_can_select_bound_sets_without_falling_back_to_all(tmp_path, monkeypatch) -> None:
