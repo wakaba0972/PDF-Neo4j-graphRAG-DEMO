@@ -1835,6 +1835,13 @@ def test_experiment_summaries_report_each_question_set_separately() -> None:
     assert group_summaries[0][5:14] == [
         2, "1 / 2", 0, "50.0%", "50.0%", "50.0%", "50.0%", 0, 2,
     ]
+    single_project_summary = ui._experiment_group_overall_summary_rows(
+        groups, results, "judge", include_project_count=False,
+    )
+    assert len(single_project_summary) == 1
+    assert single_project_summary[0][5:13] == [
+        2, "1 / 2", 0, "50.0%", "50.0%", "50.0%", "50.0%", 2,
+    ]
 
 
 def test_run_evaluation_for_ui_forwards_credentials_to_answer_question_for_ui(monkeypatch) -> None:
@@ -2544,7 +2551,7 @@ def test_experiment_default_concurrency_is_ten(tmp_path, monkeypatch) -> None:
     components = app.config["components"]
     values = [component.get("props", {}).get("value") for component in components]
     answer_heading = values.index("#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）")
-    summary_heading = values.index("#### 實驗組摘要")
+    summary_heading = values.index("#### 實驗組摘要（依題目集）")
     concurrency_defaults = [
         component["props"]["value"] for component in components[answer_heading:summary_heading]
         if component.get("props", {}).get("label") == "最大並行請求數"
@@ -2587,13 +2594,13 @@ def test_generate_experiment_answers_populates_table_without_judging(monkeypatch
         "retrieval_config": _retrieval_config(),
     }]
 
-    status, pending, results, summaries, details = ui.generate_experiment_answers_for_ui(
+    status, pending, results, group_summaries, summaries, details = ui.generate_experiment_answers_for_ui(
         "project", questions, groups, 2, {}, "embed", "key", "bolt", "database", "user", "pass",
     )
 
     assert status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
     assert pending[0]["actual_answer"] == "隱藏答案"
-    assert results == summaries == []
+    assert results == group_summaries == summaries == []
     assert details == [["G", 1, "", "未分類題目集", "Q", "A", "隱藏答案", None, None, ""]]
     assert captured["experiment"]["pending_answers"] == pending
     assert captured["experiment"]["results"] == []
@@ -2616,16 +2623,17 @@ def test_evaluate_experiment_answers_and_manual_edit_recompute_summary(monkeypat
         "evidence_precision": 1.0, "document_hit": True,
     }]
 
-    status, results, summaries, details = ui.evaluate_experiment_answers_for_ui(
+    status, results, group_summaries, summaries, details = ui.evaluate_experiment_answers_for_ui(
         "project", pending, [group], "judge-model", "low", 3, "judge-endpoint", "judge-key",
     )
 
     assert status.startswith("✅ 評測完成")
     assert summaries[0][6:9] == ["1 / 1", 0, "100.0%"]
+    assert group_summaries[0][5:9] == [1, "1 / 1", 0, "100.0%"]
     assert details[0][7] == 2
     edited = [list(details[0])]
     edited[0][7] = 1
-    manual_status, manual_summary, manual_details, updated = ui.update_manual_experiment_result_for_ui(
+    manual_status, manual_group_summary, manual_summary, manual_details, updated = ui.update_manual_experiment_result_for_ui(
         "project", edited, results,
     )
 
@@ -2633,6 +2641,7 @@ def test_evaluate_experiment_answers_and_manual_edit_recompute_summary(monkeypat
     assert manual_status.startswith("✅ 評測完成｜")
     assert "完全正確 0、部分正確 1 / 1 題" in manual_status
     assert manual_summary[0][6:9] == ["0 / 1", 1, "50.0%"]
+    assert manual_group_summary[0][5:9] == [1, "0 / 1", 1, "50.0%"]
     assert manual_details[0][7] == 1
     assert updated[0]["reason"] == "人工評判"
     assert saved["experiment"]["results"] == updated
@@ -2646,7 +2655,7 @@ def test_experiment_evaluation_resolves_current_model_credentials_at_click_time(
     )
     monkeypatch.setattr(
         ui, "evaluate_experiment_answers_for_ui",
-        lambda *args, **kwargs: (resolved.update(core_args=args, core_kwargs=kwargs) or ("✅ 評測完成", [], [], [])),
+        lambda *args, **kwargs: (resolved.update(core_args=args, core_kwargs=kwargs) or ("✅ 評測完成", [], [], [], [])),
     )
     llm_state = {"kind": "llm", "active": "OpenAI"}
 
@@ -2778,7 +2787,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         and item["id"] > answer_heading["id"]
     )
     summary_heading = next(
-        item for item in components if item.get("props", {}).get("value") == "#### 實驗組摘要"
+        item for item in components if item.get("props", {}).get("value") == "#### 實驗組摘要（依題目集）"
     )
     assert answer_heading["id"] < judge_heading["id"] < summary_heading["id"]
     evaluate_button = next(item for item in components if item.get("props", {}).get("value") == "開始評測")
@@ -2814,6 +2823,13 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     )
     assert "題目集數" in group_summary_table["props"]["headers"]
     assert group_summary_table["props"]["interactive"] is False
+    single_project_summary_table = next(
+        item for item in components
+        if item.get("props", {}).get("headers", [])[:3] == ["實驗組", "回答模型", "Reranker"]
+        and "成員專案數" not in item.get("props", {}).get("headers", [])
+        and "題目集數" in item.get("props", {}).get("headers", [])
+    )
+    assert single_project_summary_table["props"]["interactive"] is False
     assert any(
         component.get("props", {}).get("label") == "啟用答案結果人工修改"
         and component.get("props", {}).get("value") is False
