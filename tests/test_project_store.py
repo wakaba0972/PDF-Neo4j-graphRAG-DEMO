@@ -146,6 +146,61 @@ def test_graph_entities_and_relationships_are_stored_in_compressed_sidecar(tmp_p
     assert load_project(project["project_id"], tmp_path)["graph_state"]["entities"] == graph["entities"]
 
 
+def test_chunks_are_stored_in_separate_compressed_sidecar_and_loaded_on_demand(tmp_path, monkeypatch) -> None:
+    import manual_graphrag.project_store as project_store
+
+    project = create_project("外置 chunks", tmp_path)
+    chunks = [{"number": 1, "text": "原文內容", "pages": [1], "document": "manual.pdf"}]
+    graph = {"run_id": "graph-run", "chunks": chunks, "entities": [{"name": "設備"}]}
+    save_project(project["project_id"], {"chunks": chunks, "graph_state": graph}, root=tmp_path)
+
+    project_dir = tmp_path / project["project_id"]
+    stored = json.loads((project_dir / "project.json").read_text(encoding="utf-8"))
+    with gzip.open(project_dir / "chunks.json.gz", "rt", encoding="utf-8") as handle:
+        sidecar = json.load(handle)
+
+    assert "chunks" not in stored
+    assert "chunks" not in stored["graph_state"]
+    assert stored["chunk_count"] == 1
+    assert sidecar == {"chunks": chunks}
+
+    def fail_chunk_read(*args, **kwargs):
+        raise AssertionError("metadata loads must not decompress chunks")
+
+    monkeypatch.setattr(project_store, "_read_chunk_data", fail_chunk_read)
+    metadata = load_project_metadata(project["project_id"], tmp_path)
+    assert "chunks" not in metadata
+    monkeypatch.undo()
+
+    loaded = load_project(project["project_id"], tmp_path)
+    assert loaded["chunks"] == chunks
+    assert loaded["graph_state"]["chunks"] == chunks
+
+    save_project(project["project_id"], {"experiment": {"groups": []}}, root=tmp_path)
+    assert load_project(project["project_id"], tmp_path)["chunks"] == chunks
+
+
+def test_loading_legacy_inline_chunks_migrates_to_compressed_sidecar(tmp_path) -> None:
+    from manual_graphrag.storage import write_json
+
+    project = create_project("舊 chunks 格式", tmp_path)
+    project_file = tmp_path / project["project_id"] / "project.json"
+    chunks = [{"number": 1, "text": "舊格式原文"}]
+    payload = json.loads(project_file.read_text(encoding="utf-8"))
+    payload["chunks"] = chunks
+    payload["graph_state"] = {"run_id": "legacy-run", "chunks": chunks}
+    write_json(project_file, payload)
+
+    metadata = load_project_metadata(project["project_id"], tmp_path)
+    migrated = json.loads(project_file.read_text(encoding="utf-8"))
+
+    assert "chunks" not in migrated
+    assert "chunks" not in migrated["graph_state"]
+    assert metadata["chunk_count"] == 1
+    assert load_project(project["project_id"], tmp_path)["chunks"] == chunks
+    assert load_project(project["project_id"], tmp_path)["graph_state"]["chunks"] == chunks
+
+
 def test_loading_legacy_inline_graph_migrates_it_to_sidecar(tmp_path) -> None:
     project = create_project("舊圖譜格式", tmp_path)
     project_file = tmp_path / project["project_id"] / "project.json"

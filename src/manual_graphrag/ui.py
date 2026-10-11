@@ -70,6 +70,7 @@ from .project_store import (
     import_project_archive,
     list_projects,
     load_project as load_full_project,
+    load_project_chunks,
     load_project_metadata as load_project,
     load_project_summary,
     project_database_name,
@@ -1149,7 +1150,10 @@ def save_project_for_ui(
 
 def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
     try:
+        # The PDF/build workspace needs chunk text, but opening a project should
+        # not also decompress the much larger graph entity/relationship sidecar.
         project = load_project(project_id)
+        chunks = _stored_chunks(load_project_chunks(project_id))
     except (OSError, ValueError) as exc:
         raise gr.Error(str(exc))
     settings = project.get("settings") or {}
@@ -1162,7 +1166,6 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
     llm_profile = llm_settings["profiles"][llm_settings["active"]]
     embedding_profile = embedding_settings["profiles"][embedding_settings["active"]]
     documents = project.get("documents_meta") or []
-    chunks = _stored_chunks(project.get("chunks") or [])
     document_ids = _document_ids_from_project(project)
     chunks = [
         chunk if chunk.document_id or chunk.document not in document_ids else TextChunk(

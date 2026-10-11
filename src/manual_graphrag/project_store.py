@@ -25,6 +25,7 @@ _PROJECT_WRITE_LOCK = RLock()
 PROJECT_ARCHIVE_FORMAT = "manual-graphrag-project"
 PROJECT_ARCHIVE_VERSION = 1
 GRAPH_DATA_FILENAME = "graph.json.gz"
+CHUNK_DATA_FILENAME = "chunks.json.gz"
 
 
 def project_database_name(project_id: str) -> str:
@@ -65,7 +66,7 @@ def build_project_summary(project: dict[str, Any]) -> dict[str, Any]:
         "name": project.get("name", ""),
         "created_by": project.get("created_by") or "未知（舊專案）",
         "document_count": document_count,
-        "chunk_count": len(project.get("chunks") or []),
+        "chunk_count": int(project.get("chunk_count", len(project.get("chunks") or [])) or 0),
         "question_count": bound_question_count if bound_question_count is not None else (
             sum(len(item.get("questions") or []) for item in project.get("question_sets") or [])
             if project.get("question_sets") else
@@ -162,7 +163,6 @@ def create_project(
         "settings": {},
         "documents": [],
         "documents_meta": [],
-        "chunks": [],
         "graph_state": {},
         "questions": [],
     }
@@ -220,6 +220,23 @@ def _write_graph_data(project_dir: Path, graph_payload: dict[str, Any]) -> None:
         raise
 
 
+def _write_chunk_data(project_dir: Path, chunk_payload: dict[str, Any]) -> None:
+    target = project_dir / CHUNK_DATA_FILENAME
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=project_dir, prefix=f".{CHUNK_DATA_FILENAME}.", suffix=".tmp",
+    )
+    os.close(descriptor)
+    try:
+        with gzip.open(temporary_name, "wt", encoding="utf-8", compresslevel=6) as handle:
+            json.dump(chunk_payload, handle, ensure_ascii=False, separators=(",", ":"))
+        with open(temporary_name, "rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, target)
+    except Exception:
+        Path(temporary_name).unlink(missing_ok=True)
+        raise
+
+
 def _read_graph_data(project_dir: Path, graph_state: dict[str, Any]) -> dict[str, Any]:
     filename = str(graph_state.get("graph_data_file") or "")
     if not filename:
@@ -236,38 +253,89 @@ def _read_graph_data(project_dir: Path, graph_state: dict[str, Any]) -> dict[str
     return payload
 
 
+def _read_chunk_data(project_dir: Path, project: dict[str, Any]) -> dict[str, Any]:
+    filename = str(project.get("chunks_data_file") or "")
+    if not filename:
+        return {}
+    if Path(filename).name != filename:
+        raise ValueError("專案 chunks 檔案路徑無效")
+    target = project_dir / filename
+    if not target.is_file():
+        raise ValueError(f"找不到專案 chunks 檔：{filename}")
+    with gzip.open(target, "rt", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict) or not isinstance(payload.get("chunks", []), list):
+        raise ValueError("專案 chunks 檔案格式錯誤")
+    return payload
+
+
 def load_project_metadata(
     project_id: str, root: str | Path = PROJECTS_DIR,
 ) -> dict[str, Any]:
-    """Load project settings and graph metadata without materializing graph entities/edges."""
+    """Load project metadata without materializing chunks or graph entities/edges."""
     with _PROJECT_WRITE_LOCK:
         project = _read_project_metadata(project_id, root)
         graph_state = project.get("graph_state")
         if not isinstance(graph_state, dict):
-            return project
+            graph_state = {}
+            project["graph_state"] = graph_state
+        project_dir = Path(root) / project_id
+        changed = False
         has_inline_graph = "entities" in graph_state or "relationships" in graph_state
         if has_inline_graph and not graph_state.get("graph_data_file"):
             graph_payload = {
                 "entities": graph_state.pop("entities", []),
                 "relationships": graph_state.pop("relationships", []),
             }
-            project_dir = Path(root) / project_id
             _write_graph_data(project_dir, graph_payload)
             graph_state["graph_data_file"] = GRAPH_DATA_FILENAME
             graph_state["entity_count"] = len(graph_payload["entities"])
             graph_state["relationship_count"] = len(graph_payload["relationships"])
+            changed = True
+        inline_chunks = project.pop("chunks", None)
+        if (inline_chunks is not None or "chunks" in graph_state) and not project.get("chunks_data_file"):
+            inline_chunks = inline_chunks or []
+            graph_chunks = graph_state.pop("chunks", None)
+            payload = {"chunks": inline_chunks}
+            if graph_chunks is not None and graph_chunks != inline_chunks:
+                payload["graph_chunks"] = graph_chunks
+                graph_state["graph_chunks_in_sidecar"] = True
+            elif graph_chunks is not None:
+                graph_state["graph_chunks_from_project"] = True
+            _write_chunk_data(project_dir, payload)
+            project["chunks_data_file"] = CHUNK_DATA_FILENAME
+            project["chunk_count"] = len(inline_chunks)
+            changed = True
+        if changed:
             write_json(project_dir / "project.json", project)
             _write_project_summary(project_dir, project)
         return project
 
 
 def load_project(project_id: str, root: str | Path = PROJECTS_DIR) -> dict[str, Any]:
-    """Load the full project, including graph data stored in its compressed sidecar."""
+    """Load full project content, including compressed graph and chunk sidecars."""
     project = load_project_metadata(project_id, root)
+    chunk_payload = _read_chunk_data(Path(root) / project_id, project)
+    if chunk_payload:
+        project["chunks"] = chunk_payload.get("chunks", [])
+    else:
+        project["chunks"] = []
     graph_state = project.get("graph_state")
     if isinstance(graph_state, dict):
         graph_state.update(_read_graph_data(Path(root) / project_id, graph_state))
+        if graph_state.pop("graph_chunks_from_project", False):
+            graph_state["chunks"] = project.get("chunks", [])
+        elif graph_state.pop("graph_chunks_in_sidecar", False):
+            graph_state["chunks"] = chunk_payload.get("graph_chunks", [])
     return project
+
+
+def load_project_chunks(
+    project_id: str, root: str | Path = PROJECTS_DIR,
+) -> list[dict[str, Any]]:
+    """Load only chunk text, without decompressing potentially large graph data."""
+    project = load_project_metadata(project_id, root)
+    return _read_chunk_data(Path(root) / project_id, project).get("chunks", [])
 
 
 def delete_project(project_id: str, root: str | Path = PROJECTS_DIR) -> str:
@@ -500,9 +568,47 @@ def _save_project_unlocked(
                 by_name[source.name] = len(documents)
                 documents.append(record)
     payload_for_storage = dict(payload)
+    graph_state_for_chunks = payload_for_storage.get("graph_state")
+    has_graph_chunks = isinstance(graph_state_for_chunks, dict) and "chunks" in graph_state_for_chunks
+    if "chunks" in payload or has_graph_chunks:
+        has_project_chunks = "chunks" in payload
+        if has_project_chunks:
+            chunks = payload_for_storage.pop("chunks") or []
+        elif current.get("chunks_data_file"):
+            chunks = _read_chunk_data(project_dir, current).get("chunks", [])
+        else:
+            chunks = []
+        chunk_payload = {"chunks": chunks}
+        if isinstance(graph_state_for_chunks, dict) and has_graph_chunks:
+            graph_chunks = graph_state_for_chunks.get("chunks") or []
+            graph_state_for_chunks = dict(graph_state_for_chunks)
+            graph_state_for_chunks.pop("chunks", None)
+            if graph_chunks == chunks:
+                graph_state_for_chunks["graph_chunks_from_project"] = True
+                graph_state_for_chunks.pop("graph_chunks_in_sidecar", None)
+            else:
+                chunk_payload["graph_chunks"] = graph_chunks
+                graph_state_for_chunks["graph_chunks_in_sidecar"] = True
+                graph_state_for_chunks.pop("graph_chunks_from_project", None)
+            payload_for_storage["graph_state"] = graph_state_for_chunks
+        else:
+            existing_graph_state = current.get("graph_state") or {}
+            old_chunk_payload = (
+                _read_chunk_data(project_dir, current) if current.get("chunks_data_file") else {}
+            )
+            if existing_graph_state.get("graph_chunks_in_sidecar"):
+                if "graph_chunks" in old_chunk_payload:
+                    chunk_payload["graph_chunks"] = old_chunk_payload["graph_chunks"]
+                if isinstance(graph_state_for_chunks, dict):
+                    graph_state_for_chunks["graph_chunks_in_sidecar"] = True
+        _write_chunk_data(project_dir, chunk_payload)
+        payload_for_storage["chunks_data_file"] = CHUNK_DATA_FILENAME
+        payload_for_storage["chunk_count"] = len(chunks) if has_project_chunks else int(
+            current.get("chunk_count", len(chunks)) or 0
+        )
     if isinstance(payload.get("graph_state"), dict):
         current_graph_state = current.get("graph_state") or {}
-        incoming_graph_state = dict(payload["graph_state"])
+        incoming_graph_state = dict(payload_for_storage.get("graph_state") or {})
         if "entities" in incoming_graph_state or "relationships" in incoming_graph_state:
             entities = incoming_graph_state.pop("entities", [])
             relationships = incoming_graph_state.pop("relationships", [])
