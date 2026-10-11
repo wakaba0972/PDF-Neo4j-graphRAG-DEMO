@@ -882,6 +882,15 @@ def test_connection_summary_does_not_expose_secrets() -> None:
     assert "api_key" not in settings
 
 
+def test_project_ui_state_keeps_chunks_out_of_duplicate_project_state() -> None:
+    project = {"project_id": "vehicle-1", "name": "測試", "chunks": [{"text": "large"}]}
+
+    state = ui._project_ui_state(project)
+
+    assert state == {"project_id": "vehicle-1", "name": "測試"}
+    assert project["chunks"] == [{"text": "large"}]
+
+
 def test_persist_env_settings_writes_all_fields(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     status = persist_env_settings(

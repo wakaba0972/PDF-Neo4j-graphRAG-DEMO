@@ -698,7 +698,7 @@ def import_project_for_ui(archive_path: str | None) -> tuple[dict[str, Any], dic
         raise gr.Error(f"專案匯入失敗：{exc}") from exc
     return (
         gr.update(choices=_project_choices(), value=project["project_id"]),
-        project,
+        _project_ui_state(project),
         f"✅ 已匯入專案「{project['name']}」。外部 Neo4j Database 未包含；圖譜資料需重新匯入 Neo4j。",
     )
 
@@ -743,6 +743,11 @@ def _stored_chunks(items: list[dict[str, Any]]) -> list[TextChunk]:
         )
         for i in items
     ]
+
+
+def _project_ui_state(project: dict[str, Any]) -> dict[str, Any]:
+    """Keep large chunk payloads in the dedicated chunk state, not twice in UI state."""
+    return {key: value for key, value in project.items() if key != "chunks"}
 
 
 def _document_ids_from_project(project: dict[str, Any]) -> dict[str, str]:
@@ -1114,7 +1119,7 @@ def save_project_for_ui(
         }, [doc["file_path"] for doc in documents if doc.get("file_path")])
     except (OSError, ValueError) as exc:
         return {}, f"❌ {exc}"
-    return project, f"✅ 專案「{project['name']}」已保存。"
+    return _project_ui_state(project), f"✅ 專案「{project['name']}」已保存。"
 
 
 def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
@@ -1164,7 +1169,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
     else:
         graph_status, import_status = "尚未執行抽取。", "尚未執行 Embedding 與匯入。"
     return (
-        project, f"✅ 已載入專案「{project['name']}」。",
+        _project_ui_state(project), f"✅ 已載入專案「{project['name']}」。",
         get("neo4j_uri", env["NEO4J_URI"]), project.get("neo4j_database") or project_database_name(project_id),
         get("neo4j_username", env["NEO4J_USERNAME"]), get("neo4j_password", env["NEO4J_PASSWORD"]),
         llm_profile["base_url"], llm_profile["api_key"],

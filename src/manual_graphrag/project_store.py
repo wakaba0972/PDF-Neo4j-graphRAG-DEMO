@@ -89,9 +89,16 @@ def _write_project_summary(project_dir: Path, project: dict[str, Any]) -> dict[s
 def load_project_summary(
     project_id: str, root: str | Path = PROJECTS_DIR,
 ) -> dict[str, Any]:
+    if not project_id or Path(project_id).name != project_id:
+        raise ValueError("請選擇有效的專案")
+    project_dir = Path(root) / project_id
+    summary_path = project_dir / "summary.json"
+    if summary_path.is_file():
+        return read_json(summary_path)
+    # One-time compatibility path for projects created before summary.json
+    # existed. Normal summary reads stay small and do not parse all chunks.
     project = load_project(project_id, root)
-    summary_path = Path(root) / project_id / "summary.json"
-    _write_project_summary(summary_path.parent, project)
+    _write_project_summary(project_dir, project)
     return read_json(summary_path)
 
 
@@ -114,11 +121,17 @@ def list_projects(root: str | Path = PROJECTS_DIR) -> list[tuple[str, str]]:
         return projects
     for config_path in base.glob("*/project.json"):
         try:
-            data = read_json(config_path)
             summary_path = config_path.parent / "summary.json"
-            if not summary_path.is_file():
-                _write_project_summary(config_path.parent, data)
-            projects.append((str(data.get("name") or config_path.parent.name), config_path.parent.name))
+            if summary_path.is_file():
+                summary = read_json(summary_path)
+                name = summary.get("name")
+            else:
+                # Migrate older projects once; subsequent listings read only
+                # the compact summary file.
+                data = read_json(config_path)
+                summary = _write_project_summary(config_path.parent, data)
+                name = summary.get("name")
+            projects.append((str(name or config_path.parent.name), config_path.parent.name))
         except (OSError, ValueError, TypeError):
             continue
     return sorted(projects, key=lambda item: item[0].casefold())

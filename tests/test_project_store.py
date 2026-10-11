@@ -36,6 +36,36 @@ def test_project_round_trip_and_listing(tmp_path) -> None:
     assert saved["neo4j_database"].startswith("vehicle-")
 
 
+def test_project_listing_uses_summary_without_reading_full_project_json(tmp_path, monkeypatch) -> None:
+    import manual_graphrag.project_store as project_store
+
+    project = create_project("快速清單", tmp_path)
+    original_read_json = project_store.read_json
+    reads = []
+
+    def track_summary_reads(path):
+        reads.append(Path(path).name)
+        return original_read_json(path)
+
+    monkeypatch.setattr(project_store, "read_json", track_summary_reads)
+
+    assert list_projects(tmp_path) == [("快速清單", project["project_id"])]
+    assert reads == ["summary.json"]
+
+
+def test_load_project_summary_reads_existing_summary_without_loading_project(tmp_path, monkeypatch) -> None:
+    import manual_graphrag.project_store as project_store
+
+    project = create_project("摘要讀取", tmp_path)
+
+    def fail_project_load(*args, **kwargs):
+        raise AssertionError("existing summaries should not load project.json")
+
+    monkeypatch.setattr(project_store, "load_project", fail_project_load)
+
+    assert load_project_summary(project["project_id"], tmp_path)["name"] == "摘要讀取"
+
+
 def test_project_name_can_be_updated_without_changing_base_name(tmp_path) -> None:
     project = create_project("61 | s25", tmp_path)
 
