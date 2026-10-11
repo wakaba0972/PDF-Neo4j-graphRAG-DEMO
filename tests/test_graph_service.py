@@ -710,6 +710,11 @@ def test_luna_none_effort_preserves_temperature_and_invalid_effort_fails(monkeyp
             "http://models/v1", "", "gpt-6-luna", "system", "user", 0,
             reasoning_effort="unsupported",
         )
+    with pytest.raises(ValueError, match="推理強度"):
+        graph_service._chat_json(
+            "http://models/v1", "", "gpt-6-luna", "system", "user", 0,
+            reasoning_effort="max",
+        )
 
 
 
