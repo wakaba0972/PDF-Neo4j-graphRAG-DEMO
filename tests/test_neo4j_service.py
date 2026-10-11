@@ -405,6 +405,11 @@ def _evidence(evidence_id: str, score: float, kind: str = "原文") -> dict:
 def test_vector_index_name_uses_embedding_dimensions() -> None:
     assert neo4j_service.vector_index_name(1536) == "graph_evidence_embedding_1536"
     assert neo4j_service.vector_index_name(3072) == "graph_evidence_embedding_3072"
+    query = neo4j_service._create_vector_index_query(
+        "graph_evidence_embedding_3072", 3072,
+    )
+    assert query.endswith("}}")
+    assert "vector.dimensions`: 3072" in query
     with pytest.raises(ValueError, match="維度"):
         neo4j_service.vector_index_name(0)
 

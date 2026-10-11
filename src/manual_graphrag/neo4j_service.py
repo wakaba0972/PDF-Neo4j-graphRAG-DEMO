@@ -106,6 +106,17 @@ def vector_index_name(dimensions: int) -> str:
     return f"graph_evidence_embedding_{int(dimensions)}"
 
 
+def _create_vector_index_query(index_name: str, dimensions: int) -> str:
+    """Build the Neo4j vector-index DDL with both OPTIONS maps closed."""
+    return (
+        f"CREATE VECTOR INDEX {index_name} IF NOT EXISTS "
+        "FOR (e:GraphEvidence) ON (e.embedding) OPTIONS {"
+        "indexConfig: {`vector.dimensions`: "
+        f"{int(dimensions)}, "
+        "`vector.similarity_function`: 'cosine'}}"
+    )
+
+
 def _expanded_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     return {
         **evidence,
@@ -456,11 +467,7 @@ def import_extraction(
                     if re.fullmatch(r"graph_evidence_embedding(?:_\d+)?", old_index_name):
                         session.run(f"DROP INDEX `{old_index_name}` IF EXISTS").consume()
                 session.run(
-                    f"CREATE VECTOR INDEX {index_name} IF NOT EXISTS "
-                    "FOR (e:GraphEvidence) ON (e.embedding) OPTIONS {"
-                    "indexConfig: {`vector.dimensions`: "
-                    f"{dimensions}, "
-                    "`vector.similarity_function`: 'cosine'}}"
+                    _create_vector_index_query(index_name, dimensions)
                 ).consume()
                 session.run(
                     "CREATE FULLTEXT INDEX graph_evidence_fulltext IF NOT EXISTS "
@@ -637,10 +644,7 @@ def import_extraction_batched(
                     if progress:
                         progress(0.95, "建立向量與全文檢索索引…")
                     session.run(
-                        f"CREATE VECTOR INDEX {index_name} IF NOT EXISTS "
-                        "FOR (e:GraphEvidence) ON (e.embedding) OPTIONS {"
-                        "indexConfig: {`vector.dimensions`: "
-                        f"{dimensions}, `vector.similarity_function`: 'cosine'}}"
+                        _create_vector_index_query(index_name, dimensions)
                     ).consume()
                     session.run(
                         "CREATE FULLTEXT INDEX graph_evidence_fulltext IF NOT EXISTS "
@@ -665,10 +669,9 @@ def import_extraction_batched(
                     try:
                         restore_index_name = vector_index_name(restore_dimensions)
                         session.run(
-                            f"CREATE VECTOR INDEX {restore_index_name} IF NOT EXISTS "
-                            "FOR (e:GraphEvidence) ON (e.embedding) OPTIONS {"
-                            "indexConfig: {`vector.dimensions`: "
-                            f"{restore_dimensions}, `vector.similarity_function`: 'cosine'}}"
+                            _create_vector_index_query(
+                                restore_index_name, restore_dimensions,
+                            )
                         ).consume()
                         session.run(
                             "CREATE FULLTEXT INDEX graph_evidence_fulltext IF NOT EXISTS "
