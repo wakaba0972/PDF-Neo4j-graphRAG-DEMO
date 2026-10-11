@@ -189,6 +189,56 @@ class FakeDriver:
         return self.session_instance
 
 
+def test_load_latest_graph_metadata_does_not_collect_all_graph_nodes(monkeypatch) -> None:
+    class Record(dict):
+        pass
+
+    class MetadataResult:
+        def single(self):
+            return Record({
+                "run_id": "run-1",
+                "document": "manual.pdf",
+                "embedding_model": "embed-model",
+                "embedding_dimensions": 3072,
+                "vector_index_name": "graph_evidence_embedding_3072",
+            })
+
+    class MetadataSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def run(self, query):
+            captured["query"] = query
+            return MetadataResult()
+
+    class MetadataDriver:
+        def session(self, **_kwargs):
+            return MetadataSession()
+
+    captured = {}
+    neo4j_service._close_cached_drivers()
+    monkeypatch.setattr(
+        neo4j_service.GraphDatabase,
+        "driver",
+        lambda *_args, **_kwargs: MetadataDriver(),
+    )
+    try:
+        result = neo4j_service.load_latest_graph_metadata(
+            "bolt://db", "neo4j", "user", "password",
+        )
+    finally:
+        neo4j_service._close_cached_drivers()
+
+    assert result["run_id"] == "run-1"
+    assert result["embedding_model"] == "embed-model"
+    assert result["neo4j_imported"] is True
+    assert "collect(" not in captured["query"].casefold()
+    assert "optional match" not in captured["query"].casefold()
+
+
 def test_import_extraction_writes_document_entities_and_relationships(monkeypatch) -> None:
     transaction = FakeTransaction()
     driver = FakeDriver(transaction)

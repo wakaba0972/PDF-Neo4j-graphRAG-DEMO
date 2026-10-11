@@ -57,7 +57,7 @@ from .neo4j_service import (
     ensure_project_database,
     import_extraction,
     import_extraction_batched,
-    load_latest_graph,
+    load_latest_graph_metadata,
     search_graph_evidence,
     vector_index_name,
 )
@@ -5609,7 +5609,7 @@ def answer_question_for_ui(
     if not question.strip():
         return "請輸入問題。", "", []
     try:
-        graph_state = load_latest_graph(
+        graph_state = load_latest_graph_metadata(
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password
         )
         question_vector = embedding_vectors(

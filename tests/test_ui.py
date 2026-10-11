@@ -3585,7 +3585,7 @@ def test_answer_question_for_ui_can_disable_reranker(tmp_path, monkeypatch) -> N
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         ui,
-        "load_latest_graph",
+        "load_latest_graph_metadata",
         lambda *args: {
             "run_id": "run-1",
             "document": "manual.pdf",
@@ -3637,7 +3637,7 @@ def test_answer_question_for_ui_can_disable_reranker(tmp_path, monkeypatch) -> N
 
 def test_answer_question_for_ui_passes_model_context_to_agentic_strategy(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(ui, "load_latest_graph", lambda *_args: {
+    monkeypatch.setattr(ui, "load_latest_graph_metadata", lambda *_args: {
         "run_id": "run-1", "document": "manual.pdf", "embedding_model": "embed",
     })
     monkeypatch.setattr(ui, "embedding_vectors", lambda *_args: [[0.1]])
@@ -3685,7 +3685,7 @@ def test_answer_question_for_ui_passes_model_context_to_agentic_strategy(tmp_pat
 
 def test_answer_question_for_ui_keeps_expanded_evidence_without_reranker(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(ui, "load_latest_graph", lambda *args: {
+    monkeypatch.setattr(ui, "load_latest_graph_metadata", lambda *args: {
         "run_id": "run-1", "document": "manual.pdf", "embedding_model": "embed",
     })
     monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]])
@@ -3718,7 +3718,7 @@ def test_answer_question_for_ui_keeps_expanded_evidence_without_reranker(tmp_pat
 
 def test_answer_question_for_ui_runs_reranker_with_answer_model(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(ui, "load_latest_graph", lambda *args: {
+    monkeypatch.setattr(ui, "load_latest_graph_metadata", lambda *args: {
         "run_id": "run-1", "document": "manual.pdf", "embedding_model": "embed",
     })
     monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]])

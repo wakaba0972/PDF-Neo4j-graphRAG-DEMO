@@ -240,6 +240,45 @@ def load_latest_graph(
     return result
 
 
+def load_latest_graph_metadata(
+    uri: str, database: str, username: str, password: str
+) -> dict[str, Any]:
+    """Load only the active graph's metadata; do not materialize its full graph."""
+    if not uri.strip():
+        raise ValueError("請先填寫 Neo4j URI")
+    if not database.strip():
+        raise ValueError("請先填寫 Neo4j Database")
+    if not username.strip():
+        raise ValueError("請先填寫 Neo4j Username")
+    if not password:
+        raise ValueError("請先填寫 Neo4j Password")
+
+    query = """
+    MATCH (document:GraphDocument)
+    WHERE coalesce(document.import_status, 'complete') = 'complete'
+    WITH document ORDER BY document.updated_at DESC LIMIT 1
+    RETURN document.run_id AS run_id,
+           document.file_name AS document,
+           document.embedding_model AS embedding_model,
+           document.embedding_dimensions AS embedding_dimensions,
+           document.vector_index_name AS vector_index_name
+    """
+    try:
+        with _shared_driver(uri, username, password) as driver:
+            def fetch_latest_graph_metadata():
+                with driver.session(database=database.strip()) as session:
+                    return session.run(query).single()
+
+            record = _retry_read(fetch_latest_graph_metadata)
+    except (DriverError, Neo4jError, OSError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("請先填寫"):
+            raise
+        raise ValueError(f"Neo4j 查詢失敗：{exc}") from exc
+    if record is None:
+        raise ValueError("Neo4j 中沒有可供問答的 GraphDocument")
+    return {**dict(record), "neo4j_imported": True}
+
+
 def search_graph_evidence(
     uri: str,
     database: str,
