@@ -2725,6 +2725,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         component.get("props", {}).get("choices") == [
             ("基本向量檢索", "基本向量檢索"), ("混合檢索", "混合檢索"),
             ("Agentic Search", "Agentic Search"),
+                ("Agentic Search 2", "Agentic Search 2"),
         ]
         and component.get("type") == "dropdown"
         for component in components
