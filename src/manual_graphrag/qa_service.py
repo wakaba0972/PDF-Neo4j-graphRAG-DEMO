@@ -15,7 +15,7 @@ RERANK_MAX_CANDIDATES = 50
 RERANKER_MODES = ("停用", "Reranker", "LLM Reranker")
 EVIDENCE_EXPANSION_MODES = ("停用", "證據擴展")
 EMBEDDING_BATCH_SIZE = 64
-EMBEDDING_MAX_CONCURRENCY = 3
+EMBEDDING_MAX_CONCURRENCY = 10
 
 
 def _search_terms(text: str) -> set[str]:

@@ -5519,6 +5519,7 @@ def import_graph_for_ui(
     neo4j_password: str,
     embedding_model: str,
     graph_state: dict[str, Any],
+    max_embedding_concurrency: int = EMBEDDING_MAX_CONCURRENCY,
     progress=gr.Progress(),
 ) -> tuple[str, dict[str, Any]]:
     if not graph_state or not graph_state.get("run_id"):
@@ -5560,6 +5561,9 @@ def import_graph_for_ui(
                 embedding_api_key,
                 embedding_model,
                 progress,
+                max_concurrency=max(
+                    1, min(int(max_embedding_concurrency), 32),
+                ),
             ),
             len(evidence),
             progress=lambda value, description: progress(value, desc=description),
@@ -6007,13 +6011,21 @@ def build_app() -> gr.Blocks:
             with gr.Group():
                 gr.Markdown("#### ③ Embedding 並匯入 Neo4j")
                 gr.Markdown(
-                    "確認上方抽取結果後，選擇 Embedding 模型並匯入 Neo4j。"
+                    "確認上方抽取結果後，選擇 Embedding 模型與最大並行請求數，再匯入 Neo4j。"
                 )
                 graph_embedding_model = gr.Dropdown(
                     choices=embedding_choices,
                     value=embedding_profile["models"][0] if embedding_profile["models"][0] in embedding_allowed else None,
                     allow_custom_value=False,
                     label="Embedding 模型",
+                )
+                embedding_max_concurrency = gr.Slider(
+                    minimum=1,
+                    maximum=32,
+                    value=EMBEDDING_MAX_CONCURRENCY,
+                    step=1,
+                    label="最大並行 Embedding 請求數",
+                    info="同時送出的 Embedding 批次數；每批最多 64 筆。Neo4j 寫入仍依序進行。",
                 )
                 gr.Markdown(
                     "⚠️ 每次匯入都會先清空本工具在目前 Neo4j Database 中建立的圖譜，再寫入本次結果。"
@@ -7892,6 +7904,7 @@ def build_app() -> gr.Blocks:
                 neo4j_password,
                 graph_embedding_model,
                 graph_state,
+                embedding_max_concurrency,
             ],
             outputs=[import_status, graph_state],
             show_progress="full",

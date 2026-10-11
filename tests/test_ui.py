@@ -24,7 +24,15 @@ def _retrieval_config(
 
 
 def test_build_app_returns_blocks() -> None:
-    assert isinstance(build_app(), gr.Blocks)
+    app = build_app()
+    assert isinstance(app, gr.Blocks)
+    concurrency = next(
+        component for component in app.config["components"]
+        if component.get("props", {}).get("label") == "最大並行 Embedding 請求數"
+    )
+    assert concurrency["props"]["value"] == 10
+    assert concurrency["props"]["minimum"] == 1
+    assert concurrency["props"]["maximum"] == 32
 
 
 def test_embedded_evidence_batches_run_with_bounded_concurrency(monkeypatch) -> None:
@@ -3519,13 +3527,20 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
         return ImportSummary(2, 1, 1)
 
     monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]] * 2)
+    original_batcher = ui._embedded_evidence_batches
+
+    def capture_batcher(*args, **kwargs):
+        captured["max_concurrency"] = kwargs.get("max_concurrency")
+        return original_batcher(*args, **kwargs)
+
+    monkeypatch.setattr(ui, "_embedded_evidence_batches", capture_batcher)
     monkeypatch.setattr(ui, "import_extraction_batched", fake_import)
     provisioned = []
     monkeypatch.setattr(ui, "ensure_project_database", lambda *args: provisioned.append(args))
 
     status, state = ui.import_graph_for_ui(
         "http://models/v1", "key", "bolt://db", "neo4j", "user", "password",
-        "embed", _importable_graph_state(),
+        "embed", _importable_graph_state(), 2,
     )
 
     assert status.startswith("✅ 已清空本工具既有圖譜")
@@ -3537,6 +3552,7 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
     assert captured["args"][4] == "run-1"
     assert [len(batch) for batch in captured["batches"]] == [2]
     assert all("embedding" in item for batch in captured["batches"] for item in batch)
+    assert captured["max_concurrency"] == 2
 
 
 def test_import_graph_for_ui_keeps_state_when_import_fails(monkeypatch) -> None:
