@@ -1057,10 +1057,10 @@ def render_graph_tables_for_ui(graph: dict[str, Any] | None) -> tuple[list[list[
 
 def load_graph_tables_for_project_ui(
     project_id: str | None, graph_state: dict[str, Any] | None,
-) -> tuple[list[list[object]], list[list[object]], dict[str, Any]]:
+) -> tuple[list[list[object]], list[list[object]], dict[str, Any], str]:
     state = graph_state or {}
     if not state.get("run_id"):
-        return [], [], state
+        return [], [], state, "尚未執行圖譜抽取。"
     if "entities" not in state or "relationships" not in state:
         try:
             project = load_full_project(str(project_id or ""))
@@ -1068,7 +1068,10 @@ def load_graph_tables_for_project_ui(
         except (OSError, ValueError) as exc:
             raise gr.Error(f"讀取圖譜明細失敗：{exc}") from exc
     entities, relationships = render_graph_tables_for_ui(state)
-    return entities, relationships, state
+    return (
+        entities, relationships, state,
+        f"✅ 已載入 {len(entities)} 個實體與 {len(relationships)} 筆關係。",
+    )
 
 
 def _project_name_for_build(
@@ -6036,6 +6039,10 @@ def build_app() -> gr.Blocks:
                 )
                 build_status = gr.Markdown("尚未執行抽取。")
                 gr.Markdown("##### 抽取結果")
+                load_graph_details_button = gr.Button("載入已保存的實體與關係", variant="secondary")
+                load_graph_details_status = gr.Markdown(
+                    "若結果表格為空，按此按鈕載入專案中已保存的圖譜明細。"
+                )
                 entity_table = gr.Dataframe(
                     headers=["實體", "類型", "說明", "來源 Chunks", "來源頁碼", "來源文件"],
                     interactive=False,
@@ -7520,11 +7527,11 @@ def build_app() -> gr.Blocks:
         )
         project_tab.select(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
         app.load(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
-        graph_tab.select(
+        load_graph_details_button.click(
             load_graph_tables_for_project_ui,
             inputs=[project_selector, graph_state],
-            outputs=[entity_table, relationship_table, graph_state],
-            show_progress="hidden",
+            outputs=[entity_table, relationship_table, graph_state, load_graph_details_status],
+            show_progress="minimal",
         )
         project_selector.input(
             ensure_project_selection_for_ui,

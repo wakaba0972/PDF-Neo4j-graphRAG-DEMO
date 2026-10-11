@@ -1232,6 +1232,27 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert "已匯入 Neo4j" in loaded[33]
 
 
+def test_saved_graph_details_load_only_after_explicit_request(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("延遲載入圖譜")
+    ui.save_project(project["project_id"], {"graph_state": {
+        "run_id": "graph-1",
+        "entities": [{"name": "馬達", "type": "零件", "description": "動力來源"}],
+        "relationships": [{"source": "馬達", "type": "驅動", "target": "車輪"}],
+    }})
+    metadata = ui.load_project(project["project_id"])["graph_state"]
+
+    entities, relationships, full_state, status = ui.load_graph_tables_for_project_ui(
+        project["project_id"], metadata,
+    )
+
+    assert "entities" not in metadata
+    assert entities[0][:2] == ["馬達", "零件"]
+    assert relationships[0][:3] == ["馬達", "驅動", "車輪"]
+    assert full_state["entities"] == [{"name": "馬達", "type": "零件", "description": "動力來源"}]
+    assert status == "✅ 已載入 1 個實體與 1 筆關係。"
+
+
 def test_load_project_ignores_legacy_model_credentials(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(ui, "load_env", lambda: {
