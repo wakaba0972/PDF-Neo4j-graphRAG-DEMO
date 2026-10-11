@@ -2339,6 +2339,27 @@ def test_single_evaluation_strategy_controls_sync_active_parameters() -> None:
     ]
 
 
+def test_same_named_strategy_controls_keep_values_within_each_strategy_limits() -> None:
+    saved = _retrieval_config("Agentic Search", 8)
+    saved["params"]["seed_top_k"] = 30
+    config = ui.RetrievalConfig.from_dict(saved)
+    entries = ui._strategy_parameter_entries()
+
+    experiment_updates = ui._experiment_strategy_parameter_updates(config, True)
+    single_updates = ui._single_strategy_parameter_updates(config)
+    group_updates = ui._inline_group_updates([{
+        "name": "Agentic 組", "answer_model": "model-a",
+        "retrieval_config": saved,
+    }])
+    for index, (strategy_id, name, _spec) in enumerate(entries):
+        if name != "seed_top_k":
+            continue
+        expected = 30 if strategy_id == "agentic" else 4
+        assert experiment_updates[index]["value"] == expected
+        assert single_updates[index + 1]["value"] == expected
+        assert group_updates[ui.EXPERIMENT_GROUP_FIELDS + index]["value"] == expected
+
+
 def test_experiment_group_ui_renders_and_saves_new_strategy_parameter(request) -> None:
     strategy = RetrievalStrategySpec(
         "beam", "Beam 搜尋",

@@ -920,7 +920,10 @@ def _experiment_strategy_parameter_updates(
 ) -> list[Any]:
     return [
         gr.update(
-            value=config.params.get(name, spec.default),
+            value=(
+                config.params.get(name, spec.default)
+                if strategy_id == config.strategy_id else spec.default
+            ),
             visible=row_visible and strategy_id == config.strategy_id,
         )
         for strategy_id, name, spec in _strategy_parameter_entries()
@@ -951,7 +954,10 @@ def _single_strategy_parameter_updates(config: RetrievalConfig) -> tuple[Any, ..
         params,
         *[
             gr.update(
-                value=params.get(name, spec.default),
+                value=(
+                    params.get(name, spec.default)
+                    if strategy_id == config.strategy_id else spec.default
+                ),
                 visible=(strategy_id == config.strategy_id),
             )
             for strategy_id, name, spec in entries
@@ -972,10 +978,10 @@ def _sync_experiment_strategy_parameter_controls(
     visible = bool(str(group_name or "").strip())
     updates = [
         gr.update(
-            value=value,
+            value=params.get(name, spec.default) if entry_strategy_id == strategy_id else spec.default,
             visible=visible and entry_strategy_id == strategy_id,
         )
-        for (entry_strategy_id, _name, _spec), value in zip(entries, values)
+        for entry_strategy_id, name, spec in entries
     ]
     return (params, *updates)
 
@@ -993,10 +999,10 @@ def _sync_single_strategy_parameter_controls(
     }
     updates = [
         gr.update(
-            value=value,
+            value=params.get(name, spec.default) if entry_strategy_id == strategy_id else spec.default,
             visible=entry_strategy_id == strategy_id,
         )
-        for (entry_strategy_id, _name, _spec), value in zip(entries, values)
+        for entry_strategy_id, name, spec in entries
     ]
     return (params, *updates)
 
