@@ -830,6 +830,19 @@ def _retrieval_config_from_controls(
             raise ValueError("策略參數必須是有效的 JSON 物件") from exc
     if not isinstance(params, dict):
         raise ValueError("策略參數必須是 JSON 物件")
+    # Gradio sliders may return an integral float control value as ``int``
+    # (for example 45 instead of 45.0). YAML ``number`` parameters still
+    # represent real numbers, so normalize these UI values before validation.
+    specs = RETRIEVAL_STRATEGIES.get_spec(config.strategy_id).parameters
+    params = {
+        name: float(value)
+        if name in specs
+        and specs[name].value_type is float
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        else value
+        for name, value in params.items()
+    }
     return replace(config, params={**config.params, **params}).validated()
 
 

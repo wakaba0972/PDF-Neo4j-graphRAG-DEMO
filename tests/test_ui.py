@@ -2784,6 +2784,36 @@ def test_inline_experiment_group_add_and_remove(tmp_path, monkeypatch) -> None:
     assert ui.load_project(project["project_id"])["experiment"]["groups"] == removed[-3]
 
 
+def test_remove_inline_group_accepts_integral_value_for_float_strategy_parameter(
+    tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("experiment-float-parameter")
+    agentic_config = ui._retrieval_config_from_controls(
+        ui.RETRIEVAL_STRATEGIES.labels["agentic_search_2"],
+        10, "停用", "停用", {"max_runtime_seconds": 45.0},
+    )
+    groups = [
+        {"name": "移除組", "answer_model": "gpt-4o-mini", "retrieval_config": _retrieval_config()},
+        {"name": "保留組", "answer_model": "gpt-4o-mini", "retrieval_config": agentic_config.to_dict()},
+    ]
+    values = ui._inline_group_values(groups)
+    parameter_index = next(
+        index for index, (strategy_id, name, _) in enumerate(ui._strategy_parameter_entries())
+        if strategy_id == "agentic_search_2" and name == "max_runtime_seconds"
+    )
+    values[ui.EXPERIMENT_GROUP_COMPONENTS + ui.EXPERIMENT_GROUP_FIELDS + parameter_index] = 45
+
+    removed = ui.remove_inline_experiment_group_for_ui(
+        0, project["project_id"], [], 1, settings.load_service_settings("llm"),
+        groups, *values,
+    )
+
+    assert removed[-3][0]["name"] == "保留組"
+    assert removed[-3][0]["retrieval_config"]["params"]["max_runtime_seconds"] == 45.0
+    assert "已自動儲存" in removed[-2]
+
+
 def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     app = build_app()
     components = app.config["components"]
