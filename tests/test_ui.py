@@ -27,6 +27,46 @@ def test_build_app_returns_blocks() -> None:
     assert isinstance(build_app(), gr.Blocks)
 
 
+def test_embedded_evidence_batches_run_with_bounded_concurrency(monkeypatch) -> None:
+    from threading import Barrier
+
+    barrier = Barrier(3)
+    lock = Lock()
+    active = 0
+    peak_active = 0
+    calls = 0
+
+    def fake_embedding(_base, _key, _model, texts):
+        nonlocal active, peak_active, calls
+        with lock:
+            calls += 1
+            call_number = calls
+            active += 1
+            peak_active = max(peak_active, active)
+        if call_number <= 3:
+            barrier.wait(timeout=5)
+        with lock:
+            active -= 1
+        return [[float(len(texts))] for _ in texts]
+
+    monkeypatch.setattr(ui, "embedding_vectors", fake_embedding)
+    progress_updates = []
+    evidence = [{"text": f"chunk {index}"} for index in range(4)]
+
+    batches = list(ui._embedded_evidence_batches(
+        evidence, "https://api.example/v1", "key", "embedding-model",
+        lambda value, **kwargs: progress_updates.append((value, kwargs)),
+        batch_size=1,
+        max_concurrency=3,
+    ))
+
+    assert len(batches) == 4
+    assert peak_active == 3
+    assert all(item.get("embedding") == [1.0] for batch in batches for item in batch)
+    assert progress_updates[-1][0] == pytest.approx(0.9)
+    assert "4/4 筆" in progress_updates[-1][1]["desc"]
+
+
 def test_experiment_project_selector_defaults_to_first_existing_project(monkeypatch) -> None:
     choices = [("實驗 A", "exp-a"), ("實驗 B", "exp-b")]
     monkeypatch.setattr(ui, "experiment_project_choices_for_ui", lambda: choices)

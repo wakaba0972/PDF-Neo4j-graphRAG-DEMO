@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import re
 import zipfile
 from dataclasses import replace
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from functools import partial
 from pathlib import Path
 from threading import Lock
@@ -85,6 +85,7 @@ from .question_set_store import (
 )
 from .qa_service import (
     EMBEDDING_BATCH_SIZE,
+    EMBEDDING_MAX_CONCURRENCY,
     RERANK_CANDIDATE_MULTIPLIER,
     RERANK_MAX_CANDIDATES,
     EVIDENCE_EXPANSION_MODES,
@@ -5444,6 +5445,71 @@ def _build_graph_evidence(
     return evidence
 
 
+def _embedded_evidence_batches(
+    evidence: list[dict[str, Any]],
+    embedding_api_base: str,
+    embedding_api_key: str,
+    embedding_model: str,
+    progress,
+    *,
+    batch_size: int = EMBEDDING_BATCH_SIZE,
+    max_concurrency: int = EMBEDDING_MAX_CONCURRENCY,
+):
+    """Embed a bounded number of batches concurrently and yield each as ready."""
+    total_batches = (len(evidence) + batch_size - 1) // batch_size
+    source_batches = iter(
+        (index, evidence[start : start + batch_size])
+        for index, start in enumerate(range(0, len(evidence), batch_size), start=1)
+    )
+    pending = {}
+    completed_items = 0
+    completed_batches = 0
+
+    with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+        def submit_next() -> bool:
+            try:
+                batch_index, batch = next(source_batches)
+            except StopIteration:
+                return False
+            future = executor.submit(
+                embedding_vectors,
+                embedding_api_base,
+                embedding_api_key,
+                embedding_model,
+                [item["text"] for item in batch],
+            )
+            pending[future] = (batch_index, batch)
+            return True
+
+        for _ in range(max_concurrency):
+            if not submit_next():
+                break
+
+        while pending:
+            finished, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in finished:
+                batch_index, batch = pending.pop(future)
+                vectors = future.result()
+                if len(vectors) != len(batch):
+                    raise ValueError(
+                        f"Embedding 回傳數量不符：第 {batch_index} 批預期 {len(batch)} 筆，"
+                        f"實際收到 {len(vectors)} 筆"
+                    )
+                for item, vector in zip(batch, vectors):
+                    item["embedding"] = vector
+                completed_batches += 1
+                completed_items += len(batch)
+                progress(
+                    0.06 + 0.84 * (completed_items / max(len(evidence), 1)),
+                    desc=(
+                        f"Embedding 已完成 {completed_batches}/{total_batches} 批、"
+                        f"{completed_items}/{len(evidence)} 筆；最多並行 {max_concurrency} 批"
+                    ),
+                )
+                submit_next()
+                yield batch
+
+
 def import_graph_for_ui(
     embedding_api_base: str,
     embedding_api_key: str,
@@ -5476,32 +5542,6 @@ def import_graph_for_ui(
         if not evidence:
             raise ValueError("沒有可建立向量索引的原文、實體或關係")
 
-        total_batches = (len(evidence) + EMBEDDING_BATCH_SIZE - 1) // EMBEDDING_BATCH_SIZE
-
-        def embedded_batches():
-            for batch_index, start in enumerate(
-                range(0, len(evidence), EMBEDDING_BATCH_SIZE), start=1,
-            ):
-                batch = evidence[start : start + EMBEDDING_BATCH_SIZE]
-                progress(
-                    0.06 + 0.84 * ((batch_index - 1) / total_batches),
-                    desc=f"Embedding 第 {batch_index}/{total_batches} 批（{len(batch)} 筆）…",
-                )
-                vectors = embedding_vectors(
-                    embedding_api_base,
-                    embedding_api_key,
-                    embedding_model,
-                    [item["text"] for item in batch],
-                )
-                if len(vectors) != len(batch):
-                    raise ValueError(
-                        f"Embedding 回傳數量不符：第 {batch_index} 批預期 {len(batch)} 筆，"
-                        f"實際收到 {len(vectors)} 筆"
-                    )
-                for item, vector in zip(batch, vectors):
-                    item["embedding"] = vector
-                yield batch
-
         imported = import_extraction_batched(
             neo4j_uri,
             neo4j_database,
@@ -5514,7 +5554,13 @@ def import_graph_for_ui(
             updated_state["schema"],
             updated_state["entities"],
             updated_state["relationships"],
-            embedded_batches(),
+            _embedded_evidence_batches(
+                evidence,
+                embedding_api_base,
+                embedding_api_key,
+                embedding_model,
+                progress,
+            ),
             len(evidence),
             progress=lambda value, description: progress(value, desc=description),
         )
