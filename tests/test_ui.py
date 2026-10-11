@@ -3472,12 +3472,14 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
 
     captured = {}
 
-    def fake_import(*args):
+    def fake_import(*args, **kwargs):
         captured["args"] = args
-        return ImportSummary(2, 1)
+        captured["batches"] = list(args[11])
+        captured["progress"] = kwargs.get("progress")
+        return ImportSummary(2, 1, 1)
 
     monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]] * 2)
-    monkeypatch.setattr(ui, "import_extraction", fake_import)
+    monkeypatch.setattr(ui, "import_extraction_batched", fake_import)
     provisioned = []
     monkeypatch.setattr(ui, "ensure_project_database", lambda *args: provisioned.append(args))
 
@@ -3493,15 +3495,17 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
     assert state["vector_index_name"] == "graph_evidence_embedding_1"
     assert provisioned == [("bolt://db", "neo4j", "user", "password")]
     assert captured["args"][4] == "run-1"
+    assert [len(batch) for batch in captured["batches"]] == [2]
+    assert all("embedding" in item for batch in captured["batches"] for item in batch)
 
 
 def test_import_graph_for_ui_keeps_state_when_import_fails(monkeypatch) -> None:
-    monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]] * 2)
+    monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]] * len(args[3]))
     monkeypatch.setattr(ui, "ensure_project_database", lambda *args: None)
     monkeypatch.setattr(
         ui,
-        "import_extraction",
-        lambda *args: (_ for _ in ()).throw(ValueError("Neo4j 寫入失敗：offline")),
+        "import_extraction_batched",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("Neo4j 寫入失敗：offline")),
     )
 
     status, state = ui.import_graph_for_ui(

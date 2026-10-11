@@ -7,7 +7,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import RLock
-from typing import Any
+from typing import Any, Iterable
 
 from neo4j import GraphDatabase
 from neo4j.exceptions import (
@@ -72,6 +72,7 @@ atexit.register(_close_cached_drivers)
 class ImportSummary:
     entity_count: int
     relationship_count: int
+    embedding_dimensions: int = 0
 
 
 def vector_index_name(dimensions: int) -> str:
@@ -155,6 +156,7 @@ def load_latest_graph(
         raise ValueError("請先填寫 Neo4j Password")
     query = """
     MATCH (document:GraphDocument)
+    WHERE coalesce(document.import_status, 'complete') = 'complete'
     WITH document ORDER BY document.updated_at DESC LIMIT 1
     OPTIONAL MATCH (entity:ExtractedEntity)-[:IN_DOCUMENT]->(document)
     WITH document, collect(DISTINCT entity {
@@ -464,6 +466,190 @@ def import_extraction(
     return ImportSummary(counts["entity_count"], counts["relationship_count"])
 
 
+def import_extraction_batched(
+    uri: str,
+    database: str,
+    username: str,
+    password: str,
+    run_id: str,
+    document_name: str,
+    llm_model: str,
+    embedding_model: str,
+    schema: dict[str, Any],
+    entities: list[dict[str, Any]],
+    relationships: list[dict[str, Any]],
+    evidence_batches: Iterable[list[dict[str, Any]]],
+    total_evidence: int,
+    progress=None,
+) -> ImportSummary:
+    """Write each already-embedded evidence batch in its own Neo4j transaction."""
+    if not uri.strip():
+        raise ValueError("請先填寫 Neo4j URI")
+    if not database.strip():
+        raise ValueError("請先填寫 Neo4j Database")
+    if not username.strip():
+        raise ValueError("請先填寫 Neo4j Username")
+    if not password:
+        raise ValueError("請先填寫 Neo4j Password")
+
+    batches = iter(evidence_batches)
+    try:
+        first_batch = next(batches)
+    except StopIteration as exc:
+        raise ValueError("沒有可寫入 Neo4j Vector Index 的向量證據") from exc
+    if not first_batch or not first_batch[0].get("embedding"):
+        raise ValueError("沒有可寫入 Neo4j Vector Index 的向量證據")
+    dimensions = len(first_batch[0]["embedding"])
+    index_name = vector_index_name(dimensions)
+    entity_count = 0
+    relationship_count = 0
+    written = 0
+    initialized = False
+    previous_dimensions: int | None = None
+
+    try:
+        with _shared_driver(uri, username, password) as driver:
+            driver.verify_connectivity()
+            with driver.session(database=database.strip()) as session:
+                previous = session.run(
+                    "MATCH (document:GraphDocument) "
+                    "WHERE coalesce(document.import_status, 'complete') = 'complete' "
+                    "RETURN document.embedding_dimensions AS dimensions "
+                    "ORDER BY document.updated_at DESC LIMIT 1"
+                ).single()
+                if previous and previous.get("dimensions") is not None:
+                    previous_dimensions = int(previous["dimensions"])
+                existing_indexes = session.run(
+                    "SHOW VECTOR INDEXES YIELD name "
+                    "WHERE name = 'graph_evidence_embedding' "
+                    "OR name STARTS WITH 'graph_evidence_embedding_' "
+                    "RETURN name"
+                ).data()
+                for record in existing_indexes:
+                    old_index_name = str(record.get("name", ""))
+                    if re.fullmatch(r"graph_evidence_embedding(?:_\d+)?", old_index_name):
+                        session.run(f"DROP INDEX `{old_index_name}` IF EXISTS").consume()
+                fulltext_indexes = session.run(
+                    "SHOW FULLTEXT INDEXES YIELD name "
+                    "WHERE name = 'graph_evidence_fulltext' RETURN name"
+                ).data()
+                if fulltext_indexes:
+                    session.run("DROP INDEX graph_evidence_fulltext IF EXISTS").consume()
+                session.run(
+                    "CREATE INDEX graph_evidence_run_id_evidence_id IF NOT EXISTS "
+                    "FOR (e:GraphEvidence) ON (e.run_id, e.evidence_id)"
+                ).consume()
+                session.run(
+                    "CREATE INDEX extracted_entity_run_id_type_name IF NOT EXISTS "
+                    "FOR (e:ExtractedEntity) ON (e.run_id, e.type, e.name)"
+                ).consume()
+                session.run(
+                    "CREATE INDEX extracted_entity_run_id_name IF NOT EXISTS "
+                    "FOR (e:ExtractedEntity) ON (e.run_id, e.name)"
+                ).consume()
+                session.run("CALL db.awaitIndexes(300)").consume()
+                if progress:
+                    progress(0.06, "Neo4j 寫入索引就緒，開始寫入實體與關係…")
+
+                try:
+                    counts = session.execute_write(
+                        _write_graph,
+                        run_id,
+                        document_name,
+                        llm_model,
+                        embedding_model,
+                        schema,
+                        entities,
+                        relationships,
+                        first_batch,
+                        dimensions,
+                        index_name,
+                        "staging",
+                    )
+                    initialized = True
+                    entity_count = counts["entity_count"]
+                    relationship_count = counts["relationship_count"]
+                    written = len(first_batch)
+                    if progress:
+                        progress(
+                            0.06 + 0.84 * min(written / max(total_evidence, 1), 1.0),
+                            f"已寫入 Neo4j 第 1 批（{written}/{total_evidence} 筆證據）",
+                        )
+                    batch_number = 1
+                    for batch in batches:
+                        batch_number += 1
+                        if not batch:
+                            continue
+                        if any(
+                            len(item.get("embedding") or []) != dimensions
+                            for item in batch
+                        ):
+                            raise ValueError("同一批匯入的 Embedding 向量維度不一致")
+                        session.execute_write(
+                            _write_evidence_batch, run_id, batch,
+                        )
+                        written += len(batch)
+                        if progress:
+                            progress(
+                                0.06 + 0.84 * min(written / max(total_evidence, 1), 1.0),
+                                f"已寫入 Neo4j 第 {batch_number} 批（{written}/{total_evidence} 筆證據）",
+                            )
+                    if written != total_evidence:
+                        raise ValueError(
+                            f"Embedding 證據數量不符：預期 {total_evidence} 筆，實際寫入 {written} 筆"
+                        )
+                    if progress:
+                        progress(0.93, "建立證據與圖譜節點的連結…")
+                    session.execute_write(_link_graph_evidence, run_id)
+                    if progress:
+                        progress(0.95, "建立向量與全文檢索索引…")
+                    session.run(
+                        f"CREATE VECTOR INDEX {index_name} IF NOT EXISTS "
+                        "FOR (e:GraphEvidence) ON (e.embedding) OPTIONS {"
+                        "indexConfig: {`vector.dimensions`: "
+                        f"{dimensions}, `vector.similarity_function`: 'cosine'}}"
+                    ).consume()
+                    session.run(
+                        "CREATE FULLTEXT INDEX graph_evidence_fulltext IF NOT EXISTS "
+                        "FOR (e:GraphEvidence) ON EACH [e.text, e.name, e.source, e.target] "
+                        "OPTIONS {indexConfig: {`fulltext.analyzer`: 'cjk'}}"
+                    ).consume()
+                    session.run("CALL db.awaitIndexes(300)").consume()
+                    session.execute_write(_complete_graph_import, run_id)
+                except Exception:
+                    if initialized:
+                        try:
+                            session.execute_write(_delete_graph_run, run_id)
+                        except Exception:
+                            pass
+                    restore_dimensions = (
+                        dimensions if initialized else (previous_dimensions or dimensions)
+                    )
+                    try:
+                        restore_index_name = vector_index_name(restore_dimensions)
+                        session.run(
+                            f"CREATE VECTOR INDEX {restore_index_name} IF NOT EXISTS "
+                            "FOR (e:GraphEvidence) ON (e.embedding) OPTIONS {"
+                            "indexConfig: {`vector.dimensions`: "
+                            f"{restore_dimensions}, `vector.similarity_function`: 'cosine'}}"
+                        ).consume()
+                        session.run(
+                            "CREATE FULLTEXT INDEX graph_evidence_fulltext IF NOT EXISTS "
+                            "FOR (e:GraphEvidence) ON EACH [e.text, e.name, e.source, e.target] "
+                            "OPTIONS {indexConfig: {`fulltext.analyzer`: 'cjk'}}"
+                        ).consume()
+                        session.run("CALL db.awaitIndexes(300)").consume()
+                    except Exception:
+                        pass
+                    raise
+    except (DriverError, Neo4jError, OSError) as exc:
+        raise ValueError(f"Neo4j 寫入失敗：{exc}") from exc
+
+    if progress:
+        progress(1.0, "Embedding 與 Neo4j 匯入完成")
+    return ImportSummary(entity_count, relationship_count, dimensions)
+
+
 def _write_graph(
     transaction: Any,
     run_id: str,
@@ -476,6 +662,7 @@ def _write_graph(
     evidence: list[dict[str, Any]],
     embedding_dimensions: int,
     vector_index: str,
+    import_status: str = "complete",
 ) -> dict[str, int]:
     def with_source_references(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [
@@ -508,6 +695,7 @@ def _write_graph(
             document.embedding_dimensions = $embedding_dimensions,
             document.vector_index_name = $vector_index_name,
             document.schema_json = $schema_json,
+            document.import_status = $import_status,
             document.updated_at = datetime()
         """,
         run_id=run_id,
@@ -517,6 +705,7 @@ def _write_graph(
         embedding_dimensions=embedding_dimensions,
         vector_index_name=vector_index,
         schema_json=json.dumps(schema, ensure_ascii=False),
+        import_status=import_status,
     ).consume()
     entity_result = transaction.run(
         """
@@ -609,3 +798,84 @@ def _write_graph(
         if relationship_result
         else 0,
     }
+
+
+def _write_evidence_batch(
+    transaction: Any,
+    run_id: str,
+    evidence: list[dict[str, Any]],
+) -> None:
+    evidence = [
+        {
+            **item,
+            "source_references_json": json.dumps(
+                item.get("source_references", []), ensure_ascii=False
+            ),
+        }
+        for item in evidence
+    ]
+    transaction.run(
+        """
+        MATCH (document:GraphDocument {run_id: $run_id})
+        UNWIND $evidence AS item
+        MERGE (evidence:GraphEvidence {run_id: $run_id, evidence_id: item.evidence_id})
+        SET evidence.kind = item.kind, evidence.name = item.name,
+            evidence.source = item.source, evidence.target = item.target,
+            evidence.text = item.text, evidence.source_pages = item.source_pages,
+            evidence.source_chunk_numbers = item.source_chunk_numbers,
+            evidence.source_documents = item.source_documents,
+            evidence.source_references_json = item.source_references_json,
+            evidence.embedding = item.embedding
+        MERGE (evidence)-[:IN_DOCUMENT]->(document)
+        """,
+        run_id=run_id,
+        evidence=evidence,
+    ).consume()
+
+
+def _link_graph_evidence(transaction: Any, run_id: str) -> None:
+    transaction.run(
+        """
+        MATCH (evidence:GraphEvidence {run_id: $run_id, kind: '實體'})
+        MATCH (entity:ExtractedEntity {run_id: $run_id, name: evidence.name})
+        MERGE (evidence)-[:REPRESENTS]->(entity)
+        """,
+        run_id=run_id,
+    ).consume()
+    transaction.run(
+        """
+        MATCH (evidence:GraphEvidence {run_id: $run_id, kind: '關係'})
+        MATCH (source:ExtractedEntity {run_id: $run_id, name: evidence.source})
+        MATCH (target:ExtractedEntity {run_id: $run_id, name: evidence.target})
+        MERGE (evidence)-[:EVIDENCE_SOURCE]->(source)
+        MERGE (evidence)-[:EVIDENCE_TARGET]->(target)
+        """,
+        run_id=run_id,
+    ).consume()
+    transaction.run(
+        """
+        MATCH (chunk:GraphEvidence {run_id: $run_id, kind: '原文'})
+        UNWIND coalesce(chunk.source_chunk_numbers, []) AS chunk_number
+        MATCH (entity:ExtractedEntity {run_id: $run_id})
+        WHERE chunk_number IN coalesce(entity.source_chunk_numbers, [])
+        MERGE (chunk)-[:MENTIONS_ENTITY]->(entity)
+        """,
+        run_id=run_id,
+    ).consume()
+
+
+def _complete_graph_import(transaction: Any, run_id: str) -> None:
+    transaction.run(
+        "MATCH (document:GraphDocument {run_id: $run_id}) "
+        "SET document.import_status = 'complete', document.updated_at = datetime()",
+        run_id=run_id,
+    ).consume()
+
+
+def _delete_graph_run(transaction: Any, run_id: str) -> None:
+    transaction.run(
+        "MATCH (node) "
+        "WHERE (node:GraphDocument OR node:ExtractedEntity OR node:GraphEvidence) "
+        "AND node.run_id = $run_id DETACH DELETE node",
+        run_id=run_id,
+    ).consume()

@@ -14,6 +14,7 @@ RERANK_CANDIDATE_MULTIPLIER = 3
 RERANK_MAX_CANDIDATES = 50
 RERANKER_MODES = ("停用", "Reranker", "LLM Reranker")
 EVIDENCE_EXPANSION_MODES = ("停用", "證據擴展")
+EMBEDDING_BATCH_SIZE = 64
 
 
 def _search_terms(text: str) -> set[str]:
@@ -184,8 +185,8 @@ def embedding_vectors(base_url: str, api_key: str, model: str, texts: list[str])
     if not model.strip():
         raise ValueError("此建圖結果沒有 Embedding 模型")
     vectors: list[list[float]] = []
-    for start in range(0, len(texts), 64):
-        batch = texts[start : start + 64]
+    for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
+        batch = texts[start : start + EMBEDDING_BATCH_SIZE]
         response = _post_json(
             _api_url(base_url, "embeddings"),
             {"model": model.strip(), "input": batch},

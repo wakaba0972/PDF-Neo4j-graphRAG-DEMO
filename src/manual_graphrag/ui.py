@@ -56,6 +56,7 @@ from .human_review import (
 from .neo4j_service import (
     ensure_project_database,
     import_extraction,
+    import_extraction_batched,
     load_latest_graph,
     search_graph_evidence,
     vector_index_name,
@@ -83,6 +84,7 @@ from .question_set_store import (
     set_project_question_set_bindings,
 )
 from .qa_service import (
+    EMBEDDING_BATCH_SIZE,
     RERANK_CANDIDATE_MULTIPLIER,
     RERANK_MAX_CANDIDATES,
     EVIDENCE_EXPANSION_MODES,
@@ -5451,6 +5453,7 @@ def import_graph_for_ui(
     neo4j_password: str,
     embedding_model: str,
     graph_state: dict[str, Any],
+    progress=gr.Progress(),
 ) -> tuple[str, dict[str, Any]]:
     if not graph_state or not graph_state.get("run_id"):
         return "❌ 請先完成知識圖譜抽取。", graph_state or {}
@@ -5459,6 +5462,7 @@ def import_graph_for_ui(
     updated_state = dict(graph_state)
     updated_state["embedding_model"] = embedding_model.strip()
     try:
+        progress(0, desc="準備向量證據…")
         # Provision the project database as part of the real import operation;
         # the connection-test page is diagnostic and must not be a prerequisite.
         ensure_project_database(
@@ -5471,15 +5475,34 @@ def import_graph_for_ui(
         )
         if not evidence:
             raise ValueError("沒有可建立向量索引的原文、實體或關係")
-        vectors = embedding_vectors(
-            embedding_api_base, embedding_api_key, embedding_model,
-            [item["text"] for item in evidence],
-        )
-        for item, vector in zip(evidence, vectors):
-            item["embedding"] = vector
-        updated_state["embedding_dimensions"] = len(vectors[0])
-        updated_state["vector_index_name"] = vector_index_name(len(vectors[0]))
-        imported = import_extraction(
+
+        total_batches = (len(evidence) + EMBEDDING_BATCH_SIZE - 1) // EMBEDDING_BATCH_SIZE
+
+        def embedded_batches():
+            for batch_index, start in enumerate(
+                range(0, len(evidence), EMBEDDING_BATCH_SIZE), start=1,
+            ):
+                batch = evidence[start : start + EMBEDDING_BATCH_SIZE]
+                progress(
+                    0.06 + 0.84 * ((batch_index - 1) / total_batches),
+                    desc=f"Embedding 第 {batch_index}/{total_batches} 批（{len(batch)} 筆）…",
+                )
+                vectors = embedding_vectors(
+                    embedding_api_base,
+                    embedding_api_key,
+                    embedding_model,
+                    [item["text"] for item in batch],
+                )
+                if len(vectors) != len(batch):
+                    raise ValueError(
+                        f"Embedding 回傳數量不符：第 {batch_index} 批預期 {len(batch)} 筆，"
+                        f"實際收到 {len(vectors)} 筆"
+                    )
+                for item, vector in zip(batch, vectors):
+                    item["embedding"] = vector
+                yield batch
+
+        imported = import_extraction_batched(
             neo4j_uri,
             neo4j_database,
             neo4j_username,
@@ -5491,7 +5514,9 @@ def import_graph_for_ui(
             updated_state["schema"],
             updated_state["entities"],
             updated_state["relationships"],
-            evidence,
+            embedded_batches(),
+            len(evidence),
+            progress=lambda value, description: progress(value, desc=description),
         )
     except (KeyError, ValueError) as exc:
         updated_state["neo4j_imported"] = False
@@ -5499,6 +5524,8 @@ def import_graph_for_ui(
         return f"❌ {exc}", updated_state
 
     updated_state["neo4j_imported"] = True
+    updated_state["embedding_dimensions"] = imported.embedding_dimensions
+    updated_state["vector_index_name"] = vector_index_name(imported.embedding_dimensions)
     updated_state.pop("neo4j_error", None)
     return (
         f"✅ 已清空本工具既有圖譜；建立 {len(evidence)} 筆向量證據、Vector Index 與 Full-text Index；已匯入 Neo4j {imported.entity_count} 個實體與 "
@@ -7821,6 +7848,7 @@ def build_app() -> gr.Blocks:
                 graph_state,
             ],
             outputs=[import_status, graph_state],
+            show_progress="full",
         )
         import_event.then(
             save_project_for_ui, inputs=project_setting_inputs,

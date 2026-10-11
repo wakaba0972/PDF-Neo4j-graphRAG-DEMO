@@ -239,6 +239,41 @@ def test_import_extraction_writes_document_entities_and_relationships(monkeypatc
     assert "MENTIONS_ENTITY" in transaction.calls[7][0]
 
 
+def test_import_extraction_batched_writes_evidence_in_separate_transactions(monkeypatch) -> None:
+    transaction = FakeTransaction()
+    driver = FakeDriver(transaction)
+    monkeypatch.setattr(
+        neo4j_service.GraphDatabase, "driver", lambda _uri, **_kwargs: driver,
+    )
+    batches = [
+        [{"evidence_id": f"chunk-{index}", "kind": "原文", "text": "chunk",
+          "embedding": [0.1], "source_chunk_numbers": [index]}
+         for index in (1, 2)],
+        [{"evidence_id": "chunk-3", "kind": "原文", "text": "chunk",
+          "embedding": [0.1], "source_chunk_numbers": [3]}],
+        [{"evidence_id": "chunk-4", "kind": "原文", "text": "chunk",
+          "embedding": [0.1], "source_chunk_numbers": [4]}],
+    ]
+    progress_updates = []
+
+    summary = neo4j_service.import_extraction_batched(
+        "bolt://db", "neo4j", "user", "password", "run-batched",
+        "manual.pdf", "llm", "embed", {}, [], [], iter(batches), 4,
+        lambda value, description: progress_updates.append((value, description)),
+    )
+
+    assert summary == neo4j_service.ImportSummary(2, 1, 1)
+    evidence_writes = [
+        parameters["evidence"]
+        for query, parameters in transaction.calls
+        if "UNWIND $evidence AS item" in query
+    ]
+    assert [len(batch) for batch in evidence_writes] == [2, 1, 1]
+    assert any("import_status" in parameters for query, parameters in transaction.calls)
+    assert any("import_status = 'complete'" in query for query, _ in transaction.calls)
+    assert progress_updates[-1] == (1.0, "Embedding 與 Neo4j 匯入完成")
+
+
 def test_restore_source_references_from_neo4j_json() -> None:
     item = {
         "source_documents": ["a.pdf", "b.pdf"],
