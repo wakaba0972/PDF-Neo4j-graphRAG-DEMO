@@ -2830,6 +2830,16 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         and "題目集數" in item.get("props", {}).get("headers", [])
     )
     assert single_project_summary_table["props"]["interactive"] is False
+    single_project_breakdown_table = next(
+        item for item in components
+        if item.get("props", {}).get("headers", [])[-2:] == ["成員專案", "題目集"]
+    )
+    assert single_project_summary_table["id"] < single_project_breakdown_table["id"]
+    assert group_summary_table["id"] < next(
+        item for item in components
+        if item.get("props", {}).get("headers", [])[-2:] == ["成員專案", "題目集"]
+        and item["id"] > group_summary_table["id"]
+    )["id"]
     assert any(
         component.get("props", {}).get("label") == "啟用答案結果人工修改"
         and component.get("props", {}).get("value") is False
