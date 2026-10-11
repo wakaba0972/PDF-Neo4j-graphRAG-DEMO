@@ -137,9 +137,9 @@ class FakeTransaction:
     def run(self, query, **parameters):
         self.calls.append((query, parameters))
         if "RETURN count(entity)" in query:
-            return FakeResult(2)
+            return FakeResult(len(parameters.get("entities", [])))
         if "RETURN count(relation)" in query:
-            return FakeResult(1)
+            return FakeResult(len(parameters.get("relationships", [])))
         return FakeResult()
 
 
@@ -289,6 +289,7 @@ def test_import_extraction_writes_document_entities_and_relationships(monkeypatc
 
 
 def test_import_extraction_batched_writes_evidence_in_separate_transactions(monkeypatch) -> None:
+    monkeypatch.setattr(neo4j_service, "GRAPH_WRITE_BATCH_SIZE", 1)
     transaction = FakeTransaction()
     driver = FakeDriver(transaction)
     monkeypatch.setattr(
@@ -307,7 +308,13 @@ def test_import_extraction_batched_writes_evidence_in_separate_transactions(monk
 
     summary = neo4j_service.import_extraction_batched(
         "bolt://db", "neo4j", "user", "password", "run-batched",
-        "manual.pdf", "llm", "embed", {}, [], [], iter(batches), 4,
+        "manual.pdf", "llm", "embed", {},
+        [
+            {"name": "A", "type": "PART", "source_chunk_numbers": [1]},
+            {"name": "B", "type": "PART", "source_chunk_numbers": [2]},
+        ],
+        [{"source": "A", "type": "USES", "target": "B"}],
+        iter(batches), 4,
         lambda value, description: progress_updates.append((value, description)),
     )
 
@@ -318,8 +325,22 @@ def test_import_extraction_batched_writes_evidence_in_separate_transactions(monk
         if "UNWIND $evidence AS item" in query
     ]
     assert [len(batch) for batch in evidence_writes] == [2, 1, 1]
-    assert any("import_status" in parameters for query, parameters in transaction.calls)
+    entity_writes = [
+        parameters["entities"]
+        for query, parameters in transaction.calls
+        if "UNWIND $entities AS item" in query
+    ]
+    relationship_writes = [
+        parameters["relationships"]
+        for query, parameters in transaction.calls
+        if "UNWIND $relationships AS item" in query
+    ]
+    assert [len(batch) for batch in entity_writes] == [1, 1]
+    assert [len(batch) for batch in relationship_writes] == [1]
+    assert any("import_status: 'staging'" in query for query, _ in transaction.calls)
     assert any("import_status = 'complete'" in query for query, _ in transaction.calls)
+    assert any("MENTIONS_ENTITY" in query for query, _ in transaction.calls)
+    assert not any("WHERE chunk_number IN" in query for query, _ in transaction.calls)
     assert progress_updates[-1] == (1.0, "Embedding 與 Neo4j 匯入完成")
 
 
