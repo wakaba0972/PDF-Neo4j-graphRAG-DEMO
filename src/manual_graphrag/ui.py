@@ -1762,7 +1762,7 @@ def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
         if selector_update is not None:
             prefix[0] = selector_update
         prefix[4] = message
-        suffix = [gr.update() for _ in range(9)]
+        suffix = [gr.update() for _ in range(10)]
         suffix[0] = message
         return (*prefix, *[gr.update() for _ in range(EXPERIMENT_GROUP_LIMIT * EXPERIMENT_GROUP_COMPONENTS)], *suffix)
 
@@ -1782,7 +1782,7 @@ def delete_experiment_project_for_ui(project_id: str | None) -> tuple[Any, ...]:
         [], {}, "請先在 2-0 載入實驗專案。",
         *_inline_group_updates([], _configured_service_choice_items(load_service_settings("experiment_llm"))),
         "實驗組設定會自動儲存。", DEFAULT_MAX_CONCURRENT_REQUESTS,
-        [], [], [], [], "實驗專案已刪除。",
+        [], [], [], [], [], "實驗專案已刪除。",
         "實驗專案已刪除，請先載入或建立實驗專案。",
         gr.update(value="開始評測", interactive=False),
     )
@@ -1977,6 +1977,10 @@ def load_experiment_project_setup_for_ui(
     return (
         *group_slots,
         (project or {}).get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
+        _experiment_project_group_summary_rows(
+            groups, (project or {}).get("results", []),
+            str((project or {}).get("judge_model") or ""),
+        ),
         (project or {}).get("summary_rows", []), (project or {}).get("detail_rows", []),
         (project or {}).get("status", "請設定實驗組並執行。"),
         "實驗組設定會自動儲存。",
@@ -3627,6 +3631,46 @@ def _single_experiment_summary_rows(
     return summaries
 
 
+def _experiment_project_group_summary_rows(
+    groups: list[dict[str, Any]], results: list[dict[str, Any]], judge_model: str,
+) -> list[list[object]]:
+    """Aggregate each experiment group across all member projects and question sets."""
+    summaries: list[list[object]] = []
+    for group_index, group in enumerate(groups):
+        group_results = [
+            item for item in results
+            if item.get("group_index") == group_index or item.get("group_name") == group.get("name")
+        ]
+        if not group_results:
+            continue
+        total = len(group_results)
+        fully_correct = sum(_result_score(item) == 2 for item in group_results)
+        partially_correct = sum(_result_score(item) == 1 for item in group_results)
+        score_accuracy = sum(_result_score(item) for item in group_results) / (2 * total)
+        project_ids = {
+            str(item.get("source_project_id") or item.get("source_project_name") or "")
+            for item in group_results
+        } - {""}
+        question_set_ids = {
+            str(item.get("question_set_id") or item.get("question_set_name") or "")
+            for item in group_results
+        } - {""}
+        hit_rate = _mean_result_metric(group_results, "evidence_hit")
+        precision = _mean_result_metric(group_results, "evidence_precision")
+        document_hit_rate = _mean_result_metric(group_results, "document_hit")
+        summaries.append([
+            group.get("name", ""), group.get("answer_model", ""),
+            _group_reranker_mode(group), _group_expansion_mode(group), judge_model,
+            total, f"{fully_correct} / {total}", partially_correct,
+            f"{score_accuracy:.1%}",
+            f"{hit_rate:.1%}" if hit_rate is not None else "—",
+            f"{precision:.1%}" if precision is not None else "—",
+            f"{document_hit_rate:.1%}" if document_hit_rate is not None else "—",
+            len(project_ids), len(question_set_ids),
+        ])
+    return summaries
+
+
 def _single_experiment_detail_rows(results: list[dict[str, Any]]) -> list[list[object]]:
     return [[
         item["group_name"], item["number"], item.get("document", ""),
@@ -4194,37 +4238,37 @@ def generate_experiment_project_answers_for_ui(
     llm_state: dict[str, Any], embedding_api_base: str, embedding_api_key: str,
     neo4j_uri: str, neo4j_username: str, neo4j_password: str,
     progress=gr.Progress(),
-) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]], dict[str, Any]]:
+) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]], list[list[Any]], dict[str, Any]]:
     """Generate all member-project answers, but defer judging and showing rows."""
     if not project:
-        return "❌ 請先載入實驗專案。", [], [], [], {}
+        return "❌ 請先載入實驗專案。", [], [], [], [], {}
     try:
         current = load_experiment_project(project["experiment_project_id"])
         concurrency = int(max_concurrent_requests)
         if concurrency < 1:
             raise ValueError("最大並行請求數必須大於 0")
     except (OSError, TypeError, ValueError, OverflowError) as exc:
-        return f"❌ {exc}", [], [], [], project
+        return f"❌ {exc}", [], [], [], [], project
     members = current.get("members") or []
     groups = current.get("groups") or []
     if not members or not groups:
-        return "❌ 請先加入成員專案並設定實驗組。", [], [], [], current
+        return "❌ 請先加入成員專案並設定實驗組。", [], [], [], [], current
     try:
         members_data, question_map = _load_experiment_member_question_sets(current)
     except (OSError, ValueError) as exc:
-        return f"❌ 成員專案載入失敗：{exc}", [], [], [], current
+        return f"❌ 成員專案載入失敗：{exc}", [], [], [], [], current
     missing = [member for member in members if not question_map.get(member)]
     if missing:
-        return f"❌ 尚有 {len(missing)} 個成員專案沒有題目集，請至 0-2 綁定題目集。", [], [], [], current
+        return f"❌ 尚有 {len(missing)} 個成員專案沒有題目集，請至 0-2 綁定題目集。", [], [], [], [], current
     for member_id in members:
         member = members_data[member_id]
         if not (member.get("graph_state") or {}).get("neo4j_imported"):
-            return f"❌ 專案「{member.get('name', member_id)}」尚未完成建圖匯入。", [], [], [], current
+            return f"❌ 專案「{member.get('name', member_id)}」尚未完成建圖匯入。", [], [], [], [], current
     credentials = {}
     for group in groups:
         endpoint, key = resolve_model_credentials_for_ui(llm_state, group.get("answer_model", ""))
         if not endpoint:
-            return f"❌ 無法解析實驗組「{group.get('name', '')}」的回答模型服務。", [], [], [], current
+            return f"❌ 無法解析實驗組「{group.get('name', '')}」的回答模型服務。", [], [], [], [], current
         credentials[group["name"]] = (endpoint, key)
     tasks = [(gi, mid, qi) for gi in range(len(groups)) for mid in members for qi in range(len(question_map[mid]))]
     answers: list[dict[str, Any] | None] = [None] * len(tasks)
@@ -4272,12 +4316,13 @@ def generate_experiment_project_answers_for_ui(
         details = _experiment_project_detail_rows(generated)
         status = f"✅ 已生成 {len(generated)} 個實驗題次回答並填入逐題表格；尚未評測。"
         updated = save_experiment_project(current["experiment_project_id"], {
-            "pending_answers": generated, "results": [], "summary_rows": [], "detail_rows": details,
+            "pending_answers": generated, "results": [], "group_summary_rows": [],
+            "summary_rows": [], "detail_rows": details,
             "max_concurrent_requests": concurrency, "status": status,
         })
     except (OSError, TypeError, ValueError) as exc:
-        return f"❌ 回答生成或保存失敗：{exc}", [], [], [], current
-    return status, generated, [], details, updated
+        return f"❌ 回答生成或保存失敗：{exc}", [], [], [], [], current
+    return status, generated, [], [], details, updated
 
 
 def evaluate_experiment_project_answers_for_ui(
@@ -4286,19 +4331,19 @@ def evaluate_experiment_project_answers_for_ui(
     max_concurrent_requests: int | float, llm_state: dict[str, Any],
     verification_enabled: bool = False,
     progress=gr.Progress(),
-) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]], dict[str, Any]]:
+) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]], list[list[Any]], dict[str, Any]]:
     if not project or not pending_answers:
-        return "❌ 請先完成「檢索並生成回答」。", [], [], [], project or {}
+        return "❌ 請先完成「檢索並生成回答」。", [], [], [], [], project or {}
     endpoint, key = resolve_model_credentials_for_ui(llm_state, judge_model or "")
     if not endpoint:
-        return "❌ 請選擇可用的評測模型。", [], [], [], project
+        return "❌ 請選擇可用的評測模型。", [], [], [], [], project
     judge_reasoning_effort = judge_reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT
     try:
         concurrency = int(max_concurrent_requests)
         if concurrency < 1:
             raise ValueError("評測最大並行請求數必須大於 0")
     except (TypeError, ValueError, OverflowError) as exc:
-        return f"❌ {exc}", [], [], [], project
+        return f"❌ {exc}", [], [], [], [], project
     evaluated: list[dict[str, Any] | None] = [None] * len(pending_answers)
 
     def judge(index: int) -> dict[str, Any]:
@@ -4342,13 +4387,15 @@ def evaluate_experiment_project_answers_for_ui(
         results = [item for item in evaluated if item is not None]
         groups = (project or {}).get("groups") or []
         summary = _single_experiment_summary_rows(groups, results, judge_model)
+        group_summary = _experiment_project_group_summary_rows(groups, results, judge_model)
         details = _experiment_project_detail_rows(results)
         correct = sum(_result_score(item) == 2 for item in results)
         partial = sum(_result_score(item) == 1 for item in results)
         rate = sum(_result_score(item) for item in results) / (2 * len(results))
         status = f"✅ 評測完成｜完全正確 {correct}、部分正確 {partial} / {len(results)} 個跨專案實驗題次；得分正確率 {rate:.1%}。"
         updated = save_experiment_project(project["experiment_project_id"], {
-            "pending_answers": pending_answers, "results": results, "summary_rows": summary,
+            "pending_answers": pending_answers, "results": results,
+            "group_summary_rows": group_summary, "summary_rows": summary,
             "retrieval_metrics_version": 1,
             "detail_rows": details, "judge_model": judge_model,
             "verification_enabled": bool(verification_enabled),
@@ -4356,16 +4403,16 @@ def evaluate_experiment_project_answers_for_ui(
             "judge_max_concurrent_requests": concurrency, "status": status,
         })
     except (OSError, TypeError, ValueError) as exc:
-        return f"❌ 評測或保存失敗：{exc}", [], [], [], project
-    return status, results, summary, details, updated
+        return f"❌ 評測或保存失敗：{exc}", [], [], [], [], project
+    return status, results, group_summary, summary, details, updated
 
 
 def update_manual_experiment_project_result_for_ui(
     project: dict[str, Any] | None, rows: Any, results: list[dict[str, Any]] | None,
-) -> tuple[str, list[list[Any]], list[list[Any]], dict[str, Any]]:
+) -> tuple[str, list[list[Any]], list[list[Any]], list[list[Any]], dict[str, Any]]:
     current = [dict(item) for item in results or []]
     if not project or not current:
-        return "❌ 尚無可人工修改的實驗結果。", [], [], project or {}
+        return "❌ 尚無可人工修改的實驗結果。", [], [], [], project or {}
     try:
         submitted = rows.tolist() if hasattr(rows, "tolist") else list(rows or [])
         if len(submitted) != len(current):
@@ -4392,9 +4439,11 @@ def update_manual_experiment_project_result_for_ui(
         groups = project.get("groups") or []
         judge_model = project.get("judge_model") or str(current[0].get("judge_model", ""))
         summary = _single_experiment_summary_rows(groups, current, judge_model)
+        group_summary = _experiment_project_group_summary_rows(groups, current, judge_model)
         details = _experiment_project_detail_rows(current)
         updated = save_experiment_project(project["experiment_project_id"], {
-            "results": current, "summary_rows": summary, "detail_rows": details,
+            "results": current, "group_summary_rows": group_summary,
+            "summary_rows": summary, "detail_rows": details,
             "status": f"✅ 評測完成｜完全正確 {sum(_result_score(item) == 2 for item in current)}、部分正確 {sum(_result_score(item) == 1 for item in current)} / {len(current)} 個跨專案實驗題次；得分正確率 {sum(_result_score(item) for item in current) / (2 * len(current)):.1%}。",
         })
     except (OSError, TypeError, ValueError) as exc:
@@ -4402,10 +4451,11 @@ def update_manual_experiment_project_result_for_ui(
         judge_model = (project or {}).get("judge_model") or str(current[0].get("judge_model", ""))
         return (
             f"❌ 人工評判保存失敗：{exc}",
+            _experiment_project_group_summary_rows(groups, current, judge_model),
             _single_experiment_summary_rows(groups, current, judge_model),
             _experiment_project_detail_rows(current), project,
         )
-    return f"✅ 已保存人工評判變更 {changed} 筆；完全正確 {sum(_result_score(item) == 2 for item in current)}、部分正確 {sum(_result_score(item) == 1 for item in current)} / {len(current)} 個跨專案實驗題次；得分正確率 {sum(_result_score(item) for item in current) / (2 * len(current)):.1%}。", summary, details, updated
+    return f"✅ 已保存人工評判變更 {changed} 筆；完全正確 {sum(_result_score(item) == 2 for item in current)}、部分正確 {sum(_result_score(item) == 1 for item in current)} / {len(current)} 個跨專案實驗題次；得分正確率 {sum(_result_score(item) for item in current) / (2 * len(current)):.1%}。", group_summary, summary, details, updated
 
 
 def run_experiment_project_for_ui(
@@ -6586,6 +6636,12 @@ def build_app() -> gr.Blocks:
                 padding=False,
             )
             experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並至 0-2 為成員專案綁定題目集。")
+            gr.Markdown("#### 實驗組總覽（跨成員專案與題目集合併）")
+            experiment_project_group_summary_table = gr.Dataframe(
+                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案數", "題目集數"],
+                interactive=False, wrap=True,
+            )
+            gr.Markdown("#### 各成員專案／題目集統計")
             experiment_project_summary_table = gr.Dataframe(
                 headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
                 interactive=False, wrap=True,
@@ -7043,6 +7099,7 @@ def build_app() -> gr.Blocks:
             *experiment_project_group_all_components,
             experiment_project_groups_status, experiment_project_max_concurrency,
             experiment_project_pending_answers_state, experiment_project_results_state,
+            experiment_project_group_summary_table,
             experiment_project_summary_table,
             experiment_project_details_table, experiment_project_test_status,
             experiment_project_answers_status, evaluate_experiment_project_button,
@@ -7175,7 +7232,8 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_project_state, experiment_llm_service_state],
             outputs=[
                 *experiment_project_group_all_components,
-                experiment_project_max_concurrency, experiment_project_summary_table,
+                experiment_project_max_concurrency, experiment_project_group_summary_table,
+                experiment_project_summary_table,
                 experiment_project_details_table, experiment_project_test_status,
                 experiment_project_groups_status, experiment_project_verify_judgment,
             ],
@@ -7279,7 +7337,8 @@ def build_app() -> gr.Blocks:
             ],
             outputs=[
                 experiment_project_answers_status, experiment_project_pending_answers_state,
-                experiment_project_summary_table, experiment_project_details_table,
+                experiment_project_group_summary_table, experiment_project_summary_table,
+                experiment_project_details_table,
                 experiment_project_state,
             ],
             show_progress="minimal",
@@ -7300,7 +7359,8 @@ def build_app() -> gr.Blocks:
                     experiment_project_judge_concurrency, experiment_llm_service_state,
                     experiment_project_verify_judgment],
             outputs=[experiment_project_test_status, experiment_project_results_state,
-                     experiment_project_summary_table, experiment_project_details_table,
+                     experiment_project_group_summary_table, experiment_project_summary_table,
+                     experiment_project_details_table,
                      experiment_project_state],
             show_progress="minimal",
         )
@@ -7323,8 +7383,9 @@ def build_app() -> gr.Blocks:
             update_manual_experiment_project_result_for_ui,
             inputs=[experiment_project_state, experiment_project_details_table,
                     experiment_project_results_state],
-            outputs=[experiment_project_test_status, experiment_project_summary_table,
-                     experiment_project_details_table, experiment_project_state],
+            outputs=[experiment_project_test_status, experiment_project_group_summary_table,
+                     experiment_project_summary_table, experiment_project_details_table,
+                     experiment_project_state],
             show_progress="hidden",
         )
         human_review_sampling_tab.select(

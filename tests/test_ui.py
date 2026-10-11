@@ -103,7 +103,7 @@ def test_delete_experiment_project_ui_clears_selected_workspace(monkeypatch) -> 
     result = ui.delete_experiment_project_for_ui("a")
 
     assert deleted == ["a"]
-    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS + 9
+    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS + 10
     assert result[0]["choices"] == [("實驗 B", "b")]
     assert result[0]["value"] is None
     assert result[1] == {}
@@ -124,7 +124,7 @@ def test_cancel_experiment_project_deletion_does_not_clear_or_delete(monkeypatch
     result = ui.delete_experiment_project_for_ui(True)
 
     assert deleted == []
-    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS + 9
+    assert len(result) == 8 + ui.EXPERIMENT_GROUP_LIMIT * ui.EXPERIMENT_GROUP_COMPONENTS + 10
     assert all(
         isinstance(value, dict) and value.get("__type__") == "update"
         for index, value in enumerate(result)
@@ -1825,10 +1825,15 @@ def test_experiment_summaries_report_each_question_set_separately() -> None:
     ]
 
     summaries = ui._single_experiment_summary_rows(groups, results, "judge")
+    group_summaries = ui._experiment_project_group_summary_rows(groups, results, "judge")
 
     assert len(summaries) == 2
     assert [(row[5], row[8], row[-1]) for row in summaries] == [
         (1, "100.0%", "手冊題"), (1, "0.0%", "故障題"),
+    ]
+    assert len(group_summaries) == 1
+    assert group_summaries[0][5:14] == [
+        2, "1 / 2", 0, "50.0%", "50.0%", "50.0%", "50.0%", 0, 2,
     ]
 
 
@@ -2802,6 +2807,13 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     )
     assert experiment_project_table["props"]["headers"][3:6] == ["來源文件", "題目集", "題目"]
     assert experiment_project_table["props"]["datatype"][8] == "number"
+    group_summary_table = next(
+        item for item in components
+        if item.get("props", {}).get("headers", [])[:3] == ["實驗組", "回答模型", "Reranker"]
+        and "成員專案數" in item.get("props", {}).get("headers", [])
+    )
+    assert "題目集數" in group_summary_table["props"]["headers"]
+    assert group_summary_table["props"]["interactive"] is False
     assert any(
         component.get("props", {}).get("label") == "啟用答案結果人工修改"
         and component.get("props", {}).get("value") is False
@@ -4276,33 +4288,36 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     })
     monkeypatch.setattr(ui, "resolve_model_credentials_for_ui", lambda *_: ("endpoint", "key"))
     monkeypatch.setattr(ui, "answer_question_for_ui", lambda *args, **kwargs: ("✅ 完成", "A", []))
-    generated_status, pending, summaries, details, saved = ui.generate_experiment_project_answers_for_ui(
+    generated_status, pending, group_summaries, summaries, details, saved = ui.generate_experiment_project_answers_for_ui(
         experiment, 2, {}, "embed", "key", "bolt", "user", "password",
     )
     assert generated_status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
     assert len(pending) == 1 and pending[0]["actual_answer"] == "A"
     assert summaries == []
+    assert group_summaries == []
     assert details == [["G", "跨專案成員", 1, "manual.pdf", "實驗專案舊版題目集", "Q", "A", "A", None, None, ""]]
     assert saved["pending_answers"] == pending
     assert saved["detail_rows"] == details
 
     monkeypatch.setattr(ui, "judge_evaluation_answer", lambda *args, **kwargs: {"passed": True, "reason": "符合"})
-    evaluated_status, results, summaries, details, saved = ui.evaluate_experiment_project_answers_for_ui(
+    evaluated_status, results, group_summaries, summaries, details, saved = ui.evaluate_experiment_project_answers_for_ui(
         saved, pending, "judge", "low", 2, {},
     )
     assert "完全正確 1、部分正確 0 / 1 個跨專案實驗題次" in evaluated_status
     assert results[0]["passed"] is True
     assert results[0]["ai_score"] == 2
     assert summaries[0][6] == "1 / 1"
+    assert group_summaries[0][5:9] == [1, "1 / 1", 0, "100.0%"]
     assert details[0][1:3] == ["跨專案成員", 1]
 
     details[0][8] = 1
-    edited_status, summaries, _details, saved = ui.update_manual_experiment_project_result_for_ui(
+    edited_status, group_summaries, summaries, _details, saved = ui.update_manual_experiment_project_result_for_ui(
         saved, details, results,
     )
     assert "完全正確 0、部分正確 1 / 1 個跨專案實驗題次" in edited_status
     assert "得分正確率 50.0%" in edited_status
     assert summaries[0][6] == "0 / 1"
+    assert group_summaries[0][5:9] == [1, "0 / 1", 1, "50.0%"]
     assert saved["results"][0]["reason"] == "人工評判"
     assert saved["results"][0]["ai_score"] == 2
 
