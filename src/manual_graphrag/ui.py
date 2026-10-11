@@ -746,8 +746,8 @@ def _stored_chunks(items: list[dict[str, Any]]) -> list[TextChunk]:
 
 
 def _project_ui_state(project: dict[str, Any]) -> dict[str, Any]:
-    """Keep large chunk payloads in the dedicated chunk state, not twice in UI state."""
-    return {key: value for key, value in project.items() if key != "chunks"}
+    """Keep large chunks/graph payloads in dedicated states, not twice in UI state."""
+    return {key: value for key, value in project.items() if key not in {"chunks", "graph_state"}}
 
 
 def _document_ids_from_project(project: dict[str, Any]) -> dict[str, str]:
@@ -1049,6 +1049,11 @@ def _graph_rows(graph: dict[str, Any]) -> tuple[list[list[object]], list[list[ob
     return entities, relationships
 
 
+def render_graph_tables_for_ui(graph: dict[str, Any] | None) -> tuple[list[list[object]], list[list[object]]]:
+    """Build potentially large graph tables only when the graph tab is opened."""
+    return _graph_rows(graph or {})
+
+
 def _project_name_for_build(
     project: dict[str, Any], graph_state: dict[str, Any]
 ) -> str | None:
@@ -1155,11 +1160,10 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         _document_status(len(documents) - 1, len(documents), active_preview, len(active_chunks))
         if documents else "請先解析 PDF。"
     )
-    entity_rows, relationship_rows = _graph_rows(graph)
     if graph.get("run_id"):
         graph_status = (
-            f"✅ 已載入專案保存的圖譜：{len(entity_rows)} 個實體、"
-            f"{len(relationship_rows)} 筆關係。"
+            f"✅ 已載入專案保存的圖譜：{len(graph.get('entities') or [])} 個實體、"
+            f"{len(graph.get('relationships') or [])} 筆關係。切換至 1-3 建圖頁面時載入明細。"
         )
         import_status = (
             "✅ 此圖譜已匯入 Neo4j。" if graph.get("neo4j_imported")
@@ -1184,7 +1188,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         documents, chunks, graph, active_preview, active_chunks,
         _document_rows(documents), _document_choices(documents),
         _chunk_rows(active_chunks), document_status,
-        entity_rows, relationship_rows, graph_status, import_status,
+        [], [], graph_status, import_status,
         gr.update(
             value=get("graph_reasoning_effort", DEFAULT_REASONING_EFFORT),
             visible=str(get("graph_llm_model", DEFAULT_LLM_MODEL) or "").casefold() == GPT_6_LUNA_MODEL,
@@ -1434,9 +1438,17 @@ def _project_question_sets(
     project: dict[str, Any], project_id: str | None = None,
 ) -> list[dict[str, Any]]:
     if project_id:
-        question_sets = deepcopy(migrate_project_question_sets(project_id))
+        # Normal reads for migrated/new projects use the already-loaded project
+        # and only open bound question-set files. The migration helper loads
+        # project.json itself, which is expensive for large graph projects.
+        if project.get("question_sets_migrated"):
+            question_sets = bound_question_sets(project)
+        else:
+            question_sets = deepcopy(migrate_project_question_sets(project_id))
         return [
-            {**item, "questions": _attach_project_document_ids(item.get("questions") or [], project_id)}
+            {**item, "questions": _attach_project_document_ids(
+                item.get("questions") or [], project_id, project,
+            )}
             for item in question_sets
         ]
     question_sets = project.get("question_sets") or []
@@ -2757,18 +2769,22 @@ def _source_values_for_document(display: str, documents: str, document: str) -> 
     return set()
 
 
-def _project_document_ids(project_id: str) -> dict[str, str]:
-    try:
-        project = load_project(project_id)
-    except (OSError, ValueError):
-        return {}
+def _project_document_ids(
+    project_id: str, project: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    if project is None:
+        try:
+            project = load_project(project_id)
+        except (OSError, ValueError):
+            return {}
     return _document_ids_from_project(project)
 
 
 def _attach_project_document_ids(
     questions: list[dict[str, Any]], project_id: str,
+    project: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    ids_by_name = _project_document_ids(project_id)
+    ids_by_name = _project_document_ids(project_id, project)
     if not ids_by_name:
         return questions
     for question in questions:
@@ -7486,6 +7502,10 @@ def build_app() -> gr.Blocks:
         )
         project_tab.select(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
         app.load(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
+        graph_tab.select(
+            render_graph_tables_for_ui, inputs=graph_state,
+            outputs=[entity_table, relationship_table], show_progress="hidden",
+        )
         project_selector.input(
             ensure_project_selection_for_ui,
             inputs=project_selector, outputs=project_selector,

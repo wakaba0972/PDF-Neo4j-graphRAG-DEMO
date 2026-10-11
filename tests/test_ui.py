@@ -883,12 +883,16 @@ def test_connection_summary_does_not_expose_secrets() -> None:
 
 
 def test_project_ui_state_keeps_chunks_out_of_duplicate_project_state() -> None:
-    project = {"project_id": "vehicle-1", "name": "測試", "chunks": [{"text": "large"}]}
+    project = {
+        "project_id": "vehicle-1", "name": "測試", "chunks": [{"text": "large"}],
+        "graph_state": {"entities": [{"name": "large"}]},
+    }
 
     state = ui._project_ui_state(project)
 
     assert state == {"project_id": "vehicle-1", "name": "測試"}
     assert project["chunks"] == [{"text": "large"}]
+    assert project["graph_state"]["entities"] == [{"name": "large"}]
 
 
 def test_persist_env_settings_writes_all_fields(tmp_path, monkeypatch) -> None:
@@ -1080,6 +1084,25 @@ def test_bound_central_questions_attach_current_project_document_ids(tmp_path, m
     assert question_set["questions"][0]["answer_sources"][0]["document_id"] == ""
 
 
+def test_bound_question_sets_use_loaded_project_without_reloading(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("大型專案快速載題集")
+    question_set = ui.create_question_set("綁定題集", [{
+        "number": 1, "question": "Q", "expected_answer": "A",
+    }])
+    ui.set_project_question_set_bindings(project["project_id"], [question_set["question_set_id"]])
+    ui.save_project(project["project_id"], {"question_sets_migrated": True})
+    loaded_project = ui.load_project(project["project_id"])
+
+    def unexpected_reload(*_args, **_kwargs):
+        raise AssertionError("bound question loading should reuse the loaded project")
+
+    monkeypatch.setattr(ui, "load_project", unexpected_reload)
+    sets = ui._project_question_sets(loaded_project, project["project_id"])
+
+    assert [item["name"] for item in sets] == ["綁定題集"]
+
+
 def test_user_selection_unlocks_roots_and_names_audited_projects(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     app = build_app()
@@ -1201,8 +1224,10 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert "api_key" not in stored_project["settings"]
     assert stored_project["graph_state"]["entities"][0]["name"] == "設備"
     assert stored_project["graph_state"]["relationships"][0]["type"] == "USES"
-    assert loaded[30][0][:2] == ["設備", "DEVICE"]
-    assert loaded[31][0][:3] == ["設備", "USES", "零件"]
+    assert loaded[30] == [] and loaded[31] == []
+    entity_rows, relationship_rows = ui.render_graph_tables_for_ui(loaded[23])
+    assert entity_rows[0][:2] == ["設備", "DEVICE"]
+    assert relationship_rows[0][:3] == ["設備", "USES", "零件"]
     assert "1 個實體、1 筆關係" in loaded[32]
     assert "已匯入 Neo4j" in loaded[33]
 
