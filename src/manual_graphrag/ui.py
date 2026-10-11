@@ -69,7 +69,8 @@ from .project_store import (
     export_project_archive,
     import_project_archive,
     list_projects,
-    load_project,
+    load_project as load_full_project,
+    load_project_metadata as load_project,
     load_project_summary,
     project_database_name,
     remove_document,
@@ -1054,6 +1055,22 @@ def render_graph_tables_for_ui(graph: dict[str, Any] | None) -> tuple[list[list[
     return _graph_rows(graph or {})
 
 
+def load_graph_tables_for_project_ui(
+    project_id: str | None, graph_state: dict[str, Any] | None,
+) -> tuple[list[list[object]], list[list[object]], dict[str, Any]]:
+    state = graph_state or {}
+    if not state.get("run_id"):
+        return [], [], state
+    if "entities" not in state or "relationships" not in state:
+        try:
+            project = load_full_project(str(project_id or ""))
+            state = project.get("graph_state") or state
+        except (OSError, ValueError) as exc:
+            raise gr.Error(f"讀取圖譜明細失敗：{exc}") from exc
+    entities, relationships = render_graph_tables_for_ui(state)
+    return entities, relationships, state
+
+
 def _project_name_for_build(
     project: dict[str, Any], graph_state: dict[str, Any]
 ) -> str | None:
@@ -1162,8 +1179,9 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
     )
     if graph.get("run_id"):
         graph_status = (
-            f"✅ 已載入專案保存的圖譜：{len(graph.get('entities') or [])} 個實體、"
-            f"{len(graph.get('relationships') or [])} 筆關係。切換至 1-3 建圖頁面時載入明細。"
+            f"✅ 已載入專案保存的圖譜：{graph.get('entity_count', len(graph.get('entities') or []))} 個實體、"
+            f"{graph.get('relationship_count', len(graph.get('relationships') or []))} 筆關係。"
+            "切換至 1-3 建圖頁面時載入明細。"
         )
         import_status = (
             "✅ 此圖譜已匯入 Neo4j。" if graph.get("neo4j_imported")
@@ -7503,8 +7521,10 @@ def build_app() -> gr.Blocks:
         project_tab.select(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
         app.load(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
         graph_tab.select(
-            render_graph_tables_for_ui, inputs=graph_state,
-            outputs=[entity_table, relationship_table], show_progress="hidden",
+            load_graph_tables_for_project_ui,
+            inputs=[project_selector, graph_state],
+            outputs=[entity_table, relationship_table, graph_state],
+            show_progress="hidden",
         )
         project_selector.input(
             ensure_project_selection_for_ui,

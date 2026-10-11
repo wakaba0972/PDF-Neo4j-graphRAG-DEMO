@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .project_store import PROJECTS_DIR, load_project, list_projects, save_project
+from .project_store import PROJECTS_DIR, load_project_metadata, list_projects, save_project
 from .storage import read_json, write_json
 
 QUESTION_SETS_DIR = Path("data/question_sets")
@@ -96,7 +96,7 @@ def question_set_binding_projects(
     bound = []
     for name, project_id in list_projects(projects_root):
         try:
-            project = load_project(project_id, projects_root)
+            project = load_project_metadata(project_id, projects_root)
         except (OSError, ValueError):
             continue
         if question_set_id in (project.get("question_set_ids") or []):
@@ -118,7 +118,7 @@ def migrate_project_question_sets(
     Original project data is retained as a migration backup. New reads use the
     canonical question_set_ids binding.
     """
-    project = load_project(project_id, projects_root)
+    project = load_project_metadata(project_id, projects_root)
     if project.get("question_sets_migrated"):
         current_bindings = bound_question_sets(project, question_sets_root)
         if len(current_bindings) == len(project.get("question_set_ids") or []):
@@ -179,7 +179,7 @@ def migrate_all_project_question_sets(
 ) -> int:
     migrated = 0
     for _name, project_id in list_projects(projects_root):
-        project = load_project(project_id, projects_root)
+        project = load_project_metadata(project_id, projects_root)
         if not project.get("question_sets_migrated"):
             migrate_project_question_sets(
                 project_id, projects_root=projects_root,

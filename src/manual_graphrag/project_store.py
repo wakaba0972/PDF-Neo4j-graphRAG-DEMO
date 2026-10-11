@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import hashlib
+import gzip
 import json
 import os
 import shutil
@@ -23,6 +24,7 @@ PROJECT_CONNECTION_SETTINGS = {"model_endpoint", "api_key"}
 _PROJECT_WRITE_LOCK = RLock()
 PROJECT_ARCHIVE_FORMAT = "manual-graphrag-project"
 PROJECT_ARCHIVE_VERSION = 1
+GRAPH_DATA_FILENAME = "graph.json.gz"
 
 
 def project_database_name(project_id: str) -> str:
@@ -97,7 +99,7 @@ def load_project_summary(
         return read_json(summary_path)
     # One-time compatibility path for projects created before summary.json
     # existed. Normal summary reads stay small and do not parse all chunks.
-    project = load_project(project_id, root)
+    project = _read_project_metadata(project_id, root)
     _write_project_summary(project_dir, project)
     return read_json(summary_path)
 
@@ -172,7 +174,9 @@ def create_project(
     return project
 
 
-def load_project(project_id: str, root: str | Path = PROJECTS_DIR) -> dict[str, Any]:
+def _read_project_metadata(
+    project_id: str, root: str | Path = PROJECTS_DIR,
+) -> dict[str, Any]:
     if not project_id or Path(project_id).name != project_id:
         raise ValueError("請選擇有效的專案")
     target = Path(root) / project_id / "project.json"
@@ -199,8 +203,75 @@ def load_project(project_id: str, root: str | Path = PROJECTS_DIR) -> dict[str, 
     return project
 
 
+def _write_graph_data(project_dir: Path, graph_payload: dict[str, Any]) -> None:
+    target = project_dir / GRAPH_DATA_FILENAME
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=project_dir, prefix=f".{GRAPH_DATA_FILENAME}.", suffix=".tmp",
+    )
+    os.close(descriptor)
+    try:
+        with gzip.open(temporary_name, "wt", encoding="utf-8", compresslevel=6) as handle:
+            json.dump(graph_payload, handle, ensure_ascii=False, separators=(",", ":"))
+        with open(temporary_name, "rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, target)
+    except Exception:
+        Path(temporary_name).unlink(missing_ok=True)
+        raise
+
+
+def _read_graph_data(project_dir: Path, graph_state: dict[str, Any]) -> dict[str, Any]:
+    filename = str(graph_state.get("graph_data_file") or "")
+    if not filename:
+        return {}
+    if Path(filename).name != filename:
+        raise ValueError("專案圖譜檔案路徑無效")
+    target = project_dir / filename
+    if not target.is_file():
+        raise ValueError(f"找不到專案圖譜檔：{filename}")
+    with gzip.open(target, "rt", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise ValueError("專案圖譜檔案格式錯誤")
+    return payload
+
+
+def load_project_metadata(
+    project_id: str, root: str | Path = PROJECTS_DIR,
+) -> dict[str, Any]:
+    """Load project settings and graph metadata without materializing graph entities/edges."""
+    with _PROJECT_WRITE_LOCK:
+        project = _read_project_metadata(project_id, root)
+        graph_state = project.get("graph_state")
+        if not isinstance(graph_state, dict):
+            return project
+        has_inline_graph = "entities" in graph_state or "relationships" in graph_state
+        if has_inline_graph and not graph_state.get("graph_data_file"):
+            graph_payload = {
+                "entities": graph_state.pop("entities", []),
+                "relationships": graph_state.pop("relationships", []),
+            }
+            project_dir = Path(root) / project_id
+            _write_graph_data(project_dir, graph_payload)
+            graph_state["graph_data_file"] = GRAPH_DATA_FILENAME
+            graph_state["entity_count"] = len(graph_payload["entities"])
+            graph_state["relationship_count"] = len(graph_payload["relationships"])
+            write_json(project_dir / "project.json", project)
+            _write_project_summary(project_dir, project)
+        return project
+
+
+def load_project(project_id: str, root: str | Path = PROJECTS_DIR) -> dict[str, Any]:
+    """Load the full project, including graph data stored in its compressed sidecar."""
+    project = load_project_metadata(project_id, root)
+    graph_state = project.get("graph_state")
+    if isinstance(graph_state, dict):
+        graph_state.update(_read_graph_data(Path(root) / project_id, graph_state))
+    return project
+
+
 def delete_project(project_id: str, root: str | Path = PROJECTS_DIR) -> str:
-    project = load_project(project_id, root)
+    project = _read_project_metadata(project_id, root)
     target = Path(root) / project_id
     append_audit_event(target / "activity.log", current_action() or "project_deleted")
     shutil.rmtree(target)
@@ -232,7 +303,7 @@ def export_project_archive(
     if not project_id or Path(project_id).name != project_id:
         raise ValueError("請選擇有效的專案")
     project_dir = Path(root) / project_id
-    project = load_project(project_id, root)
+    project = load_project_metadata(project_id, root)
     destination_dir = Path(output_dir) if output_dir else Path(tempfile.gettempdir())
     destination_dir.mkdir(parents=True, exist_ok=True)
     fd, archive_name = tempfile.mkstemp(
@@ -399,7 +470,7 @@ def import_project_archive(
         except Exception:
             shutil.rmtree(target, ignore_errors=True)
             raise
-    return load_project(project_id, base)
+    return load_project_metadata(project_id, base)
 
 
 def _save_project_unlocked(
@@ -408,7 +479,7 @@ def _save_project_unlocked(
     document_paths: list[str] | None = None,
     root: str | Path = PROJECTS_DIR,
 ) -> dict[str, Any]:
-    current = load_project(project_id, root)
+    current = load_project_metadata(project_id, root)
     project_dir = Path(root) / project_id
     documents = list(payload.get("documents", current.get("documents") or []))
     if document_paths:
@@ -428,9 +499,31 @@ def _save_project_unlocked(
             else:
                 by_name[source.name] = len(documents)
                 documents.append(record)
+    payload_for_storage = dict(payload)
+    if isinstance(payload.get("graph_state"), dict):
+        current_graph_state = current.get("graph_state") or {}
+        incoming_graph_state = dict(payload["graph_state"])
+        if "entities" in incoming_graph_state or "relationships" in incoming_graph_state:
+            entities = incoming_graph_state.pop("entities", [])
+            relationships = incoming_graph_state.pop("relationships", [])
+            _write_graph_data(project_dir, {
+                "entities": entities,
+                "relationships": relationships,
+            })
+            incoming_graph_state["graph_data_file"] = GRAPH_DATA_FILENAME
+            incoming_graph_state["entity_count"] = len(entities)
+            incoming_graph_state["relationship_count"] = len(relationships)
+            payload_for_storage["graph_state"] = incoming_graph_state
+        else:
+            # Status/settings-only updates must keep the previously persisted
+            # graph sidecar reference and its counts.
+            payload_for_storage["graph_state"] = {
+                **current_graph_state,
+                **incoming_graph_state,
+            }
     updated = {
         **current,
-        **payload,
+        **payload_for_storage,
         "project_id": project_id,
         "name": str(payload.get("name") or current["name"]),
         "base_name": str(current.get("base_name") or current["name"]),
@@ -447,7 +540,7 @@ def _save_project_unlocked(
 def remove_document(
     project_id: str, file_name: str, root: str | Path = PROJECTS_DIR
 ) -> dict[str, Any]:
-    current = load_project(project_id, root)
+    current = load_project_metadata(project_id, root)
     documents = current.get("documents") or []
     remaining = [doc for doc in documents if doc.get("name") != file_name]
     for doc in documents:
@@ -461,7 +554,7 @@ def remove_document(
 def append_question(
     project_id: str, record: dict[str, Any], root: str | Path = PROJECTS_DIR
 ) -> dict[str, Any]:
-    project = load_project(project_id, root)
+    project = load_project_metadata(project_id, root)
     questions = list(project.get("questions") or [])
     questions.append({"asked_at": datetime.now(timezone.utc).isoformat(), **record})
     return save_project(project_id, {"questions": questions}, root=root)

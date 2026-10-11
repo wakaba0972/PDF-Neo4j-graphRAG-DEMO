@@ -1219,13 +1219,13 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
         if strategy_id == "hybrid" and name == "effective_search_ratio"
     )
     assert hybrid_ratio["value"] == 6 and hybrid_ratio["visible"] is True
-    stored_project = ui.load_project(created["project_id"])
+    stored_project = ui.load_full_project(created["project_id"])
     assert "model_endpoint" not in stored_project["settings"]
     assert "api_key" not in stored_project["settings"]
     assert stored_project["graph_state"]["entities"][0]["name"] == "設備"
     assert stored_project["graph_state"]["relationships"][0]["type"] == "USES"
     assert loaded[30] == [] and loaded[31] == []
-    entity_rows, relationship_rows = ui.render_graph_tables_for_ui(loaded[23])
+    entity_rows, relationship_rows = ui.render_graph_tables_for_ui(stored_project["graph_state"])
     assert entity_rows[0][:2] == ["設備", "DEVICE"]
     assert relationship_rows[0][:3] == ["設備", "USES", "零件"]
     assert "1 個實體、1 筆關係" in loaded[32]

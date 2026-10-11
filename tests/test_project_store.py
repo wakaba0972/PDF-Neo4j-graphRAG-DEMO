@@ -1,5 +1,6 @@
 from pathlib import Path
 import hashlib
+import gzip
 import json
 from datetime import datetime
 
@@ -14,6 +15,7 @@ from manual_graphrag.project_store import (
     import_project_archive,
     list_projects,
     load_project,
+    load_project_metadata,
     load_project_summary,
     remove_document,
     save_project,
@@ -108,6 +110,62 @@ def test_project_summary_file_tracks_creator_documents_and_build_settings(tmp_pa
     assert summary["chunk_overlap"] == 200
     assert summary["schema_granularity"] == "詳細"
     assert summary["graph_built"] is True
+
+
+def test_graph_entities_and_relationships_are_stored_in_compressed_sidecar(tmp_path) -> None:
+    project = create_project("外置圖譜", tmp_path)
+    graph = {
+        "run_id": "graph-run",
+        "entities": [{"name": "A", "type": "PART", "description": "entity"}],
+        "relationships": [{"source": "A", "target": "B", "type": "CONNECTS"}],
+        "chunks": [{"number": 1, "text": "chunk text"}],
+    }
+
+    save_project(project["project_id"], {"graph_state": graph}, root=tmp_path)
+
+    project_file = tmp_path / project["project_id"] / "project.json"
+    persisted = json.loads(project_file.read_text(encoding="utf-8"))
+    graph_file = tmp_path / project["project_id"] / "graph.json.gz"
+    with gzip.open(graph_file, "rt", encoding="utf-8") as handle:
+        sidecar = json.load(handle)
+    metadata = load_project_metadata(project["project_id"], tmp_path)["graph_state"]
+    full = load_project(project["project_id"], tmp_path)["graph_state"]
+
+    assert "entities" not in persisted["graph_state"]
+    assert "relationships" not in persisted["graph_state"]
+    assert metadata["entity_count"] == 1
+    assert metadata["relationship_count"] == 1
+    assert sidecar == {"entities": graph["entities"], "relationships": graph["relationships"]}
+    assert full["entities"] == graph["entities"]
+    assert full["relationships"] == graph["relationships"]
+    assert full["chunks"] == graph["chunks"]
+
+    save_project(project["project_id"], {
+        "graph_state": {"neo4j_imported": True},
+    }, root=tmp_path)
+    assert load_project(project["project_id"], tmp_path)["graph_state"]["entities"] == graph["entities"]
+
+
+def test_loading_legacy_inline_graph_migrates_it_to_sidecar(tmp_path) -> None:
+    project = create_project("舊圖譜格式", tmp_path)
+    project_file = tmp_path / project["project_id"] / "project.json"
+    legacy_graph = {
+        "run_id": "legacy-run",
+        "entities": [{"name": "legacy entity"}],
+        "relationships": [{"source": "legacy entity", "target": "B"}],
+    }
+    payload = json.loads(project_file.read_text(encoding="utf-8"))
+    payload["graph_state"] = legacy_graph
+    project_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    metadata = load_project_metadata(project["project_id"], tmp_path)
+    migrated_file = json.loads(project_file.read_text(encoding="utf-8"))
+
+    assert "entities" not in migrated_file["graph_state"]
+    assert "relationships" not in migrated_file["graph_state"]
+    assert (tmp_path / project["project_id"] / "graph.json.gz").is_file()
+    assert metadata["graph_state"]["entity_count"] == 1
+    assert load_project(project["project_id"], tmp_path)["graph_state"]["entities"] == legacy_graph["entities"]
 
 
 def test_each_project_gets_a_stable_unique_database(tmp_path) -> None:
