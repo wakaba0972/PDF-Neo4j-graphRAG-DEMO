@@ -31,9 +31,34 @@ def _driver_for(uri: str, username: str, password: str) -> Any:
     with _DRIVER_LOCK:
         driver = _DRIVER_CACHE.get(key)
         if driver is None:
-            driver = factory(uri.strip(), auth=(username.strip(), password))
+            driver = factory(
+                uri.strip(),
+                auth=(username.strip(), password),
+                connection_timeout=30,
+                liveness_check_timeout=30,
+                max_connection_lifetime=1800,
+            )
             _DRIVER_CACHE[key] = driver
         return driver
+
+
+def _execute_write_with_retry(
+    driver: Any,
+    database: str,
+    callback,
+    *args: Any,
+    attempts: int = 3,
+) -> Any:
+    """Use a fresh session for each attempt; tolerate a stale idle pool socket."""
+    for attempt in range(attempts):
+        try:
+            with driver.session(database=database) as session:
+                return session.execute_write(callback, *args)
+        except (ServiceUnavailable, SessionExpired, OSError):
+            if attempt + 1 >= attempts:
+                raise
+            time.sleep(0.5 * (2 ** attempt))
+    raise RuntimeError("Neo4j write retry ended unexpectedly")
 
 
 @contextmanager
@@ -552,7 +577,9 @@ def import_extraction_batched(
                     progress(0.06, "Neo4j 寫入索引就緒，開始寫入實體與關係…")
 
                 try:
-                    counts = session.execute_write(
+                    counts = _execute_write_with_retry(
+                        driver,
+                        database.strip(),
                         _write_graph,
                         run_id,
                         document_name,
@@ -585,8 +612,12 @@ def import_extraction_batched(
                             for item in batch
                         ):
                             raise ValueError("同一批匯入的 Embedding 向量維度不一致")
-                        session.execute_write(
-                            _write_evidence_batch, run_id, batch,
+                        _execute_write_with_retry(
+                            driver,
+                            database.strip(),
+                            _write_evidence_batch,
+                            run_id,
+                            batch,
                         )
                         written += len(batch)
                         if progress:
@@ -600,7 +631,9 @@ def import_extraction_batched(
                         )
                     if progress:
                         progress(0.93, "建立證據與圖譜節點的連結…")
-                    session.execute_write(_link_graph_evidence, run_id)
+                    _execute_write_with_retry(
+                        driver, database.strip(), _link_graph_evidence, run_id,
+                    )
                     if progress:
                         progress(0.95, "建立向量與全文檢索索引…")
                     session.run(
@@ -615,11 +648,15 @@ def import_extraction_batched(
                         "OPTIONS {indexConfig: {`fulltext.analyzer`: 'cjk'}}"
                     ).consume()
                     session.run("CALL db.awaitIndexes(300)").consume()
-                    session.execute_write(_complete_graph_import, run_id)
+                    _execute_write_with_retry(
+                        driver, database.strip(), _complete_graph_import, run_id,
+                    )
                 except Exception:
                     if initialized:
                         try:
-                            session.execute_write(_delete_graph_run, run_id)
+                            _execute_write_with_retry(
+                                driver, database.strip(), _delete_graph_run, run_id,
+                            )
                         except Exception:
                             pass
                     restore_dimensions = (

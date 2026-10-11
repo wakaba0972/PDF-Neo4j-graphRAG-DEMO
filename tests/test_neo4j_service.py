@@ -37,9 +37,9 @@ def test_driver_for_reuses_driver_under_concurrent_reads(monkeypatch) -> None:
     factory_lock = Lock()
     driver = object()
 
-    def fake_driver(uri, auth):
+    def fake_driver(uri, auth, **options):
         with factory_lock:
-            factory_calls.append((uri, auth))
+            factory_calls.append((uri, auth, options))
         return driver
 
     monkeypatch.setattr(neo4j_service.GraphDatabase, "driver", fake_driver)
@@ -53,7 +53,15 @@ def test_driver_for_reuses_driver_under_concurrent_reads(monkeypatch) -> None:
             ))
 
         assert all(item is driver for item in drivers)
-        assert factory_calls == [("bolt://db", ("user", "password"))]
+        assert factory_calls == [(
+            "bolt://db",
+            ("user", "password"),
+            {
+                "connection_timeout": 30,
+                "liveness_check_timeout": 30,
+                "max_connection_lifetime": 1800,
+            },
+        )]
     finally:
         neo4j_service._close_cached_drivers()
 
@@ -70,6 +78,39 @@ def test_retry_read_retries_transient_read_route_failure(monkeypatch) -> None:
 
     assert neo4j_service._retry_read(flaky_read) == "read result"
     assert len(attempts) == 2
+
+
+def test_execute_write_with_retry_uses_fresh_session_after_stale_connection(monkeypatch) -> None:
+    monkeypatch.setattr(neo4j_service.time, "sleep", lambda _delay: None)
+
+    class FlakySession:
+        def __init__(self, should_fail):
+            self.should_fail = should_fail
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute_write(self, callback, *args):
+            if self.should_fail:
+                raise SessionExpired("stale pooled connection")
+            return callback(None, *args)
+
+    class FlakyDriver:
+        def __init__(self):
+            self.sessions = 0
+
+        def session(self, **_kwargs):
+            self.sessions += 1
+            return FlakySession(self.sessions == 1)
+
+    driver = FlakyDriver()
+    assert neo4j_service._execute_write_with_retry(
+        driver, "neo4j", lambda _tx, value: value, "saved",
+    ) == "saved"
+    assert driver.sessions == 2
 
 
 class FakeResult:
@@ -153,8 +194,8 @@ def test_import_extraction_writes_document_entities_and_relationships(monkeypatc
     driver = FakeDriver(transaction)
     captured = {}
 
-    def fake_driver(uri, auth):
-        captured.update({"uri": uri, "auth": auth})
+    def fake_driver(uri, auth, **options):
+        captured.update({"uri": uri, "auth": auth, "options": options})
         return driver
 
     monkeypatch.setattr(neo4j_service.GraphDatabase, "driver", fake_driver)
@@ -205,7 +246,15 @@ def test_import_extraction_writes_document_entities_and_relationships(monkeypatc
     )
 
     assert summary == neo4j_service.ImportSummary(2, 1)
-    assert captured == {"uri": "bolt://db", "auth": ("user", "password")}
+    assert captured == {
+        "uri": "bolt://db",
+        "auth": ("user", "password"),
+        "options": {
+            "connection_timeout": 30,
+            "liveness_check_timeout": 30,
+            "max_connection_lifetime": 1800,
+        },
+    }
     assert driver.verified is True
     assert driver.database == "neo4j"
     index_calls = driver.session(database="neo4j").calls
@@ -317,7 +366,7 @@ def test_import_extraction_validates_connection_fields(values, message) -> None:
 
 
 def test_import_extraction_wraps_driver_errors(monkeypatch) -> None:
-    def broken_driver(uri, auth):
+    def broken_driver(uri, auth, **_options):
         raise OSError("database unavailable")
 
     monkeypatch.setattr(neo4j_service.GraphDatabase, "driver", broken_driver)
