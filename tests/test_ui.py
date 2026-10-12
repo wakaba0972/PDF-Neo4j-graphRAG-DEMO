@@ -1610,12 +1610,12 @@ def test_retrieval_metrics_match_gold_document_page_even_when_chunk_differs() ->
     }
 
 
-def test_retrieval_precision_is_zero_for_gold_document_without_pages() -> None:
+def test_retrieval_precision_is_unavailable_for_gold_document_without_pages() -> None:
     question = {"document": "manual.pdf", "source_chunk_numbers": [42]}
     rows = [["原文", "相同 chunk", "", "0.9", "manual.pdf：1", "manual.pdf：42", "manual.pdf"]]
 
     assert ui._retrieval_metrics(question, rows) == {
-        "evidence_hit": None, "evidence_precision": 0.0, "document_hit": None,
+        "evidence_hit": None, "evidence_precision": None, "document_hit": None,
     }
 
 
@@ -1628,13 +1628,20 @@ def test_retrieval_metrics_are_unavailable_without_gold_record() -> None:
     }
 
 
-def test_retrieval_precision_is_zero_for_gold_source_record_without_pages() -> None:
-    question = {
-        "answer_sources": [{"document_name": "manual.pdf", "pages": []}],
-    }
+@pytest.mark.parametrize("pages", [[], [0], [-1], [1.5], [True], [" "]])
+def test_question_set_source_import_rejects_missing_or_nonpositive_page_numbers(pages) -> None:
+    with pytest.raises(ValueError, match="正整數"):
+        ui._parse_source_references(
+            [{"document_name": "manual.pdf", "pages": pages}], 1, "答案來源",
+        )
 
-    assert ui._retrieval_metrics(question, []) == {
-        "evidence_hit": None, "evidence_precision": 0.0, "document_hit": None,
+
+def test_question_set_import_allows_no_gold_as_empty_source_list() -> None:
+    questions = ui._questions_from_rows([[1, "無答案來源題", "標準答案", "", "[]"]])
+
+    assert questions[0]["answer_sources"] == []
+    assert ui._retrieval_metrics(questions[0], []) == {
+        "evidence_hit": None, "evidence_precision": None, "document_hit": None,
     }
 
 

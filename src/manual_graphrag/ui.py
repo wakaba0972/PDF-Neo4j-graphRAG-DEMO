@@ -1293,17 +1293,27 @@ def _evaluation_question_rows(questions: list[dict[str, Any]]) -> list[list[obje
 
 
 def _parse_source_pages(value: Any, question_number: int, label: str) -> list[int]:
-    page_values = value if isinstance(value, (list, tuple)) else (
-        str(value or "").replace("，", ",").split(",")
-    )
+    if isinstance(value, (list, tuple)):
+        page_values = list(value)
+        if any(
+            isinstance(page, bool)
+            or not isinstance(page, (int, str))
+            or (isinstance(page, str) and not page.strip())
+            for page in page_values
+        ):
+            raise ValueError(f"第 {question_number} 題的{label}必須是非空正整數陣列")
+    else:
+        text = str(value or "").strip().replace("，", ",")
+        page_values = text.split(",") if text else []
     try:
-        return list(dict.fromkeys(
-            int(page) for page in page_values if str(page).strip()
-        ))
+        pages = [int(page) for page in page_values]
     except (TypeError, ValueError) as exc:
         raise ValueError(
-            f"第 {question_number} 題的{label}必須是逗號分隔的整數"
+            f"第 {question_number} 題的{label}必須是正整數"
         ) from exc
+    if any(page <= 0 for page in pages):
+        raise ValueError(f"第 {question_number} 題的{label}必須是正整數")
+    return list(dict.fromkeys(pages))
 
 
 def _source_references_cell(references: list[dict[str, Any]]) -> str:
@@ -1371,6 +1381,8 @@ def _parse_source_references(
         pages = _parse_source_pages(raw.get("pages", []), question_number, label)
         if not name and not document_id:
             raise ValueError(f"第 {question_number} 題的{label}缺少來源文件")
+        if not pages:
+            raise ValueError(f"第 {question_number} 題的{label}必須包含至少一個正整數頁碼")
         reference = {"document_id": document_id, "document_name": name, "pages": pages}
         existing = next((item for item in references if item["document_id"] == document_id and item["document_name"] == name), None)
         if existing:
@@ -2986,13 +2998,9 @@ def _retrieval_metrics(
             if source_identity:
                 gold_sources = {(source_identity, page) for page in expected_pages}
     if not gold_sources:
-        # A source record with no page numbers is still an explicit Gold
-        # annotation, but none of its pages can match retrieved evidence.
-        # Keep its Evidence Precision as zero so it remains in the mean.
-        precision = 0.0 if references else None
         return {
             "evidence_hit": None,
-            "evidence_precision": precision,
+            "evidence_precision": None,
             "document_hit": None,
         }
 
