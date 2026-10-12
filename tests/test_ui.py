@@ -1610,12 +1610,31 @@ def test_retrieval_metrics_match_gold_document_page_even_when_chunk_differs() ->
     }
 
 
-def test_retrieval_metrics_are_unavailable_without_gold_pages() -> None:
+def test_retrieval_precision_is_zero_for_gold_document_without_pages() -> None:
     question = {"document": "manual.pdf", "source_chunk_numbers": [42]}
     rows = [["原文", "相同 chunk", "", "0.9", "manual.pdf：1", "manual.pdf：42", "manual.pdf"]]
 
     assert ui._retrieval_metrics(question, rows) == {
+        "evidence_hit": None, "evidence_precision": 0.0, "document_hit": None,
+    }
+
+
+def test_retrieval_metrics_are_unavailable_without_gold_record() -> None:
+    question = {"question": "無標註來源的問題"}
+    rows = [["原文", "任意取回證據", "", "0.9", "manual.pdf：1", "manual.pdf：42", "manual.pdf"]]
+
+    assert ui._retrieval_metrics(question, rows) == {
         "evidence_hit": None, "evidence_precision": None, "document_hit": None,
+    }
+
+
+def test_retrieval_precision_is_zero_for_gold_source_record_without_pages() -> None:
+    question = {
+        "answer_sources": [{"document_name": "manual.pdf", "pages": []}],
+    }
+
+    assert ui._retrieval_metrics(question, []) == {
+        "evidence_hit": None, "evidence_precision": 0.0, "document_hit": None,
     }
 
 

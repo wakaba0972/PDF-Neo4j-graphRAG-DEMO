@@ -2986,9 +2986,13 @@ def _retrieval_metrics(
             if source_identity:
                 gold_sources = {(source_identity, page) for page in expected_pages}
     if not gold_sources:
+        # A source record with no page numbers is still an explicit Gold
+        # annotation, but none of its pages can match retrieved evidence.
+        # Keep its Evidence Precision as zero so it remains in the mean.
+        precision = 0.0 if references else None
         return {
             "evidence_hit": None,
-            "evidence_precision": None,
+            "evidence_precision": precision,
             "document_hit": None,
         }
 
