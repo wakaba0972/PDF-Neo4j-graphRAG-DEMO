@@ -26,6 +26,14 @@ def _retrieval_config(
 def test_build_app_returns_blocks() -> None:
     app = build_app()
     assert isinstance(app, gr.Blocks)
+    graph_partition = next(
+        component for component in app.config["components"]
+        if component.get("props", {}).get("label") == "圖譜範圍"
+    )
+    assert graph_partition["props"]["value"] == "merged"
+    assert [choice[1] for choice in graph_partition["props"]["choices"]] == [
+        "merged", "per_document",
+    ]
     concurrency = next(
         component for component in app.config["components"]
         if component.get("props", {}).get("label") == "最大並行 Embedding 請求數"
@@ -1249,6 +1257,7 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
         "混合檢索", 6, '{"entity_types": []}',
         ui.DEFAULT_REASONING_EFFORT, ui.DEFAULT_REASONING_EFFORT,
         ui.DEFAULT_REASONING_EFFORT, '{"effective_search_ratio": 6}',
+        "per_document",
     ]
     saved, save_status = ui.save_project_for_ui(*values)
     loaded = ui.load_project_for_ui(created["project_id"])
@@ -1257,6 +1266,7 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert loaded[0]["project_id"] == created["project_id"]
     assert loaded[11:13] == (1200, 100)
     assert loaded[22][0].text == "內容"
+    assert "per_document" in loaded
     parameter_entries = ui._strategy_parameter_entries()
     assert loaded[-len(parameter_entries) - 1] == {"effective_search_ratio": 6}
     hybrid_ratio = next(
@@ -1268,6 +1278,7 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     stored_project = ui.load_full_project(created["project_id"])
     assert "model_endpoint" not in stored_project["settings"]
     assert "api_key" not in stored_project["settings"]
+    assert stored_project["settings"]["graph_partition_mode"] == "per_document"
     assert stored_project["graph_state"]["entities"][0]["name"] == "設備"
     assert stored_project["graph_state"]["relationships"][0]["type"] == "USES"
     assert loaded[30] == [] and loaded[31] == []
@@ -3574,6 +3585,31 @@ def test_extract_graph_for_ui_defaults_to_direct_text_extraction(monkeypatch) ->
     }
 
 
+def test_extract_graph_for_ui_extracts_each_document_independently(monkeypatch) -> None:
+    from manual_graphrag.graph_service import GraphExtraction
+
+    calls = []
+
+    def fake_extract(*args, **kwargs):
+        calls.append([chunk.document_id for chunk in args[3]])
+        return GraphExtraction([], [], len(args[3]))
+
+    monkeypatch.setattr(ui, "extract_graph", fake_extract)
+    status, _, _, state = ui.extract_graph_for_ui(
+        "https://api.openai.com/v1", "key", "model", 0, 2,
+        [
+            TextChunk(1, "a1", (1,), "a.pdf", "doc-a"),
+            TextChunk(2, "a2", (2,), "a.pdf", "doc-a"),
+            TextChunk(3, "b1", (1,), "b.pdf", "doc-b"),
+        ], "", [], ui.RunControl(), graph_partition_mode="per_document",
+    )
+
+    assert status.startswith("✅")
+    assert calls == [["doc-a", "doc-a"], ["doc-b"]]
+    assert state["graph_partition_mode"] == "per_document"
+    assert "每份文件獨立" in status
+
+
 def test_project_name_suffix_uses_build_settings_and_planned_granularity() -> None:
     project = {"name": "61 | s25", "base_name": "61 | s25"}
 
@@ -3686,6 +3722,56 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
     assert captured["max_concurrency"] == 2
 
 
+def test_import_graph_for_ui_passes_document_partitions_to_neo4j(monkeypatch) -> None:
+    from manual_graphrag.neo4j_service import ImportSummary
+
+    captured = {}
+
+    def fake_import(*args, **kwargs):
+        captured["entities"] = args[8]
+        captured["graph_documents"] = kwargs["graph_documents"]
+        captured["evidence"] = [item for batch in args[10] for item in batch]
+        return ImportSummary(2, 0, 1)
+
+    graph_state = {
+        "document": "a.pdf、b.pdf", "graph_partition_mode": "per_document",
+        "llm_model": "model", "schema": {},
+        "entities": [
+            {"name": "零件", "type": "PART", "description": "A",
+             "source_chunk_numbers": [1], "source_pages": [1],
+             "source_references": [{"document_id": "doc-a", "document": "a.pdf",
+                                    "chunk_numbers": [1], "pages": [1]}]},
+            {"name": "零件", "type": "PART", "description": "B",
+             "source_chunk_numbers": [2], "source_pages": [2],
+             "source_references": [{"document_id": "doc-b", "document": "b.pdf",
+                                    "chunk_numbers": [2], "pages": [2]}]},
+        ],
+        "relationships": [],
+        "chunks": [
+            {"number": 1, "text": "A 原文", "pages": [1], "document": "a.pdf", "document_id": "doc-a"},
+            {"number": 2, "text": "B 原文", "pages": [2], "document": "b.pdf", "document_id": "doc-b"},
+        ],
+    }
+    monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]] * len(args[3]))
+    monkeypatch.setattr(ui, "ensure_project_database", lambda *args: None)
+    monkeypatch.setattr(ui, "import_extraction_batched", fake_import)
+
+    status, state = ui.import_graph_for_ui(
+        "https://api.openai.com/v1", "key", "bolt://db", "neo4j", "user", "password",
+        "embed", graph_state,
+    )
+
+    assert status.startswith("✅")
+    assert state["neo4j_imported"] is True
+    assert captured["graph_documents"] == [
+        {"document_id": "doc-a", "file_name": "a.pdf"},
+        {"document_id": "doc-b", "file_name": "b.pdf"},
+    ]
+    assert [item["document_id"] for item in captured["entities"]] == ["doc-a", "doc-b"]
+    assert {item["document_id"] for item in captured["evidence"]} == {"doc-a", "doc-b"}
+    assert len({item["evidence_id"] for item in captured["evidence"]}) == len(captured["evidence"])
+
+
 def test_import_graph_for_ui_keeps_state_when_import_fails(monkeypatch) -> None:
     monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]] * len(args[3]))
     monkeypatch.setattr(ui, "ensure_project_database", lambda *args: None)
@@ -3710,6 +3796,17 @@ def test_import_graph_for_ui_requires_extraction() -> None:
         "http://models/v1", "key", "bolt://db", "neo4j", "user", "password",
         "embed", {},
     ) == ("❌ 請先完成知識圖譜抽取。", {})
+
+
+def test_import_graph_for_ui_requires_reextract_when_partition_mode_changed() -> None:
+    graph_state = _importable_graph_state()
+    status, returned = ui.import_graph_for_ui(
+        "https://api.openai.com/v1", "key", "bolt://db", "neo4j", "user", "password",
+        "embed", graph_state, selected_graph_partition_mode="per_document",
+    )
+
+    assert "請重新執行「抽取實體與關係」" in status
+    assert returned["neo4j_imported"] is False
 
 
 def test_answer_question_for_ui_can_disable_reranker(tmp_path, monkeypatch) -> None:

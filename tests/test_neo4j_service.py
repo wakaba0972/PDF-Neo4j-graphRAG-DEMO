@@ -189,6 +189,30 @@ class FakeDriver:
         return self.session_instance
 
 
+def test_document_partition_writes_scope_nodes_and_relationship_endpoints() -> None:
+    transaction = FakeTransaction()
+
+    neo4j_service._write_entity_batch(transaction, [{
+        "document_id": "doc-a", "name": "零件", "type": "PART",
+        "description": "A 文件中的零件", "source_chunk_numbers": [1],
+        "source_pages": [2], "source_documents": ["a.pdf"],
+    }])
+    neo4j_service._write_relationship_batch(transaction, [{
+        "document_id": "doc-a", "source": "零件", "type": "USES", "target": "工具",
+        "description": "關係", "source_chunk_numbers": [1],
+        "source_pages": [2], "source_documents": ["a.pdf"],
+    }])
+
+    entity_query, entity_params = transaction.calls[0]
+    relation_query, relation_params = transaction.calls[1]
+    assert "GraphDocument {document_id: item.document_id}" in entity_query
+    assert "document_id: item.document_id" in entity_query
+    assert entity_params["entities"][0]["document_id"] == "doc-a"
+    assert "source:ExtractedEntity {document_id: item.document_id" in relation_query
+    assert "target:ExtractedEntity {document_id: item.document_id" in relation_query
+    assert relation_params["relationships"][0]["document_id"] == "doc-a"
+
+
 def test_load_latest_graph_metadata_does_not_collect_all_graph_nodes(monkeypatch) -> None:
     class Record(dict):
         pass

@@ -43,6 +43,7 @@ from .graph_service import (
     GPT_6_LUNA_REASONING_EFFORTS,
     RunCancelled,
     RunControl,
+    GraphExtraction,
     check_model_connection,
     extract_graph,
     validate_schema,
@@ -1128,6 +1129,7 @@ def save_project_for_ui(
     extraction_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     answer_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     retrieval_strategy_params_json: Any = None,
+    graph_partition_mode: str = "merged",
 ) -> tuple[dict[str, Any], str]:
     if not project_id:
         return {}, "❌ 請先建立或載入專案。"
@@ -1147,6 +1149,7 @@ def save_project_for_ui(
             retrieval_strategy_params_json,
         ).to_dict(),
         "schema_text": schema_text or "",
+        "graph_partition_mode": graph_partition_mode or "merged",
         "graph_reasoning_effort": graph_reasoning_effort or DEFAULT_REASONING_EFFORT,
         "extraction_reasoning_effort": extraction_reasoning_effort or DEFAULT_REASONING_EFFORT,
         "answer_reasoning_effort": answer_reasoning_effort or DEFAULT_REASONING_EFFORT,
@@ -1248,6 +1251,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
             visible=str(get("answer_model", DEFAULT_LLM_MODEL) or "").casefold() == GPT_6_LUNA_MODEL,
             choices=list(GPT_6_LUNA_REASONING_EFFORTS),
         ),
+        get("graph_partition_mode", "merged"),
         *_single_strategy_parameter_updates(project_retrieval),
     )
 
@@ -5404,6 +5408,7 @@ def extract_graph_for_ui(
     chunk_overlap: int = 0,
     schema_granularity: str = "平衡",
     reasoning_effort: str | None = None,
+    graph_partition_mode: str = "merged",
     progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], list[list[object]], dict[str, Any]]:
     if not llm_model:
@@ -5416,18 +5421,44 @@ def extract_graph_for_ui(
             if not isinstance(raw_schema, dict):
                 raise ValueError("schema 必須是 JSON 物件")
             schema = validate_schema(raw_schema)
-        extraction = extract_graph(
-            model_endpoint,
-            api_key,
-            llm_model,
-            chunks,
-            schema,
-            float(temperature),
-            int(max_concurrent_requests),
-            lambda value, description: progress(value, desc=description),
-            control=run_control,
-            **_reasoning_effort_kwargs(llm_model, reasoning_effort),
-        )
+        extraction_progress = lambda value, description: progress(value, desc=description)
+        if graph_partition_mode == "per_document":
+            if any(not chunk.document_id for chunk in chunks):
+                raise ValueError("文件分區模式需要每份 PDF 都有 document_id；請重新解析文件")
+            chunks_by_document: dict[tuple[str, str], list[TextChunk]] = {}
+            for chunk in chunks:
+                chunks_by_document.setdefault((chunk.document_id, chunk.document), []).append(chunk)
+            extracted = []
+            for index, ((document_id, document_name), document_chunks) in enumerate(
+                chunks_by_document.items(), start=1,
+            ):
+                def document_progress(value, description, *, current=index):
+                    fraction = ((current - 1) + float(value)) / max(len(chunks_by_document), 1)
+                    extraction_progress(fraction, f"文件 {current}/{len(chunks_by_document)}：{description}")
+                extracted.append(extract_graph(
+                    model_endpoint, api_key, llm_model, document_chunks, schema,
+                    float(temperature), int(max_concurrent_requests), document_progress,
+                    control=run_control,
+                    **_reasoning_effort_kwargs(llm_model, reasoning_effort),
+                ))
+            extraction = GraphExtraction(
+                [item for result in extracted for item in result.entities],
+                [item for result in extracted for item in result.relationships],
+                sum(result.processed_chunks for result in extracted),
+            )
+        else:
+            extraction = extract_graph(
+                model_endpoint,
+                api_key,
+                llm_model,
+                chunks,
+                schema,
+                float(temperature),
+                int(max_concurrent_requests),
+                extraction_progress,
+                control=run_control,
+                **_reasoning_effort_kwargs(llm_model, reasoning_effort),
+            )
     except RunCancelled:
         return "⏹ 已停止（使用者中止抽取）。", [], [], {}
     except json.JSONDecodeError:
@@ -5457,6 +5488,7 @@ def extract_graph_for_ui(
     document_name = "、".join(doc.get("file_name", "") for doc in (documents or []))
     graph_state = {
         "document": document_name,
+        "graph_partition_mode": graph_partition_mode or "merged",
         "llm_model": llm_model,
         "temperature": float(temperature),
         "max_concurrent_requests": int(max_concurrent_requests),
@@ -5481,7 +5513,9 @@ def extract_graph_for_ui(
     status = (
         f"✅ 已處理 {extraction.processed_chunks} 個 chunk，抽取 "
         f"{len(extraction.entities)} 個實體與 "
-        f"{len(extraction.relationships)} 筆關係（最大並行請求數：{int(max_concurrent_requests)}）。請確認結果後進行 Embedding 並匯入 Neo4j。"
+        f"{len(extraction.relationships)} 筆關係（圖譜範圍："
+        f"{'每份文件獨立' if graph_partition_mode == 'per_document' else '所有文件合併'}；"
+        f"最大並行請求數：{int(max_concurrent_requests)}）。請確認結果後進行 Embedding 並匯入 Neo4j。"
     )
     return status, entity_rows, relationship_rows, graph_state
 
@@ -5528,6 +5562,7 @@ def _build_graph_evidence(
         document = str(item.get("document", ""))
         evidence.append({
             "evidence_id": f"chunk-{number}", "kind": "原文",
+            "document_id": str(item.get("document_id", "")),
             "name": "", "source": "", "target": "",
             "text": str(item.get("text", "")),
             "source_pages": item.get("pages", []),
@@ -5542,8 +5577,10 @@ def _build_graph_evidence(
         })
     for index, item in enumerate(entities):
         for source_index, sources in enumerate(source_variants(item)):
+            document_id = str((sources.get("source_references") or [{}])[0].get("document_id", ""))
             evidence.append({
                 "evidence_id": f"entity-{index}-{source_index}", "kind": "實體",
+                "document_id": document_id,
                 "name": item.get("name", ""), "source": "", "target": "",
                 "text": "實體：{}；類型：{}；說明：{}".format(
                     item.get("name", ""), item.get("type", ""), item.get("description", "")
@@ -5552,8 +5589,10 @@ def _build_graph_evidence(
             })
     for index, item in enumerate(relationships):
         for source_index, sources in enumerate(source_variants(item)):
+            document_id = str((sources.get("source_references") or [{}])[0].get("document_id", ""))
             evidence.append({
                 "evidence_id": f"relationship-{index}-{source_index}",
+                "document_id": document_id,
                 "kind": "關係", "name": "",
                 "source": item.get("source", ""), "target": item.get("target", ""),
                 "text": "關係：{} -[{}]-> {}；說明：{}".format(
@@ -5640,6 +5679,7 @@ def import_graph_for_ui(
     embedding_model: str,
     graph_state: dict[str, Any],
     max_embedding_concurrency: int = EMBEDDING_MAX_CONCURRENCY,
+    selected_graph_partition_mode: str | None = None,
     progress=gr.Progress(),
 ) -> tuple[str, dict[str, Any]]:
     if not graph_state or not (
@@ -5649,7 +5689,13 @@ def import_graph_for_ui(
         return "❌ 請先完成知識圖譜抽取。", graph_state or {}
     if not (embedding_model or "").strip():
         return "❌ 請選擇 Embedding 模型。", graph_state
-    updated_state = dict(graph_state)
+    updated_state = deepcopy(graph_state)
+    stored_partition_mode = updated_state.get("graph_partition_mode", "merged")
+    if selected_graph_partition_mode and selected_graph_partition_mode != stored_partition_mode:
+        return (
+            "❌ 圖譜範圍設定與目前抽取結果不一致；請重新執行「抽取實體與關係」。",
+            updated_state,
+        )
     updated_state["embedding_model"] = embedding_model.strip()
     try:
         progress(0, desc="準備向量證據…")
@@ -5663,6 +5709,49 @@ def import_graph_for_ui(
             updated_state["relationships"],
             updated_state.get("chunks", []),
         )
+        partitioned = updated_state.get("graph_partition_mode") == "per_document"
+        if partitioned:
+            document_names: dict[str, str] = {}
+            for chunk in updated_state.get("chunks", []):
+                document_id = str(chunk.get("document_id", ""))
+                document_name = str(chunk.get("document", ""))
+                if document_id and document_name:
+                    document_names[document_id] = document_name
+            if not document_names:
+                raise ValueError("文件分區模式需要每份文件都有 document_id，請重新解析 PDF 後再抽取")
+            graph_documents = [
+                {"document_id": document_id, "file_name": name}
+                for document_id, name in document_names.items()
+            ]
+            for item in [*updated_state["entities"], *updated_state["relationships"], *evidence]:
+                if not item.get("document_id"):
+                    references = item.get("source_references") or []
+                    document_ids = list(dict.fromkeys(
+                        str(reference.get("document_id", ""))
+                        for reference in references if reference.get("document_id")
+                    ))
+                    if len(document_ids) == 1:
+                        item["document_id"] = document_ids[0]
+                if item.get("document_id"):
+                    item["evidence_id"] = (
+                        f"{item['document_id']}:{item['evidence_id']}"
+                        if "evidence_id" in item and not str(item["evidence_id"]).startswith(
+                            f"{item['document_id']}:"
+                        ) else item.get("evidence_id")
+                    )
+            invalid_items = [
+                item for item in [*updated_state["entities"], *updated_state["relationships"], *evidence]
+                if str(item.get("document_id", "")) not in document_names
+            ]
+            if invalid_items:
+                raise ValueError("抽取結果缺少有效的文件 document_id，請重新執行抽取")
+        else:
+            graph_documents = [{
+                "document_id": "",
+                "file_name": updated_state.get("document", ""),
+            }]
+            for item in [*updated_state["entities"], *updated_state["relationships"], *evidence]:
+                item["document_id"] = ""
         if not evidence:
             raise ValueError("沒有可建立向量索引的原文、實體或關係")
 
@@ -5689,6 +5778,7 @@ def import_graph_for_ui(
             ),
             len(evidence),
             progress=lambda value, description: progress(value, desc=description),
+            graph_documents=graph_documents,
         )
     except (KeyError, ValueError) as exc:
         updated_state["neo4j_imported"] = False
@@ -6027,6 +6117,18 @@ def build_app() -> gr.Blocks:
 
         with gr.Tab("1-3 建圖", interactive=False) as graph_tab:
             gr.Markdown("### 從文件文本抽取知識圖譜")
+            graph_partition_mode = gr.Radio(
+                choices=[
+                    ("所有文件合併為一張圖譜（現有模式）", "merged"),
+                    ("每份文件各自一張圖譜（以 document_id 分區）", "per_document"),
+                ],
+                value="merged",
+                label="圖譜範圍",
+                info=(
+                    "文件分區仍存放在同一個專案 Neo4j 資料庫。選擇每份文件各自成圖時，"
+                    "會逐文件抽取；目前檢索策略仍可搜尋專案內所有文件。"
+                ),
+            )
             with gr.Row():
                 pause_button = gr.Button("⏸ 暫停")
                 stop_button = gr.Button("⏹ 停止", variant="stop")
@@ -7589,6 +7691,7 @@ def build_app() -> gr.Blocks:
             top_k, schema_editor, graph_reasoning_effort,
             extraction_reasoning_effort, answer_reasoning_effort,
             retrieval_strategy_params_state,
+            graph_partition_mode,
         ]
         project_load_outputs = [
             project_state, project_status,
@@ -7607,6 +7710,7 @@ def build_app() -> gr.Blocks:
             entity_table, relationship_table, build_status, import_status,
             graph_reasoning_effort, extraction_reasoning_effort,
             answer_reasoning_effort, retrieval_strategy_params_state,
+            graph_partition_mode,
             *retrieval_strategy_parameter_controls,
         ]
         for effort_control in [
@@ -7755,6 +7859,7 @@ def build_app() -> gr.Blocks:
             graph_llm_model, graph_embedding_model,
             answer_model, chunk_size, chunk_overlap,
             graph_temperature, schema_granularity,
+            graph_partition_mode,
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
@@ -8003,6 +8108,7 @@ def build_app() -> gr.Blocks:
                 chunk_overlap,
                 schema_granularity,
                 extraction_reasoning_effort,
+                graph_partition_mode,
             ],
             outputs=[build_status, entity_table, relationship_table, graph_state],
             show_progress="minimal",
@@ -8035,6 +8141,7 @@ def build_app() -> gr.Blocks:
                 graph_embedding_model,
                 graph_state,
                 embedding_max_concurrency,
+                graph_partition_mode,
             ],
             outputs=[import_status, graph_state],
             show_progress="full",

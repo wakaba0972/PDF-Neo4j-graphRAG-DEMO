@@ -19,7 +19,7 @@ from manual_graphrag.retrieval import RetrievalConfig, RetrievalContext
 
 _EVIDENCE_PROJECTION = """{
   .evidence_id, .kind, .name, .source, .target, .text, .source_documents,
-  .source_pages, .source_chunk_numbers, .source_references_json
+  .source_pages, .source_chunk_numbers, .source_references_json, .document_id
 }"""
 
 
@@ -191,7 +191,8 @@ class AgenticSearch3RetrievalStrategy:
             MATCH (source:GraphEvidence)
             WHERE source.evidence_id IN $evidence_ids
             MATCH (chunk:GraphEvidence {{kind: '原文'}})
-            WHERE any(number IN coalesce(source.source_chunk_numbers, [])
+            WHERE source.document_id = chunk.document_id
+              AND any(number IN coalesce(source.source_chunk_numbers, [])
                       WHERE number IN coalesce(chunk.source_chunk_numbers, []))
               AND any(document IN coalesce(source.source_documents, [])
                       WHERE document IN coalesce(chunk.source_documents, []))

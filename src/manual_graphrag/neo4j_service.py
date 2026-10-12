@@ -201,6 +201,7 @@ def load_latest_graph(
         .source_documents, .source_references_json
     }) AS entities
     OPTIONAL MATCH (source:ExtractedEntity)-[relation:EXTRACTED_RELATION]->(target:ExtractedEntity)
+    WHERE relation.document_id = document.document_id
     RETURN document.file_name AS document,
            document.embedding_model AS embedding_model,
            document.embedding_dimensions AS embedding_dimensions,
@@ -294,11 +295,33 @@ def search_graph_evidence(
     config.validated()
     target_vector_index = vector_index_name(len(embedding))
     retrieval_top_k = config.params.get("candidate_top_k", config.top_k)
+
+    def document_ids_for(items: list[dict[str, Any]]) -> list[str]:
+        document_ids: list[str] = []
+        for item in items:
+            if "document_id" in item:
+                value = str(item.get("document_id") or "")
+                if value:
+                    document_ids.append(value)
+                continue
+            references = item.get("source_references")
+            if not isinstance(references, list):
+                try:
+                    references = json.loads(item.get("source_references_json") or "[]")
+                except (TypeError, json.JSONDecodeError):
+                    references = []
+            if isinstance(references, list):
+                document_ids.extend(
+                    str(reference.get("document_id", ""))
+                    for reference in references
+                    if isinstance(reference, dict) and reference.get("document_id")
+                )
+        return list(dict.fromkeys(document_ids))
     retrieval_query = """
     WITH node, score
     RETURN node {
         .evidence_id, .kind, .name, .source, .target, .text, .source_pages,
-        .source_chunk_numbers, .source_documents, .source_references_json
+        .source_chunk_numbers, .source_documents, .source_references_json, .document_id
     } AS evidence, score
     """
     try:
@@ -323,24 +346,26 @@ def search_graph_evidence(
             if expansion_id != "disabled" and selected:
                 with driver.session(database=database.strip()) as session:
                     def fetch_source_chunks(
-                        target_chunk_numbers: list[int],
+                        target_chunk_numbers: list[int], document_ids: list[str],
                     ) -> list[dict[str, Any]]:
                         if not target_chunk_numbers:
                             return []
                         records = session.run(
                             """
                             MATCH (chunk:GraphEvidence {kind: "原文"})
-                            WHERE any(
+                            WHERE (size($document_ids) = 0 OR chunk.document_id IN $document_ids)
+                              AND any(
                                 number IN coalesce(chunk.source_chunk_numbers, [])
                                 WHERE number IN $chunk_numbers
                             )
                             RETURN chunk {
                                 .evidence_id, .kind, .name, .source, .target, .text,
                                 .source_pages, .source_chunk_numbers, .source_documents,
-                                .source_references_json
+                                .source_references_json, .document_id
                             } AS evidence
                             """,
                             chunk_numbers=target_chunk_numbers,
+                            document_ids=document_ids,
                         ).data()
                         chunks = [
                             _expanded_evidence(record["evidence"])
@@ -375,11 +400,14 @@ def search_graph_evidence(
                             number for item in selected if item.get("kind") != "原文"
                             for number in item.get("source_chunk_numbers", [])
                         ))
-                        source_chunks = fetch_source_chunks(graph_chunk_numbers)
+                        document_ids = document_ids_for(selected)
+                        source_chunks = fetch_source_chunks(graph_chunk_numbers, document_ids)
                         related_records = session.run(
                             """
                             MATCH (candidate:GraphEvidence)
-                            WHERE candidate.kind IN ['實體', '關係'] AND (
+                            WHERE candidate.kind IN ['實體', '關係']
+                              AND (size($document_ids) = 0 OR candidate.document_id IN $document_ids)
+                              AND (
                                 candidate.name IN $names OR candidate.source IN $names
                                 OR candidate.target IN $names OR any(
                                     number IN coalesce(candidate.source_chunk_numbers, [])
@@ -389,12 +417,13 @@ def search_graph_evidence(
                             RETURN candidate {
                                 .evidence_id, .kind, .name, .source, .target, .text,
                                 .source_pages, .source_chunk_numbers, .source_documents,
-                                .source_references_json
+                                .source_references_json, .document_id
                             } AS evidence
                             LIMIT $top_k
                             """,
                             names=names,
                             chunk_numbers=chunk_numbers,
+                            document_ids=document_ids,
                             top_k=retrieval_top_k,
                         ).data()
                         selected_ids = {item.get("evidence_id", "") for item in selected}
@@ -413,7 +442,7 @@ def search_graph_evidence(
                             for number in item.get("source_chunk_numbers", [])
                         ))
                         selected.extend(
-                            item for item in fetch_source_chunks(related_chunk_numbers)
+                            item for item in fetch_source_chunks(related_chunk_numbers, document_ids)
                             if item.get("evidence_id", "") not in selected_ids
                         )
                     selected_ids = {item.get("evidence_id", "") for item in selected}
@@ -424,7 +453,8 @@ def search_graph_evidence(
                         if item.get("kind") != "原文"
                         for number in item.get("source_chunk_numbers", [])
                     ))
-                    source_chunks = fetch_source_chunks(graph_chunk_numbers)
+                    document_ids = document_ids_for(selected)
+                    source_chunks = fetch_source_chunks(graph_chunk_numbers, document_ids)
                     selected.extend(
                         item for item in source_chunks
                         if item.get("evidence_id", "") not in selected_ids
@@ -544,6 +574,7 @@ def import_extraction_batched(
     evidence_batches: Iterable[list[dict[str, Any]]],
     total_evidence: int,
     progress=None,
+    graph_documents: list[dict[str, str]] | None = None,
 ) -> ImportSummary:
     """Write each already-embedded evidence batch in its own Neo4j transaction."""
     if not uri.strip():
@@ -616,8 +647,8 @@ def import_extraction_batched(
                     _execute_write_with_retry(
                         driver,
                         database.strip(),
-                        _create_graph_document,
-                        document_name,
+                        _create_graph_documents,
+                        graph_documents or [{"document_id": "", "file_name": document_name}],
                         llm_model,
                         embedding_model,
                         schema,
@@ -641,16 +672,18 @@ def import_extraction_batched(
                             _write_relationship_batch,
                             relationship_batch,
                         )
-                    entities_by_chunk: dict[int, list[dict[str, str]]] = {}
+                    entities_by_chunk: dict[tuple[str, int], list[dict[str, str]]] = {}
                     for entity in entities:
                         for chunk_number in entity.get("source_chunk_numbers", []):
                             try:
                                 normalized_chunk_number = int(chunk_number)
                             except (TypeError, ValueError):
                                 continue
-                            entities_by_chunk.setdefault(normalized_chunk_number, []).append({
+                            document_id = str(entity.get("document_id", ""))
+                            entities_by_chunk.setdefault((document_id, normalized_chunk_number), []).append({
                                 "name": str(entity.get("name", "")),
                                 "type": str(entity.get("type", "")),
+                                "document_id": document_id,
                             })
 
                     _execute_write_with_retry(
@@ -774,6 +807,7 @@ def _write_graph(
         return [
             {
                 **item,
+                "document_id": str(item.get("document_id", "")),
                 "source_references_json": json.dumps(
                     item.get("source_references", []), ensure_ascii=False
                 ),
@@ -794,7 +828,7 @@ def _write_graph(
 
     transaction.run(
         """
-        CREATE (document:GraphDocument)
+        CREATE (document:GraphDocument {document_id: ''})
         SET document.file_name = $document_name,
             document.llm_model = $llm_model,
             document.embedding_model = $embedding_model,
@@ -817,6 +851,7 @@ def _write_graph(
         MATCH (document:GraphDocument)
         UNWIND $entities AS item
         MERGE (entity:ExtractedEntity {
+            document_id: item.document_id,
             type: item.type,
             name: item.name
         })
@@ -840,6 +875,7 @@ def _write_graph(
             type: item.type
         }]->(target)
         SET relation.description = item.description,
+            relation.document_id = item.document_id,
             relation.source_chunk_numbers = item.source_chunk_numbers,
             relation.source_pages = item.source_pages,
             relation.source_documents = item.source_documents,
@@ -859,6 +895,7 @@ def _write_graph(
             evidence.source_chunk_numbers = item.source_chunk_numbers,
             evidence.source_documents = item.source_documents,
             evidence.source_references_json = item.source_references_json,
+            evidence.document_id = item.document_id,
             evidence.embedding = item.embedding
         MERGE (evidence)-[:IN_DOCUMENT]->(document)
         """,
@@ -926,6 +963,7 @@ def _create_graph_document(
     transaction.run(
         """
         CREATE (document:GraphDocument {
+            document_id: '',
             file_name: $document_name,
             llm_model: $llm_model,
             embedding_model: $embedding_model,
@@ -945,10 +983,44 @@ def _create_graph_document(
     ).consume()
 
 
+def _create_graph_documents(
+    transaction: Any,
+    documents: list[dict[str, str]],
+    llm_model: str,
+    embedding_model: str,
+    schema: dict[str, Any],
+    embedding_dimensions: int,
+    vector_index: str,
+) -> None:
+    transaction.run(
+        """
+        UNWIND $documents AS item
+        CREATE (document:GraphDocument {
+            document_id: item.document_id,
+            file_name: item.file_name,
+            llm_model: $llm_model,
+            embedding_model: $embedding_model,
+            embedding_dimensions: $embedding_dimensions,
+            vector_index_name: $vector_index,
+            schema_json: $schema_json,
+            import_status: 'staging',
+            updated_at: datetime()
+        })
+        """,
+        documents=documents,
+        llm_model=llm_model,
+        embedding_model=embedding_model,
+        embedding_dimensions=embedding_dimensions,
+        vector_index=vector_index,
+        schema_json=json.dumps(schema, ensure_ascii=False),
+    ).consume()
+
+
 def _with_source_references(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
             **item,
+            "document_id": str(item.get("document_id", "")),
             "source_references_json": json.dumps(
                 item.get("source_references", []), ensure_ascii=False,
             ),
@@ -963,9 +1035,10 @@ def _write_entity_batch(
 ) -> int:
     result = transaction.run(
         """
-        MATCH (document:GraphDocument)
         UNWIND $entities AS item
+        MATCH (document:GraphDocument {document_id: item.document_id})
         MERGE (entity:ExtractedEntity {
+            document_id: item.document_id,
             type: item.type,
             name: item.name
         })
@@ -989,13 +1062,14 @@ def _write_relationship_batch(
     result = transaction.run(
         """
         UNWIND $relationships AS item
-        MATCH (source:ExtractedEntity {name: item.source})
-        MATCH (target:ExtractedEntity {name: item.target})
+        MATCH (source:ExtractedEntity {document_id: item.document_id, name: item.source})
+        MATCH (target:ExtractedEntity {document_id: item.document_id, name: item.target})
         WITH item, head(collect(source)) AS source, head(collect(target)) AS target
         MERGE (source)-[relation:EXTRACTED_RELATION {
             type: item.type
         }]->(target)
         SET relation.description = item.description,
+            relation.document_id = item.document_id,
             relation.source_chunk_numbers = item.source_chunk_numbers,
             relation.source_pages = item.source_pages,
             relation.source_documents = item.source_documents,
@@ -1014,8 +1088,8 @@ def _write_evidence_batch(
     evidence = _with_source_references(evidence)
     transaction.run(
         """
-        MATCH (document:GraphDocument)
         UNWIND $evidence AS item
+        MATCH (document:GraphDocument {document_id: item.document_id})
         MERGE (evidence:GraphEvidence {evidence_id: item.evidence_id})
         SET evidence.kind = item.kind, evidence.name = item.name,
             evidence.source = item.source, evidence.target = item.target,
@@ -1023,6 +1097,7 @@ def _write_evidence_batch(
             evidence.source_chunk_numbers = item.source_chunk_numbers,
             evidence.source_documents = item.source_documents,
             evidence.source_references_json = item.source_references_json,
+            evidence.document_id = item.document_id,
             evidence.embedding = item.embedding
         MERGE (evidence)-[:IN_DOCUMENT]->(document)
         """,
@@ -1033,10 +1108,11 @@ def _write_evidence_batch(
 def _link_evidence_batch(
     transaction: Any,
     evidence: list[dict[str, Any]],
-    entities_by_chunk: dict[int, list[dict[str, str]]],
+    entities_by_chunk: dict[tuple[str, int], list[dict[str, str]]],
 ) -> None:
     entity_links = [
-        {"evidence_id": item["evidence_id"], "name": item.get("name", "")}
+        {"evidence_id": item["evidence_id"], "name": item.get("name", ""),
+         "document_id": item.get("document_id", "")}
         for item in evidence
         if item.get("kind") == "實體"
     ]
@@ -1045,7 +1121,7 @@ def _link_evidence_batch(
             """
             UNWIND $items AS item
             MATCH (evidence:GraphEvidence {evidence_id: item.evidence_id})
-            MATCH (entity:ExtractedEntity {name: item.name})
+            MATCH (entity:ExtractedEntity {document_id: item.document_id, name: item.name})
             WITH evidence, head(collect(entity)) AS entity
             MERGE (evidence)-[:REPRESENTS]->(entity)
             """,
@@ -1057,6 +1133,7 @@ def _link_evidence_batch(
             "evidence_id": item["evidence_id"],
             "source": item.get("source", ""),
             "target": item.get("target", ""),
+            "document_id": item.get("document_id", ""),
         }
         for item in evidence
         if item.get("kind") == "關係"
@@ -1066,9 +1143,9 @@ def _link_evidence_batch(
             """
             UNWIND $items AS item
             MATCH (evidence:GraphEvidence {evidence_id: item.evidence_id})
-            MATCH (source:ExtractedEntity {name: item.source})
+            MATCH (source:ExtractedEntity {document_id: item.document_id, name: item.source})
             WITH evidence, item, head(collect(source)) AS source
-            MATCH (target:ExtractedEntity {name: item.target})
+            MATCH (target:ExtractedEntity {document_id: item.document_id, name: item.target})
             WITH evidence, source, head(collect(target)) AS target
             MERGE (evidence)-[:EVIDENCE_SOURCE]->(source)
             MERGE (evidence)-[:EVIDENCE_TARGET]->(target)
@@ -1082,7 +1159,9 @@ def _link_evidence_batch(
             continue
         for chunk_number in item.get("source_chunk_numbers", []):
             try:
-                linked_entities = entities_by_chunk.get(int(chunk_number), [])
+                linked_entities = entities_by_chunk.get(
+                    (str(item.get("document_id", "")), int(chunk_number)), []
+                )
             except (TypeError, ValueError):
                 continue
             for entity in linked_entities:
@@ -1090,6 +1169,7 @@ def _link_evidence_batch(
                     "evidence_id": item["evidence_id"],
                     "name": entity["name"],
                     "type": entity["type"],
+                    "document_id": entity["document_id"],
                 })
     if mention_links:
         transaction.run(
@@ -1097,7 +1177,7 @@ def _link_evidence_batch(
             UNWIND $items AS item
             MATCH (chunk:GraphEvidence {evidence_id: item.evidence_id})
             MATCH (entity:ExtractedEntity {
-                name: item.name, type: item.type
+                document_id: item.document_id, name: item.name, type: item.type
             })
             MERGE (chunk)-[:MENTIONS_ENTITY]->(entity)
             """,

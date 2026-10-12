@@ -63,6 +63,7 @@ class AgenticRetrievalStrategy:
             RETURN DISTINCT elementId(entity) AS entity_id,
                    entity.name AS name, entity.type AS type,
                    entity.description AS description,
+                   evidence.document_id AS document_id,
                    evidence.evidence_id AS seed_evidence_id
             LIMIT $limit
             """,
@@ -229,6 +230,7 @@ class AgenticRetrievalStrategy:
                        endNode(relation).name AS target_name,
                        coalesce(relation.source_pages, []) AS source_pages,
                        coalesce(relation.source_documents, []) AS source_documents,
+                       relation.document_id AS document_id,
                        degree
                 ORDER BY degree ASC, name ASC
                 LIMIT $limit
@@ -299,7 +301,7 @@ class AgenticRetrievalStrategy:
                 RETURN chunk {
                     .evidence_id, .kind, .name, .source, .target, .text,
                     .source_pages, .source_chunk_numbers, .source_documents,
-                    .source_references_json
+                    .source_references_json, .document_id
                 } AS evidence, entity_ids
                 LIMIT $limit
                 """,

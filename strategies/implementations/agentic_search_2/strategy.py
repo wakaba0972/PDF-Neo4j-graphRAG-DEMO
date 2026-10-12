@@ -168,7 +168,7 @@ class AgenticSearch2RetrievalStrategy:
         schema = {
             "GraphEvidence": [
                 "evidence_id", "kind", "name", "text", "source_documents",
-                "source_pages", "source_chunk_numbers", "source_references_json",
+                "source_pages", "source_chunk_numbers", "source_references_json", "document_id",
             ],
             "ExtractedEntity": ["name", "type", "description"],
             "EXTRACTED_RELATION": ["type", "description"],
