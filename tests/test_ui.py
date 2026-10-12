@@ -2424,10 +2424,10 @@ def test_same_named_strategy_controls_keep_values_within_each_strategy_limits() 
         "name": "Agentic 組", "answer_model": "model-a",
         "retrieval_config": saved,
     }])
-    for index, (strategy_id, name, _spec) in enumerate(entries):
+    for index, (strategy_id, name, spec) in enumerate(entries):
         if name != "seed_top_k":
             continue
-        expected = 30 if strategy_id == "agentic" else 4
+        expected = 30 if strategy_id == "agentic" else spec.default
         assert experiment_updates[index]["value"] == expected
         assert single_updates[index + 1]["value"] == expected
         assert group_updates[ui.EXPERIMENT_GROUP_FIELDS + index]["value"] == expected
@@ -2859,12 +2859,9 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         if component.get("props", {}).get("headers", [])[:3] == ["編號", "問題", "標準答案"]
     )
     assert evaluation_table["props"]["static_columns"] == list(range(8))
+    strategy_choices = [(label, label) for label in ui.strategy_choices()]
     assert sum(
-        component.get("props", {}).get("choices") == [
-            ("基本向量檢索", "基本向量檢索"), ("混合檢索", "混合檢索"),
-            ("Agentic Search", "Agentic Search"),
-                ("Agentic Search 2", "Agentic Search 2"),
-        ]
+        component.get("props", {}).get("choices") == strategy_choices
         and component.get("type") == "dropdown"
         for component in components
     ) == ui.EXPERIMENT_GROUP_LIMIT * 2 + 1
