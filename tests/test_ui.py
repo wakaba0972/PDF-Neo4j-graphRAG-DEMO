@@ -3713,7 +3713,6 @@ def test_extract_graph_for_ui_rejects_invalid_schema() -> None:
 
 def _importable_graph_state() -> dict:
     return {
-        "run_id": "run-1",
         "document": "manual.pdf",
         "llm_model": "llm",
         "schema": {
@@ -3737,7 +3736,7 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
 
     def fake_import(*args, **kwargs):
         captured["args"] = args
-        captured["batches"] = list(args[11])
+        captured["batches"] = list(args[10])
         captured["progress"] = kwargs.get("progress")
         return ImportSummary(2, 1, 1)
 
@@ -3764,7 +3763,7 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
     assert state["embedding_dimensions"] == 1
     assert state["vector_index_name"] == "graph_evidence_embedding_1"
     assert provisioned == [("bolt://db", "neo4j", "user", "password")]
-    assert captured["args"][4] == "run-1"
+    assert captured["args"][4] == "manual.pdf"
     assert [len(batch) for batch in captured["batches"]] == [2]
     assert all("embedding" in item for batch in captured["batches"] for item in batch)
     assert captured["max_concurrency"] == 2
@@ -3839,8 +3838,8 @@ def test_answer_question_for_ui_can_disable_reranker(tmp_path, monkeypatch) -> N
 
     assert status.startswith("✅ 基本向量檢索")
     assert answer == "請重新啟動。"
-    assert captured["args"][5] == "E01 怎麼處理？"
-    config = captured["args"][7]
+    assert captured["args"][4] == "E01 怎麼處理？"
+    config = captured["args"][6]
     assert config.to_dict()["params"]["candidate_top_k"] == 8
     assert config.to_dict()["expansion"]["id"] == "disabled"
     assert rows == [[
@@ -3859,7 +3858,7 @@ def test_answer_question_for_ui_passes_model_context_to_agentic_strategy(tmp_pat
     captured = {}
 
     def fake_search(*args, **kwargs):
-        captured["config"] = args[7]
+        captured["config"] = args[6]
         captured["model_context"] = kwargs
         return [{
             "evidence_id": "chunk-agent", "kind": "原文", "text": "路徑原文",
@@ -4152,7 +4151,10 @@ def test_unselected_models_report_actionable_errors_without_network() -> None:
         {"questions": [{"question": "Q"}]},
     )
     answer = ui.answer_question_for_ui("", "", "", "", "", "", "", "", None, "Q", "基本向量檢索", 1)
-    embedding = ui.import_graph_for_ui("", "", "", "", "", "", None, {"run_id": "run"})
+    embedding = ui.import_graph_for_ui(
+        "", "", "", "", "", "", None,
+        {"document": "manual.pdf", "schema": {}, "entities": [], "relationships": []},
+    )
     for result in [plan, extraction, generation, evaluation, answer, embedding]:
         assert result[0].startswith("❌")
         assert "選擇" in result[0]

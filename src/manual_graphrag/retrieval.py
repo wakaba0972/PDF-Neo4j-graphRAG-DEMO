@@ -335,7 +335,6 @@ class RetrievalConfig:
 class RetrievalContext:
     driver: Any
     database: str
-    run_id: str
     question: str
     embedding: list[float]
     vector_index_name: str

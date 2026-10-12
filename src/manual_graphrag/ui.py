@@ -1081,7 +1081,7 @@ def load_graph_tables_for_project_ui(
     project_id: str | None, graph_state: dict[str, Any] | None,
 ) -> tuple[list[list[object]], list[list[object]], dict[str, Any], str]:
     state = graph_state or {}
-    if not state.get("run_id"):
+    if not state.get("document") and not state.get("graph_data_file"):
         return [], [], state, "尚未執行圖譜抽取。"
     if "entities" not in state or "relationships" not in state:
         try:
@@ -1204,7 +1204,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         _document_status(len(documents) - 1, len(documents), active_preview, len(active_chunks))
         if documents else "請先解析 PDF。"
     )
-    if graph.get("run_id"):
+    if graph.get("document") or graph.get("graph_data_file"):
         graph_status = (
             f"✅ 已載入專案保存的圖譜：{graph.get('entity_count', len(graph.get('entities') or []))} 個實體、"
             f"{graph.get('relationship_count', len(graph.get('relationships') or []))} 筆關係。"
@@ -5559,10 +5559,8 @@ def extract_graph_for_ui(
         ]
         for item in extraction.relationships
     ]
-    run_id = str(uuid4())
     document_name = "、".join(doc.get("file_name", "") for doc in (documents or []))
     graph_state = {
-        "run_id": run_id,
         "document": document_name,
         "llm_model": llm_model,
         "temperature": float(temperature),
@@ -5749,7 +5747,10 @@ def import_graph_for_ui(
     max_embedding_concurrency: int = EMBEDDING_MAX_CONCURRENCY,
     progress=gr.Progress(),
 ) -> tuple[str, dict[str, Any]]:
-    if not graph_state or not graph_state.get("run_id"):
+    if not graph_state or not (
+        graph_state.get("document")
+        and ("entities" in graph_state or graph_state.get("graph_data_file"))
+    ):
         return "❌ 請先完成知識圖譜抽取。", graph_state or {}
     if not (embedding_model or "").strip():
         return "❌ 請選擇 Embedding 模型。", graph_state
@@ -5775,7 +5776,6 @@ def import_graph_for_ui(
             neo4j_database,
             neo4j_username,
             neo4j_password,
-            updated_state["run_id"],
             updated_state.get("document", ""),
             updated_state.get("llm_model", ""),
             updated_state.get("embedding_model", ""),
@@ -5853,7 +5853,7 @@ def answer_question_for_ui(
         should_rerank = retrieval_config.reranker["id"] != "disabled"
         evidence = search_graph_evidence(
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
-            graph_state["run_id"], question.strip(), question_vector,
+            question.strip(), question_vector,
             retrieval_config,
             model_base_url=model_endpoint,
             model_api_key=api_key,
@@ -6285,7 +6285,7 @@ def build_app() -> gr.Blocks:
                 "直接使用連線設定中的 Neo4j；預設查詢最近更新的建圖結果。"
                 "可選擇使用 LLM Reranker 重排候選，或啟用證據擴展。"
                 "Agentic Search 以 LLM 選擇圖譜候選路徑；Agentic Search 2 可多輪提出受限唯讀 Cypher，"
-                "程式會限定專案 run_id、圖譜標籤、每輪筆數、輪數與執行時間。"
+                "程式會限定圖譜標籤、每輪筆數、輪數與執行時間。"
             )
             answer_model = gr.Dropdown(
                 choices=llm_choices,

@@ -52,9 +52,9 @@ def _format_record(record: Any) -> RetrieverResultItem:
 
 
 def validate_readonly_cypher(
-    cypher: str, params: dict[str, Any], run_id: str, result_limit: int,
+    cypher: str, params: dict[str, Any], result_limit: int,
 ) -> tuple[str, dict[str, Any]]:
-    """Allow a narrow, parameterized Cypher subset scoped to one graph run."""
+    """Allow a narrow, parameterized Cypher subset over the project graph."""
     if not isinstance(cypher, str) or not cypher.strip():
         raise ValueError("Agentic Search 2 沒有提供 Cypher 查詢")
     query = cypher.strip()
@@ -87,20 +87,18 @@ def validate_readonly_cypher(
     node_matches = list(_SAFE_NODE_PATTERN.finditer(query))
     node_count = len(re.findall(r"\(\s*[A-Za-z_]\w*\s*:", query))
     if not node_matches or len(node_matches) != node_count:
-        raise ValueError("Cypher 中每個節點都必須使用受允許的標籤與 run_id 範圍")
-    evidence_is_scoped = False
+        raise ValueError("Cypher 中每個節點都必須使用受允許的標籤")
+    has_evidence_node = False
     for match in node_matches:
         variable = match.group("variable")
         label = match.group("label")
         properties = match.group("properties")
         if label not in _ALLOWED_NODE_LABELS:
             raise ValueError(f"Agentic Search 2 不允許查詢節點標籤：{label}")
-        if not re.search(r"\brun_id\s*:\s*\$run_id\b", properties):
-            raise ValueError("Cypher 每個節點都必須綁定目前專案的 run_id")
         if variable == "evidence" and label == "GraphEvidence":
-            evidence_is_scoped = True
-    if not evidence_is_scoped:
-        raise ValueError("回傳的 evidence 必須是目前 run_id 範圍內的 GraphEvidence 節點")
+            has_evidence_node = True
+    if not has_evidence_node:
+        raise ValueError("回傳的 evidence 必須是 GraphEvidence 節點")
     # Reject unlabeled nodes and function/group expressions. The first version
     # intentionally permits only plain patterns, keeping query review simple.
     without_nodes = _SAFE_NODE_PATTERN.sub("", query)
@@ -115,22 +113,13 @@ def validate_readonly_cypher(
         relation_type = match.group("type")
         if relation_type not in _ALLOWED_RELATION_TYPES:
             raise ValueError(f"Agentic Search 2 不允許查詢關係：{relation_type}")
-        if relation_type == "EXTRACTED_RELATION" and not re.search(
-            r"\{[^{}]*\brun_id\s*:\s*\$run_id\b[^{}]*\}", match.group("detail"),
-        ):
-            raise ValueError("EXTRACTED_RELATION 必須綁定目前專案的 run_id")
-
     parameter_names = set(re.findall(r"\$([A-Za-z_]\w*)", query))
-    if "run_id" not in parameter_names:
-        raise ValueError("Cypher 必須使用程式提供的 $run_id")
     supplied_params = params if isinstance(params, dict) else None
     if supplied_params is None or len(supplied_params) > 8:
         raise ValueError("Agentic Search 2 的 Cypher 參數格式錯誤")
-    if "run_id" in supplied_params:
-        raise ValueError("LLM 不可覆寫目前專案的 run_id")
-    if parameter_names - {"run_id"} != set(supplied_params):
+    if parameter_names != set(supplied_params):
         raise ValueError("Cypher 參數與提供的參數清單不一致")
-    safe_params: dict[str, Any] = {"run_id": run_id}
+    safe_params: dict[str, Any] = {}
     for name, value in supplied_params.items():
         if isinstance(value, str):
             if len(value) > 200:
@@ -179,10 +168,10 @@ class AgenticSearch2RetrievalStrategy:
         schema = {
             "GraphEvidence": [
                 "evidence_id", "kind", "name", "text", "source_documents",
-                "source_pages", "source_chunk_numbers", "source_references_json", "run_id",
+                "source_pages", "source_chunk_numbers", "source_references_json",
             ],
-            "ExtractedEntity": ["name", "type", "description", "run_id"],
-            "EXTRACTED_RELATION": ["type", "description", "run_id"],
+            "ExtractedEntity": ["name", "type", "description"],
+            "EXTRACTED_RELATION": ["type", "description"],
             "graph_edges": [
                 "(GraphEvidence)-[:MENTIONS_ENTITY|REPRESENTS|EVIDENCE_SOURCE|EVIDENCE_TARGET]->(ExtractedEntity)",
                 "(ExtractedEntity)-[:EXTRACTED_RELATION]-(ExtractedEntity)",
@@ -198,7 +187,6 @@ class AgenticSearch2RetrievalStrategy:
                         "選擇下一個最有價值的唯讀 Cypher 查詢；沒有新方向或證據已足夠時停止。"
                         "只能查 GraphEvidence、ExtractedEntity，以及 MENTIONS_ENTITY、REPRESENTS、"
                         "EVIDENCE_SOURCE、EVIDENCE_TARGET、EXTRACTED_RELATION。每一個節點都必須在"
-                        "屬性 map 中使用 run_id: $run_id；EXTRACTED_RELATION 也必須限定 run_id。"
                         "不可使用 CALL、子查詢、函式、字串常值、註解或寫入子句；必須把查詢值放入 params。"
                         f"查詢須回傳 `evidence {{ .evidence_id, .kind, .name, .text, .source_documents, "
                         f".source_pages, .source_chunk_numbers, .source_references_json }} AS evidence LIMIT {result_limit}`。"
@@ -246,7 +234,7 @@ class AgenticSearch2RetrievalStrategy:
         result_limit: int,
     ) -> list[dict[str, Any]]:
         query, query_params = validate_readonly_cypher(
-            cypher, params, context.run_id, result_limit,
+            cypher, params, result_limit,
         )
 
         def operation() -> list[dict[str, Any]]:
@@ -279,7 +267,7 @@ class AgenticSearch2RetrievalStrategy:
             query_vector=context.embedding,
             top_k=seed_limit,
             effective_search_ratio=params.get("effective_search_ratio", 3),
-            query_params={"run_id": context.run_id},
+            query_params={},
         ))
         accumulated = [
             dict(item.content) for item in result.items if isinstance(item.content, dict)

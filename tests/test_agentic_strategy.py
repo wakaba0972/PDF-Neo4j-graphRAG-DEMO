@@ -93,7 +93,7 @@ def test_agentic_strategy_uses_llm_choices_and_real_graph_hops(monkeypatch):
 
     monkeypatch.setattr(agentic, "_post_json", choose_path)
     context = SimpleNamespace(
-        driver=driver, database="neo4j", run_id="run-1", question="A 會影響什麼？",
+        driver=driver, database="neo4j", question="A 會影響什麼？",
         embedding=[0.1], vector_index_name="index", fulltext_index_name="fulltext",
         retrieval_query="RETURN evidence", result_formatter=agentic._format_record,
         retry=lambda operation: operation(), model_base_url="https://api.example/v1",

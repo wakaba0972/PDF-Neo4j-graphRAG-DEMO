@@ -49,7 +49,7 @@ class HybridRetrievalStrategy:
             query_vector=context.embedding,
             top_k=config.params.get("candidate_top_k", config.top_k),
             effective_search_ratio=config.params.get("effective_search_ratio", 3),
-            query_params={"run_id": context.run_id},
+            query_params={},
             ranker=config.params.get("ranker", "naive"),
         ))
         return [

@@ -142,7 +142,7 @@ class AgenticSearch3RetrievalStrategy:
             f"""
             CALL db.index.fulltext.queryNodes($index_name, $query, {{limit: $search_limit}})
             YIELD node, score
-            WHERE node:GraphEvidence AND node.run_id = $run_id
+            WHERE node:GraphEvidence
             RETURN node {_EVIDENCE_PROJECTION} AS evidence, score
             ORDER BY score DESC
             LIMIT $limit
@@ -151,7 +151,6 @@ class AgenticSearch3RetrievalStrategy:
             query=query,
             search_limit=min(max(limit * 20, 100), 500),
             limit=limit,
-            run_id=context.run_id,
         )
 
     @staticmethod
@@ -163,21 +162,19 @@ class AgenticSearch3RetrievalStrategy:
         return AgenticSearch3RetrievalStrategy._read(
             context,
             f"""
-            MATCH (seed:GraphEvidence {{run_id: $run_id}})
+            MATCH (seed:GraphEvidence)
             WHERE seed.evidence_id IN $evidence_ids
             MATCH (seed)-[:MENTIONS_ENTITY|REPRESENTS|EVIDENCE_SOURCE|EVIDENCE_TARGET]-
-                (origin:ExtractedEntity {{run_id: $run_id}})
+                (origin:ExtractedEntity)
             MATCH path=(origin)-[:EXTRACTED_RELATION*0..2]-
-                (neighbor:ExtractedEntity {{run_id: $run_id}})
-            WHERE all(rel IN relationships(path) WHERE rel.run_id = $run_id)
-            MATCH (evidence:GraphEvidence {{run_id: $run_id}})-
+                (neighbor:ExtractedEntity)
+            MATCH (evidence:GraphEvidence)-
                 [:MENTIONS_ENTITY|REPRESENTS|EVIDENCE_SOURCE|EVIDENCE_TARGET]-
                 (neighbor)
             RETURN DISTINCT evidence {_EVIDENCE_PROJECTION} AS evidence,
                    0.0 AS score
             LIMIT $limit
             """,
-            run_id=context.run_id,
             evidence_ids=evidence_ids,
             limit=limit,
         )
@@ -191,9 +188,9 @@ class AgenticSearch3RetrievalStrategy:
         return AgenticSearch3RetrievalStrategy._read(
             context,
             f"""
-            MATCH (source:GraphEvidence {{run_id: $run_id}})
+            MATCH (source:GraphEvidence)
             WHERE source.evidence_id IN $evidence_ids
-            MATCH (chunk:GraphEvidence {{run_id: $run_id, kind: '原文'}})
+            MATCH (chunk:GraphEvidence {{kind: '原文'}})
             WHERE any(number IN coalesce(source.source_chunk_numbers, [])
                       WHERE number IN coalesce(chunk.source_chunk_numbers, []))
               AND any(document IN coalesce(source.source_documents, [])
@@ -201,7 +198,6 @@ class AgenticSearch3RetrievalStrategy:
             RETURN DISTINCT chunk {_EVIDENCE_PROJECTION} AS evidence, 0.0 AS score
             LIMIT $limit
             """,
-            run_id=context.run_id,
             evidence_ids=evidence_ids,
             limit=limit,
         )
@@ -330,7 +326,7 @@ class AgenticSearch3RetrievalStrategy:
             query_vector=context.embedding,
             top_k=seed_limit,
             effective_search_ratio=params.get("effective_search_ratio", 3),
-            query_params={"run_id": context.run_id},
+            query_params={},
         ))
         accumulated = [
             dict(item.content) for item in seed_result.items if isinstance(item.content, dict)

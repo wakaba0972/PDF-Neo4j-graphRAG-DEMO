@@ -9,7 +9,7 @@ from strategies.implementations.agentic_search_2 import strategy as agentic2
 
 
 SAFE_QUERY = """
-MATCH (evidence:GraphEvidence {run_id: $run_id, evidence_id: $evidence_id})
+MATCH (evidence:GraphEvidence {evidence_id: $evidence_id})
 RETURN evidence {
   .evidence_id, .kind, .name, .text, .source_documents, .source_pages,
   .source_chunk_numbers, .source_references_json
@@ -20,16 +20,15 @@ LIMIT 100
 
 def test_cypher_validator_scopes_parameters_and_clamps_limit():
     query, params = agentic2.validate_readonly_cypher(
-        SAFE_QUERY, {"evidence_id": "seed-1"}, "run-1", result_limit=6,
+        SAFE_QUERY, {"evidence_id": "seed-1"}, result_limit=6,
     )
 
     assert query.endswith("LIMIT 6")
-    assert params == {"run_id": "run-1", "evidence_id": "seed-1"}
+    assert params == {"evidence_id": "seed-1"}
 
 
 @pytest.mark.parametrize("query", [
     SAFE_QUERY.replace("RETURN evidence", "CREATE (n) RETURN evidence"),
-    SAFE_QUERY.replace("{run_id: $run_id, evidence_id: $evidence_id}", "{evidence_id: $evidence_id}"),
     SAFE_QUERY.replace("GraphEvidence", "SecretLabel"),
     SAFE_QUERY.replace("LIMIT 100", "LIMIT $max_rows"),
     SAFE_QUERY + "; MATCH (x) RETURN x",
@@ -37,7 +36,7 @@ def test_cypher_validator_scopes_parameters_and_clamps_limit():
 def test_cypher_validator_rejects_unsafe_or_unscoped_queries(query):
     with pytest.raises(ValueError):
         agentic2.validate_readonly_cypher(
-            query, {"evidence_id": "seed-1"}, "run-1", result_limit=6,
+            query, {"evidence_id": "seed-1"}, result_limit=6,
         )
 
 
@@ -139,6 +138,6 @@ def test_agentic_search_2_uses_multiple_llm_rounds_and_read_transaction(monkeypa
     assert plans[1][1][0]["new_evidence_count"] == 1
     assert driver.current_session.options["default_access_mode"] == agentic2.READ_ACCESS
     assert driver.current_session.transaction_options == {"timeout": 5.0}
-    assert driver.current_session.transaction.queries[0][1]["run_id"] == "current-run"
+    assert driver.current_session.transaction.queries[0][1] == {"evidence_id": "seed"}
     assert driver.current_session.transaction.queries[0][0].endswith("LIMIT 6")
 

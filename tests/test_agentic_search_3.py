@@ -88,7 +88,7 @@ def _config() -> RetrievalConfig:
 
 def _context(driver):
     return SimpleNamespace(
-        driver=driver, database="neo4j", run_id="active-run", question="問題？",
+        driver=driver, database="neo4j", question="問題？",
         embedding=[0.1], vector_index_name="vectors", fulltext_index_name="fulltext",
         retrieval_query="RETURN evidence", result_formatter=agentic3._format_record,
         retry=lambda operation: operation(), model_base_url="https://api.example/v1",
@@ -144,7 +144,7 @@ def test_agentic_search_3_executes_llm_selected_readonly_tool_calls(monkeypatch)
     assert driver.session_instance.transaction.options == {"timeout": 5.0}
     query, params = driver.session_instance.transaction.queries[0]
     assert "db.index.fulltext.queryNodes" in query
-    assert params["run_id"] == "active-run"
+    assert "run_id" not in params
     assert params["limit"] == 3
     assert params["search_limit"] == 100
 

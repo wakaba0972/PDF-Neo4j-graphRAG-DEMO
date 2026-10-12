@@ -78,7 +78,7 @@ def build_project_summary(project: dict[str, Any]) -> dict[str, Any]:
         "chunk_size": build_config.get("chunk_size", settings.get("chunk_size")),
         "chunk_overlap": build_config.get("chunk_overlap", settings.get("chunk_overlap")),
         "schema_granularity": schema_granularity,
-        "graph_built": bool(graph_state.get("run_id")),
+        "graph_built": bool(graph_state.get("document") or graph_state.get("graph_data_file")),
         "updated_at": project.get("updated_at", ""),
     }
 
@@ -281,6 +281,9 @@ def load_project_metadata(
             project["graph_state"] = graph_state
         project_dir = Path(root) / project_id
         changed = False
+        if "run_id" in graph_state:
+            graph_state.pop("run_id", None)
+            changed = True
         has_inline_graph = "entities" in graph_state or "relationships" in graph_state
         if has_inline_graph and not graph_state.get("graph_data_file"):
             graph_payload = {
@@ -568,6 +571,11 @@ def _save_project_unlocked(
                 by_name[source.name] = len(documents)
                 documents.append(record)
     payload_for_storage = dict(payload)
+    incoming_graph_state = payload_for_storage.get("graph_state")
+    if isinstance(incoming_graph_state, dict) and "run_id" in incoming_graph_state:
+        incoming_graph_state = dict(incoming_graph_state)
+        incoming_graph_state.pop("run_id", None)
+        payload_for_storage["graph_state"] = incoming_graph_state
     graph_state_for_chunks = payload_for_storage.get("graph_state")
     has_graph_chunks = isinstance(graph_state_for_chunks, dict) and "chunks" in graph_state_for_chunks
     if "chunks" in payload or has_graph_chunks:
