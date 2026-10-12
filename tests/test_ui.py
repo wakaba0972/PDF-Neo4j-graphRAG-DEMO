@@ -1266,7 +1266,8 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert loaded[0]["project_id"] == created["project_id"]
     assert loaded[11:13] == (1200, 100)
     assert loaded[22][0].text == "內容"
-    assert "per_document" in loaded
+    assert loaded[37] == {"effective_search_ratio": 6}
+    assert loaded[38] == "per_document"
     parameter_entries = ui._strategy_parameter_entries()
     assert loaded[-len(parameter_entries) - 1] == {"effective_search_ratio": 6}
     hybrid_ratio = next(

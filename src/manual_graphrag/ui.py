@@ -1219,6 +1219,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         )
     else:
         graph_status, import_status = "尚未執行抽取。", "尚未執行 Embedding 與匯入。"
+    strategy_parameter_updates = _single_strategy_parameter_updates(project_retrieval)
     return (
         _project_ui_state(project), f"✅ 已載入專案「{project['name']}」。",
         get("neo4j_uri", env["NEO4J_URI"]), project.get("neo4j_database") or project_database_name(project_id),
@@ -1251,8 +1252,9 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
             visible=str(get("answer_model", DEFAULT_LLM_MODEL) or "").casefold() == GPT_6_LUNA_MODEL,
             choices=list(GPT_6_LUNA_REASONING_EFFORTS),
         ),
+        strategy_parameter_updates[0],
         get("graph_partition_mode", "merged"),
-        *_single_strategy_parameter_updates(project_retrieval),
+        *strategy_parameter_updates[1:],
     )
 
 
