@@ -2826,7 +2826,7 @@ def test_remove_inline_group_accepts_integral_value_for_float_strategy_parameter
     monkeypatch.chdir(tmp_path)
     project = ui.create_project("experiment-float-parameter")
     agentic_config = ui._retrieval_config_from_controls(
-        ui.RETRIEVAL_STRATEGIES.labels["agentic_search_2"],
+        ui.RETRIEVAL_STRATEGIES.labels["agentic_search_3"],
         10, "停用", "停用", {"max_runtime_seconds": 45.0},
     )
     groups = [
@@ -2836,7 +2836,7 @@ def test_remove_inline_group_accepts_integral_value_for_float_strategy_parameter
     values = ui._inline_group_values(groups)
     parameter_index = next(
         index for index, (strategy_id, name, _) in enumerate(ui._strategy_parameter_entries())
-        if strategy_id == "agentic_search_2" and name == "max_runtime_seconds"
+        if strategy_id == "agentic_search_3" and name == "max_runtime_seconds"
     )
     values[ui.EXPERIMENT_GROUP_COMPONENTS + ui.EXPERIMENT_GROUP_FIELDS + parameter_index] = 45
 

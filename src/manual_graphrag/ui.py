@@ -6256,8 +6256,8 @@ def build_app() -> gr.Blocks:
             gr.Markdown(
                 "直接使用連線設定中的 Neo4j；預設查詢最近更新的建圖結果。"
                 "可選擇使用 LLM Reranker 重排候選，或啟用證據擴展。"
-                "Agentic Search 以 LLM 選擇圖譜候選路徑；Agentic Search 2 可多輪提出受限唯讀 Cypher，"
-                "程式會限定圖譜標籤、每輪筆數、輪數與執行時間。"
+                "Agentic Search 以 LLM 選擇圖譜候選路徑；Agentic Search 3 透過固定唯讀工具自主搜尋，"
+                "程式會限定圖譜標籤、工具呼叫數與執行時間。"
             )
             answer_model = gr.Dropdown(
                 choices=llm_choices,

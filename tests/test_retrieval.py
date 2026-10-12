@@ -97,6 +97,7 @@ def test_builtin_strategy_registry_loads_implementations_from_yaml() -> None:
     assert hybrid.strategy_id == "hybrid"
     assert vector.__class__.__module__ == "strategies.implementations.vector.strategy"
     assert hybrid.__class__.__module__ == "strategies.implementations.hybrid.strategy"
+    assert "agentic_search_2" not in RETRIEVAL_STRATEGIES.ids()
 
 
 def test_strategy_specs_load_yaml_and_implementation_from_strategy_directory(tmp_path: Path, request) -> None:
