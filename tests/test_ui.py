@@ -214,7 +214,6 @@ def test_build_app_wires_project_state_change_to_banner() -> None:
 def test_model_fields_only_offer_initially_checked_models() -> None:
     app = build_app()
     labels = {
-        "Schema 規劃 LLM",
         "知識圖譜抽取 LLM",
         "Embedding 模型",
         "生題模型",
@@ -246,7 +245,7 @@ def test_graph_controls_are_above_schema_and_type_limit_fields_are_removed() -> 
         for component in components
         if isinstance((value := component.get("props", {}).get("value")), str)
     }
-    schema_heading = ids_by_value["#### ①（可選）規劃 Schema"]
+    schema_heading = ids_by_value["#### ① 抽取實體與關係"]
     assert ids_by_value["⏸ 暫停"] < schema_heading
     assert ids_by_value["⏹ 停止"] < schema_heading
     labels = {component.get("props", {}).get("label") for component in components}
@@ -263,14 +262,14 @@ def test_pages_three_through_five_default_judge_fields_to_luna(monkeypatch) -> N
     monkeypatch.setattr(ui, "preferred_service_model", lambda state: "gpt-4.1-mini")
     app = build_app()
     labels = {
-        "Schema 規劃 LLM", "知識圖譜抽取 LLM", "生題模型", "回答模型", "評測模型", "問答 LLM",
+        "知識圖譜抽取 LLM", "生題模型", "回答模型", "評測模型", "問答 LLM",
     }
     fields = [
         component for component in app.config["components"]
         if component.get("props", {}).get("label") in labels
         and component.get("props", {}).get("visible", True)
     ]
-    assert len(fields) == 6
+    assert len(fields) == 5
     assert all(
         field["props"]["value"] == "gpt-6-luna"
         for field in fields
@@ -335,15 +334,20 @@ def test_pause_and_stop_buttons_bypass_the_queue() -> None:
     assert any(target[0] == stop_button["id"] for target in stop_dependencies[0]["targets"])
 
 
-def test_plan_schema_button_uses_primary_variant() -> None:
+def test_schema_planner_is_removed_from_graph_build_ui() -> None:
     app = build_app()
-    button = next(
-        component
+    labels = {
+        component.get("props", {}).get("label")
         for component in app.config["components"]
-        if component.get("props", {}).get("value") == "分析文件並規劃 Schema（可選）"
-    )
-
-    assert button["props"]["variant"] == "primary"
+    }
+    values = [
+        component.get("props", {}).get("value")
+        for component in app.config["components"]
+    ]
+    assert "Schema 規劃 LLM" not in labels
+    assert "用於規劃 Schema 的 PDF" not in labels
+    assert "分析文件並規劃 Schema（可選）" not in values
+    assert "自訂 Schema 約束（選填 JSON；留白時直接依文本抽取）" in labels
 
 
 def test_project_page_uses_automatic_refresh_and_save() -> None:
@@ -432,7 +436,7 @@ def test_all_concurrency_inputs_default_to_ten_without_provider_hints() -> None:
         if "最大並行請求數" in str(component.get("props", {}).get("label", ""))
     ]
 
-    assert len(concurrency_inputs) == 8
+    assert len(concurrency_inputs) == 7
     assert all(component["props"].get("value") == 10 for component in concurrency_inputs)
     assert all(not component["props"].get("info") for component in concurrency_inputs)
 
@@ -929,15 +933,10 @@ def test_pdf_table_has_checkbox_and_new_project_resets_visible_status() -> None:
         and str(dependency.get("api_name", "")).startswith("reset_new_project_pdf_status_for_ui")
         for dependency in app.config["dependencies"]
     )
-    schema_selector = next(
-        component for component in components
-        if component.get("props", {}).get("label") == "用於規劃 Schema 的 PDF"
+    assert not any(
+        component.get("props", {}).get("label") == "用於規劃 Schema 的 PDF"
+        for component in components
     )
-    assert schema_selector["type"] == "dataframe"
-    assert schema_selector["props"]["headers"] == ["使用", "PDF"]
-    assert schema_selector["props"]["datatype"] == ["bool", "str"]
-    assert schema_selector["props"]["static_columns"] == [1]
-    assert schema_selector["props"]["max_height"] == 300
     assert not any(
         component.get("props", {}).get("label") in {"Schema 規劃範圍", "隨機抽取頁數 N"}
         for component in components
@@ -3466,43 +3465,6 @@ def test_toggle_pause_for_ui_flips_state_and_button_label() -> None:
     assert control.is_paused is False
 
 
-def test_plan_schema_for_ui_reports_stopped_status(monkeypatch) -> None:
-    monkeypatch.setattr(
-        ui, "plan_graph_schema",
-        lambda *args, **kwargs: (_ for _ in ()).throw(ui.RunCancelled("stopped")),
-    )
-
-    status, schema_text = ui.plan_schema_for_ui(
-        "http://models/v1", "key", "llm", 0.3, "平衡", 3,
-        [[True, "manual.pdf"]], [TextChunk(1, "text", (1,), "manual.pdf")], ui.RunControl(),
-    )
-
-    assert status.startswith("⏹")
-    assert schema_text == ""
-
-
-def test_schema_documents_default_to_all_and_require_a_selection() -> None:
-    update = ui.schema_documents_for_ui([
-        {"file_name": "a.pdf"},
-        {"file_name": "b.pdf"},
-    ])
-    assert update["value"] == [[True, "a.pdf"], [True, "b.pdf"]]
-
-    status, schema_text = ui.plan_schema_for_ui(
-        "http://models/v1",
-        "key",
-        "llm",
-        0.3,
-        "平衡",
-        3,
-        [],
-        [TextChunk(1, "text", (1,), "a.pdf")],
-        ui.RunControl(),
-    )
-    assert status == "❌ 請至少勾選一份用於規劃 Schema 的 PDF"
-    assert schema_text == ""
-
-
 def test_extract_graph_for_ui_reports_stopped_status(monkeypatch) -> None:
     monkeypatch.setattr(
         ui, "extract_graph",
@@ -3516,51 +3478,6 @@ def test_extract_graph_for_ui_reports_stopped_status(monkeypatch) -> None:
     )
 
     assert result == ("⏹ 已停止（使用者中止抽取）。", [], [], {})
-
-
-def test_plan_schema_for_ui_returns_editable_json(monkeypatch) -> None:
-    from manual_graphrag.graph_service import SchemaPlan
-
-    captured = {}
-
-    def fake_plan(*args, **kwargs):
-        captured["chunks"] = args[3]
-        return SchemaPlan(
-            {"entity_types": [{"name": "DEVICE"}], "relationship_types": [{"name": "USES"}]},
-            5,
-            5,
-            2,
-            1,
-        )
-
-    monkeypatch.setattr(
-        ui,
-        "plan_graph_schema",
-        fake_plan,
-    )
-
-    status, schema_text = ui.plan_schema_for_ui(
-        "http://models/v1",
-        "key",
-        "llm",
-        0.3,
-        "平衡",
-        3,
-        [[True, "a.pdf"], [False, "b.pdf"]],
-        [
-            TextChunk(1, "A", (1,), "a.pdf"),
-            TextChunk(2, "B", (1, 2), "b.pdf"),
-        ],
-        ui.RunControl(),
-    )
-
-    assert status.startswith("✅")
-    assert "1 份 PDF（a.pdf）的全部 1 頁、5 個 chunk" in status
-    assert [chunk.document for chunk in captured["chunks"]] == ["a.pdf"]
-    assert "共 2 批、1 輪整合" in status
-    assert "粒度：平衡。" in status
-    assert "類型上限" not in status
-    assert json.loads(schema_text)["entity_types"][0]["name"] == "DEVICE"
 
 
 def test_extract_graph_for_ui_formats_tables_and_state(monkeypatch) -> None:
@@ -3631,7 +3548,7 @@ def test_extract_graph_for_ui_formats_tables_and_state(monkeypatch) -> None:
     assert "進行 Embedding 並匯入 Neo4j" in status
 
 
-def test_extract_graph_for_ui_allows_skipping_schema_planning(monkeypatch) -> None:
+def test_extract_graph_for_ui_defaults_to_direct_text_extraction(monkeypatch) -> None:
     from manual_graphrag.graph_service import GraphExtraction
 
     captured = {}
@@ -4141,9 +4058,6 @@ def test_project_list_refreshes_on_page_load_and_tab_select_without_focus_rerend
 
 
 def test_unselected_models_report_actionable_errors_without_network() -> None:
-    plan = ui.plan_schema_for_ui(
-        "", "", None, 0, "平衡", 1, [], [], ui.RunControl(),
-    )
     extraction = ui.extract_graph_for_ui("", "", None, 0, 1, [], "{}", [], ui.RunControl())
     generation = ui.generate_evaluation_for_ui("project", "", "", None, None, 1, "基本檢索", 1, [])
     evaluation = ui.run_evaluation_for_ui(
@@ -4155,7 +4069,7 @@ def test_unselected_models_report_actionable_errors_without_network() -> None:
         "", "", "", "", "", "", None,
         {"document": "manual.pdf", "schema": {}, "entities": [], "relationships": []},
     )
-    for result in [plan, extraction, generation, evaluation, answer, embedding]:
+    for result in [extraction, generation, evaluation, answer, embedding]:
         assert result[0].startswith("❌")
         assert "選擇" in result[0]
 

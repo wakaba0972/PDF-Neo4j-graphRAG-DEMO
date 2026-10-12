@@ -45,7 +45,6 @@ from .graph_service import (
     RunControl,
     check_model_connection,
     extract_graph,
-    plan_graph_schema,
     validate_schema,
 )
 from .human_review import (
@@ -1139,7 +1138,7 @@ def save_project_for_ui(
         "answer_model": answer_model,
         "chunk_size": int(chunk_size), "chunk_overlap": int(chunk_overlap),
         "graph_temperature": float(graph_temperature),
-        "schema_granularity": schema_granularity,
+        "schema_granularity": None,
         "max_concurrent_requests": int(max_concurrent_requests),
         "extraction_llm_model": extraction_llm_model,
         "extraction_max_concurrent_requests": int(extraction_max_concurrent_requests),
@@ -1229,7 +1228,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         get("extraction_llm_model", DEFAULT_LLM_MODEL),
         get("extraction_max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
-        *project_retrieval.ui_values()[:2], get("schema_text", ""),
+        *project_retrieval.ui_values()[:2], "",
         documents, chunks, graph, active_preview, active_chunks,
         _document_rows(documents), _document_choices(documents),
         _chunk_rows(active_chunks), document_status,
@@ -5391,110 +5390,6 @@ def next_document(
     return switch_document(1, documents, chunks, active)
 
 
-def schema_documents_for_ui(
-    documents: list[dict[str, Any]] | None,
-) -> dict[str, Any]:
-    names = [
-        str(document.get("file_name") or "")
-        for document in (documents or [])
-        if document.get("file_name")
-    ]
-    return gr.update(value=[[True, name] for name in names])
-
-
-def _selected_schema_documents(rows: Any) -> list[str]:
-    if isinstance(rows, dict) and "data" in rows:
-        rows = rows["data"]
-    elif hasattr(rows, "values") and hasattr(rows.values, "tolist"):
-        rows = rows.values.tolist()
-    if not isinstance(rows, list):
-        return []
-    return list(dict.fromkeys(
-        str(row[1])
-        for row in rows
-        if isinstance(row, (list, tuple))
-        and len(row) >= 2
-        and row[0] is True
-        and row[1]
-    ))
-
-
-def _select_schema_planning_chunks(
-    chunks: list[TextChunk], document_rows: Any
-) -> tuple[list[TextChunk], list[str], int]:
-    if not chunks:
-        raise ValueError("請先在 PDF 頁面解析並產生 chunks")
-    selected = _selected_schema_documents(document_rows)
-    if not selected:
-        raise ValueError("請至少勾選一份用於規劃 Schema 的 PDF")
-    available_documents = {chunk.document for chunk in chunks}
-    unknown = [document for document in selected if document not in available_documents]
-    if unknown:
-        unknown_text = "、".join(unknown)
-        raise ValueError(f"找不到選取的 PDF：{unknown_text}")
-    selected_set = set(selected)
-    selected_chunks = [
-        chunk for chunk in chunks if chunk.document in selected_set
-    ]
-    page_count = len({
-        (chunk.document, page)
-        for chunk in selected_chunks
-        for page in chunk.pages
-    })
-    return selected_chunks, selected, page_count
-
-
-def plan_schema_for_ui(
-    model_endpoint: str,
-    api_key: str,
-    llm_model: str,
-    temperature: float,
-    schema_granularity: str,
-    max_concurrent_requests: int,
-    document_rows: Any,
-    chunks: list[TextChunk],
-    run_control: RunControl,
-    reasoning_effort: str | None = None,
-    progress=gr.Progress(),
-) -> tuple[str, str]:
-    if not llm_model:
-        return "❌ 請先勾選並選擇 Schema 規劃 LLM。", ""
-    run_control.reset()
-    try:
-        planning_chunks, planned_documents, page_count = _select_schema_planning_chunks(
-            chunks, document_rows
-        )
-        plan = plan_graph_schema(
-            model_endpoint,
-            api_key,
-            llm_model,
-            planning_chunks,
-            float(temperature),
-            lambda value, description: progress(value, desc=description),
-            schema_granularity,
-            int(max_concurrent_requests),
-            control=run_control,
-            **_reasoning_effort_kwargs(llm_model, reasoning_effort),
-        )
-    except RunCancelled:
-        return "⏹ 已停止（使用者中止 Schema 規劃）。", ""
-    except ValueError as exc:
-        return f"❌ {exc}", ""
-    document_text = "、".join(planned_documents)
-    scope_note = (
-        f"{len(planned_documents)} 份 PDF（{document_text}）的全部 {page_count} 頁"
-    )
-    note = (
-        f"✅ 已使用 {llm_model} 規劃 schema；參考 {scope_note}、"
-        f"{plan.analyzed_chunks} 個 chunk，"
-        f"共 {plan.batch_count} 批、{plan.merge_rounds} 輪整合。"
-        f"粒度：{schema_granularity}。"
-        f"最大並行請求數：{int(max_concurrent_requests)}。"
-        "請確認或編輯後再進行抽取。"
-    )
-    return note, json.dumps(plan.schema, ensure_ascii=False, indent=2)
-
-
 def extract_graph_for_ui(
     model_endpoint: str,
     api_key: str,
@@ -6131,64 +6026,36 @@ def build_app() -> gr.Blocks:
                     )
 
         with gr.Tab("1-3 建圖", interactive=False) as graph_tab:
-            gr.Markdown("### 規劃並抽取知識圖譜")
+            gr.Markdown("### 從文件文本抽取知識圖譜")
             with gr.Row():
                 pause_button = gr.Button("⏸ 暫停")
                 stop_button = gr.Button("⏹ 停止", variant="stop")
             run_control_status = gr.Markdown(
-                "「暫停」「停止」在下方「規劃 Schema」或「抽取實體與關係」"
+                "「暫停」「停止」在下方「抽取實體與關係」"
                 "執行中都可使用：暫停只會停止送出新批次（已送出的批次仍會跑完）；"
                 "停止會盡快中止整個流程。"
             )
+            # Retain old project-setting slots for loading/saving compatibility.
+            # Schema planning has been removed; extraction uses the model below.
+            graph_llm_model = gr.Dropdown(
+                choices=llm_choices, value=preferred_llm, visible=False,
+            )
+            graph_reasoning_effort = gr.Dropdown(
+                choices=list(GPT_6_LUNA_REASONING_EFFORTS),
+                value=DEFAULT_REASONING_EFFORT, visible=False,
+            )
+            schema_granularity = gr.Radio(
+                ["粗略", "平衡", "詳細"], value="平衡", visible=False,
+            )
+            max_concurrent_requests = gr.Number(
+                value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1,
+                precision=0, visible=False,
+            )
             with gr.Group():
-                gr.Markdown("#### ①（可選）規劃 Schema")
+                gr.Markdown("#### ① 抽取實體與關係")
                 gr.Markdown(
-                    "選擇 LLM，從上一頁產生的 chunks 規劃實體與關係類型。"
+                    "系統會直接閱讀已解析的文件文本並抽取實體與關係；不需要先規劃 Schema。"
                 )
-                with gr.Row():
-                    graph_llm_model = gr.Dropdown(
-                        choices=llm_choices,
-                        value=preferred_llm,
-                        allow_custom_value=False,
-                        label="Schema 規劃 LLM",
-                    )
-                    graph_reasoning_effort = gr.Dropdown(
-                        choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                        value=DEFAULT_REASONING_EFFORT, label="推理強度",
-                        visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
-                    )
-                    graph_temperature = gr.Slider(
-                        0, 2, value=0, step=0.1, label="Temperature",
-                        info="選用 GPT-6 Luna 且推理強度非 none 時，API 請求會略過此參數。",
-                    )
-                with gr.Row():
-                    schema_granularity = gr.Radio(
-                        ["粗略", "平衡", "詳細"],
-                        value="平衡",
-                        label="Schema 粒度",
-                    )
-                    max_concurrent_requests = gr.Number(
-                        value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
-                        label="最大並行請求數",
-                    )
-                schema_documents = gr.Dataframe(
-                    headers=["使用", "PDF"],
-                    datatype=["bool", "str"],
-                    type="array",
-                    value=[],
-                    interactive=True,
-                    static_columns=[1],
-                    row_count=(0, "fixed"),
-                    col_count=(2, "fixed"),
-                    max_height=300,
-                    wrap=True,
-                    label="用於規劃 Schema 的 PDF",
-                )
-                gr.Markdown("預設全選；每份勾選的 PDF 都會讀取整份文件。")
-                plan_schema_button = gr.Button(
-                    "分析文件並規劃 Schema（可選）", variant="primary"
-                )
-                plan_status = gr.Markdown("請先在 PDF 頁面解析並產生 chunks。")
                 gr.HTML(
                     """
                     <style>
@@ -6201,7 +6068,7 @@ def build_app() -> gr.Blocks:
                     padding=False,
                 )
                 schema_editor = gr.Code(
-                    label="實體與關係 Schema（可編輯 JSON）",
+                    label="自訂 Schema 約束（選填 JSON；留白時直接依文本抽取）",
                     language="json",
                     interactive=True,
                     lines=18,
@@ -6211,10 +6078,9 @@ def build_app() -> gr.Blocks:
                 )
 
             with gr.Group():
-                gr.Markdown("#### ② 抽取實體與關係")
+                gr.Markdown("#### 抽取設定")
                 gr.Markdown(
-                    "若已規劃 Schema，可確認上方 JSON 後抽取；若跳過規劃並留白，"
-                    "系統會直接從文件抽取實體與關係。檢查結果後，再手動匯入 Neo4j。"
+                    "Schema 欄位留白即可由系統直接依文本抽取。檢查抽取結果後，再手動匯入 Neo4j。"
                 )
                 extraction_llm_model = gr.Dropdown(
                     choices=llm_choices,
@@ -6232,6 +6098,10 @@ def build_app() -> gr.Blocks:
                     minimum=1,
                     precision=0,
                     label="最大並行請求數",
+                )
+                graph_temperature = gr.Slider(
+                    0, 2, value=0, step=0.1, label="Temperature",
+                    info="選用 GPT-6 Luna 且推理強度非 none 時，API 請求會略過此參數。",
                 )
                 generate_graph_button = gr.Button(
                     "抽取實體與關係", variant="primary"
@@ -6254,7 +6124,7 @@ def build_app() -> gr.Blocks:
                 )
 
             with gr.Group():
-                gr.Markdown("#### ③ Embedding 並匯入 Neo4j")
+                gr.Markdown("#### ② Embedding 並匯入 Neo4j")
                 gr.Markdown(
                     "確認上方抽取結果後，選擇 Embedding 模型與最大並行請求數，再匯入 Neo4j。"
                 )
@@ -7834,18 +7704,6 @@ def build_app() -> gr.Blocks:
                      embedding_test_button, embedding_list_button, embedding_connection_status],
             show_progress="hidden",
         )
-        load_project_event.success(
-            schema_documents_for_ui,
-            inputs=documents_state,
-            outputs=schema_documents,
-            show_progress="hidden",
-        )
-        initialize_project_event.success(
-            schema_documents_for_ui,
-            inputs=documents_state,
-            outputs=schema_documents,
-            show_progress="hidden",
-        )
         delete_project_button.click(
             request_project_deletion_for_ui,
             inputs=project_selector,
@@ -8099,11 +7957,6 @@ def build_app() -> gr.Blocks:
         preview_event.then(
             save_project_for_ui, inputs=project_setting_inputs,
             outputs=[project_state, project_status], show_progress="hidden",
-        ).then(
-            schema_documents_for_ui,
-            inputs=documents_state,
-            outputs=schema_documents,
-            show_progress="hidden",
         )
         remove_document_event = remove_document_button.click(
             remove_document_for_ui,
@@ -8123,11 +7976,6 @@ def build_app() -> gr.Blocks:
         remove_document_event.then(
             save_project_for_ui, inputs=project_setting_inputs,
             outputs=[project_state, project_status], show_progress="hidden",
-        ).then(
-            schema_documents_for_ui,
-            inputs=documents_state,
-            outputs=schema_documents,
-            show_progress="hidden",
         )
         previous_button.click(
             previous_document,
@@ -8138,22 +7986,6 @@ def build_app() -> gr.Blocks:
             next_document,
             inputs=[documents_state, chunk_state, active_preview_state],
             outputs=[active_preview_state, active_chunks_state, chunk_table, page_status],
-        )
-        plan_schema_button.click(
-            plan_schema_for_ui,
-            inputs=[
-                schema_model_endpoint,
-                schema_model_key,
-                graph_llm_model,
-                graph_temperature,
-                schema_granularity,
-                max_concurrent_requests,
-                schema_documents,
-                chunk_state,
-                run_control_state,
-                graph_reasoning_effort,
-            ],
-            outputs=[plan_status, schema_editor],
         )
         extraction_event = generate_graph_button.click(
             extract_graph_for_ui,
