@@ -346,6 +346,7 @@ class RetrievalContext:
     model_api_key: str = ""
     model: str = ""
     reasoning_effort: str = "low"
+    document_id: str | None = None
 
 
 class RetrievalStrategy(Protocol):

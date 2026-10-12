@@ -143,6 +143,7 @@ class AgenticSearch3RetrievalStrategy:
             CALL db.index.fulltext.queryNodes($index_name, $query, {{limit: $search_limit}})
             YIELD node, score
             WHERE node:GraphEvidence
+              AND ($document_id IS NULL OR node.document_id = $document_id)
             RETURN node {_EVIDENCE_PROJECTION} AS evidence, score
             ORDER BY score DESC
             LIMIT $limit
@@ -151,6 +152,7 @@ class AgenticSearch3RetrievalStrategy:
             query=query,
             search_limit=min(max(limit * 20, 100), 500),
             limit=limit,
+            document_id=getattr(context, "document_id", None),
         )
 
     @staticmethod
@@ -164,6 +166,7 @@ class AgenticSearch3RetrievalStrategy:
             f"""
             MATCH (seed:GraphEvidence)
             WHERE seed.evidence_id IN $evidence_ids
+              AND ($document_id IS NULL OR seed.document_id = $document_id)
             MATCH (seed)-[:MENTIONS_ENTITY|REPRESENTS|EVIDENCE_SOURCE|EVIDENCE_TARGET]-
                 (origin:ExtractedEntity)
             MATCH path=(origin)-[:EXTRACTED_RELATION*0..2]-
@@ -171,12 +174,17 @@ class AgenticSearch3RetrievalStrategy:
             MATCH (evidence:GraphEvidence)-
                 [:MENTIONS_ENTITY|REPRESENTS|EVIDENCE_SOURCE|EVIDENCE_TARGET]-
                 (neighbor)
+            WHERE ($document_id IS NULL OR (
+                evidence.document_id = $document_id
+                AND all(entity IN nodes(path) WHERE entity.document_id = $document_id)
+            ))
             RETURN DISTINCT evidence {_EVIDENCE_PROJECTION} AS evidence,
                    0.0 AS score
             LIMIT $limit
             """,
             evidence_ids=evidence_ids,
             limit=limit,
+            document_id=getattr(context, "document_id", None),
         )
 
     @staticmethod
@@ -190,6 +198,7 @@ class AgenticSearch3RetrievalStrategy:
             f"""
             MATCH (source:GraphEvidence)
             WHERE source.evidence_id IN $evidence_ids
+              AND ($document_id IS NULL OR source.document_id = $document_id)
             MATCH (chunk:GraphEvidence {{kind: '原文'}})
             WHERE source.document_id = chunk.document_id
               AND any(number IN coalesce(source.source_chunk_numbers, [])
@@ -201,6 +210,7 @@ class AgenticSearch3RetrievalStrategy:
             """,
             evidence_ids=evidence_ids,
             limit=limit,
+            document_id=getattr(context, "document_id", None),
         )
 
     @staticmethod
@@ -327,7 +337,7 @@ class AgenticSearch3RetrievalStrategy:
             query_vector=context.embedding,
             top_k=seed_limit,
             effective_search_ratio=params.get("effective_search_ratio", 3),
-            query_params={},
+            query_params={"document_id": getattr(context, "document_id", None)},
         ))
         accumulated = [
             dict(item.content) for item in seed_result.items if isinstance(item.content, dict)

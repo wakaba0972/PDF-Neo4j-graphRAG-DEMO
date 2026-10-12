@@ -229,3 +229,17 @@ def test_agentic_search_3_can_start_with_fulltext_when_vector_has_no_seed(monkey
 
     assert [item["evidence_id"] for item in results] == ["text-hit"]
 
+
+def test_document_scoped_agentic_graph_tool_filters_every_path_node():
+    driver = FakeDriver([])
+    context = _context(driver)
+    context.document_id = "doc-a"
+
+    agentic3.AgenticSearch3RetrievalStrategy._follow_connections(
+        context, ["seed-a"], 5,
+    )
+
+    query, params = driver.session_instance.transaction.queries[-1]
+    assert "all(entity IN nodes(path) WHERE entity.document_id = $document_id)" in query
+    assert params["document_id"] == "doc-a"
+

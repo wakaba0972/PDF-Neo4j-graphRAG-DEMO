@@ -37,6 +37,36 @@ def test_answer_graph_question_omits_max_tokens(monkeypatch) -> None:
     assert "粗體或斜體標記、項目符號、表格或程式碼區塊" in captured["payload"]["messages"][0]["content"]
 
 
+def test_multi_agent_answer_integrates_document_drafts_and_raw_evidence(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(_url, payload, _api_key, **_kwargs):
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": "整合答案"}}]}
+
+    monkeypatch.setattr(qa_service, "_post_json", fake_post)
+    evidence = [{
+        "evidence_id": "ev-1", "text": "原始證據", "document_id": "doc-1",
+        "document_agent_name": "manual.pdf", "document_agent_answer": "文件 Agent 答案",
+        "multi_agent_documents": ["manual.pdf", "other.pdf"],
+    }]
+
+    result = qa_service.answer_graph_question(
+        "http://models/v1", "secret", "model-a", "問題",
+        "multi_agent_search_1", evidence,
+    )
+
+    prompt = captured["payload"]["messages"][0]["content"]
+    user_payload = captured["payload"]["messages"][1]["content"]
+    assert "主 Agent" in prompt
+    assert "manual.pdf" in user_payload and "文件 Agent 答案" in user_payload
+    assert "other.pdf" in user_payload
+    assert "原始證據" in user_payload
+    assert "document_agent_answer" not in user_payload
+    assert result["answer"] == "整合答案"
+    assert result["evidence"] == evidence
+
+
 def test_luna_answer_uses_low_reasoning_without_temperature(monkeypatch) -> None:
     captured = {}
 
