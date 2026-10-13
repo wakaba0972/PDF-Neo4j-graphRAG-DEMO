@@ -126,16 +126,16 @@ def test_current_project_banner_reflects_project_name() -> None:
 
 def test_strategy_selector_options_follow_graph_partition_mode() -> None:
     merged_update = ui._strategy_dropdown_updates_for_graph_mode(
-        "merged", "Multi-Agent Search 1", "混合檢索",
+        "merged", "基本向量檢索", "混合檢索",
     )
     partitioned_update = ui._strategy_dropdown_updates_for_graph_mode(
-        "per_document", "Multi-Agent Search 1", "混合檢索",
+        "per_document", "基本向量檢索", "混合檢索",
     )
 
-    assert "Multi-Agent Search 1" not in merged_update[1]["choices"]
-    assert merged_update[0]["choices"][0][1] == "Multi-Agent Search 1"
-    assert "不相容" in merged_update[0]["choices"][0][0]
-    assert "Multi-Agent Search 1" in partitioned_update[0]["choices"]
+    assert merged_update[0]["choices"] == ["基本向量檢索", "混合檢索", "Agentic Search", "Agentic Search 3"]
+    assert merged_update[1]["choices"] == merged_update[0]["choices"]
+    assert partitioned_update[0]["choices"][0][1] == "基本向量檢索"
+    assert "不相容" in partitioned_update[0]["choices"][0][0]
 
 
 def test_reranker_and_expansion_controls_are_strategy_specific() -> None:

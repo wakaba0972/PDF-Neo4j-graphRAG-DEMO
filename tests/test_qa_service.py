@@ -39,96 +39,6 @@ def test_answer_graph_question_omits_max_tokens(monkeypatch) -> None:
     assert "粗體或斜體標記、項目符號、表格或程式碼區塊" in captured["payload"]["messages"][0]["content"]
 
 
-def test_multi_agent_answer_integrates_document_drafts_and_raw_evidence(monkeypatch) -> None:
-    captured = {}
-
-    def fake_post(_url, payload, _api_key, **_kwargs):
-        captured["payload"] = payload
-        return {"choices": [{"message": {"content": "整合答案"}}]}
-
-    monkeypatch.setattr(qa_service, "_post_json", fake_post)
-    evidence = [{
-        "evidence_id": "ev-1", "text": "原始證據", "document_id": "doc-1",
-        "document_agent_name": "manual.pdf", "document_agent_answer": "文件 Agent 答案",
-        "multi_agent_documents": ["manual.pdf", "other.pdf"],
-    }]
-
-    result = qa_service.answer_graph_question(
-        "http://models/v1", "secret", "model-a", "問題",
-        "multi_agent_search_1", evidence,
-    )
-
-    prompt = captured["payload"]["messages"][0]["content"]
-    user_payload = captured["payload"]["messages"][1]["content"]
-    assert "主 Agent" in prompt
-    assert "manual.pdf" in user_payload and "文件 Agent 答案" in user_payload
-    assert "other.pdf" in user_payload
-    assert "原始證據" in user_payload
-    assert "document_agent_answer" not in user_payload
-    assert result["answer"] == "整合答案"
-    assert result["evidence"] == evidence
-
-
-def test_multi_agent_search_2_passes_chatroom_history_to_final_integrator(monkeypatch) -> None:
-    captured = {}
-
-    def fake_post(_url, payload, _api_key, **_kwargs):
-        captured["payload"] = payload
-        return {"choices": [{"message": {"content": "整合答案"}}]}
-
-    monkeypatch.setattr(qa_service, "_post_json", fake_post)
-    evidence = [{
-        "evidence_id": "ev-1", "text": "原始證據", "document_id": "doc-1",
-        "multi_agent_answers": {"manual.pdf": "查證後答案"},
-        "multi_agent_discussion": [{
-            "phase": "討論第 1 輪", "document": "manual.pdf", "message": "另一份文件有補充說明",
-        }],
-    }]
-
-    qa_service.answer_graph_question(
-        "http://models/v1", "secret", "model-a", "問題",
-        "multi_agent_search_2", evidence,
-    )
-
-    payload = captured["payload"]
-    prompt = payload["messages"][0]["content"]
-    user_content = payload["messages"][1]["content"]
-    assert "聊天室紀錄只代表討論過程" in prompt
-    assert "agent_discussion" in user_content and "討論第 1 輪" in user_content
-    assert "查證後答案" in user_content and "原始證據" in user_content
-    assert "multi_agent_discussion" not in user_content
-
-
-def test_multi_agent_search_3_passes_orchestrator_drafts_and_evidence(monkeypatch) -> None:
-    captured = {}
-
-    def fake_post(_url, payload, _api_key, **_kwargs):
-        captured["payload"] = payload
-        return {"choices": [{"message": {"content": "整合答案"}}]}
-
-    monkeypatch.setattr(qa_service, "_post_json", fake_post)
-    evidence = [{
-        "evidence_id": "ev-3", "text": "原文支持內容", "document_id": "doc-a",
-        "multi_agent_documents": ["a.pdf", "b.pdf"],
-        "multi_agent_answers": {"a.pdf": "文件 Agent 找到相關規格"},
-        "multi_agent_discussion": [{
-            "phase": "主 Agent 查詢第 1 步", "message": "找到來源頁 3",
-        }],
-    }]
-
-    qa_service.answer_graph_question(
-        "http://models/v1", "secret", "model-a", "問題",
-        "multi_agent_search_3", evidence,
-    )
-
-    payload = captured["payload"]
-    assert "主 Agent" in payload["messages"][0]["content"]
-    user_content = payload["messages"][1]["content"]
-    assert "文件 Agent 找到相關規格" in user_content
-    assert "主 Agent 查詢第 1 步" in user_content
-    assert "原文支持內容" in user_content
-
-
 def test_answer_graph_question_rejects_empty_model_completion(monkeypatch) -> None:
     monkeypatch.setattr(
         qa_service, "_post_json",
@@ -139,7 +49,7 @@ def test_answer_graph_question_rejects_empty_model_completion(monkeypatch) -> No
 
     with pytest.raises(ValueError, match="回答模型回傳空白內容.*finish_reason=length"):
         qa_service.answer_graph_question(
-            "http://models/v1", "secret", "model-a", "問題", "multi_agent_search_3",
+            "http://models/v1", "secret", "model-a", "問題", "agentic",
             [{"evidence_id": "ev-1", "text": "來源證據"}],
         )
 

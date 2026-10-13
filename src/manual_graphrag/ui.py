@@ -6263,8 +6263,7 @@ def build_app() -> gr.Blocks:
                 label="圖譜範圍",
                 info=(
                     "文件分區仍存放在同一個專案 Neo4j 資料庫。選擇每份文件各自成圖時，"
-                    "會逐文件抽取；基本向量、混合與 Agentic Search 1／3 僅供合併圖譜，"
-                    "Multi-Agent Search 1 僅供文件分區圖譜。"
+                    "會逐文件抽取；基本向量、混合與 Agentic Search 1／3 僅供合併圖譜。"
                 ),
             )
             with gr.Row():

@@ -710,35 +710,6 @@ def test_search_graph_evidence_uses_official_hybrid_retriever(monkeypatch) -> No
     assert not any("count(node)" in query for query, _parameters in session.calls)
 
 
-def test_document_scoped_strategy_rejects_merged_graph_before_retrieving(monkeypatch) -> None:
-    class GraphModeResult:
-        def single(self):
-            return {"document_count": 2, "partitioned_count": 0}
-
-    class GraphModeSession(SearchSession):
-        def run(self, query, **parameters):
-            self.calls.append((query, parameters))
-            if "MATCH (document:GraphDocument)" in query:
-                return GraphModeResult()
-            raise AssertionError("strategy retrieval must not run on merged graph")
-
-    session = GraphModeSession()
-    monkeypatch.setattr(
-        neo4j_service.GraphDatabase,
-        "driver",
-        lambda *args, **kwargs: SearchDriver(session),
-    )
-    config = RetrievalConfig(strategy_id="multi_agent_search_1", top_k=3)
-
-    with pytest.raises(ValueError, match="目前專案是「所有文件合併」圖譜"):
-        neo4j_service.search_graph_evidence(
-            "bolt://db", "neo4j", "user", "password",
-            "question", [0.1], config,
-        )
-
-    assert len(session.calls) == 1
-
-
 def test_basic_vector_retrieval_uses_vector_cypher_retriever(monkeypatch) -> None:
     session = SearchSession()
     monkeypatch.setattr(
