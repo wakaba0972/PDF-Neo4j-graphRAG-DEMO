@@ -278,7 +278,9 @@ def answer_graph_question(
         "粗體或斜體標記、項目符號、表格或程式碼區塊。"
         "若需要列出多個要點，使用編號形式（例如 1.、2.），每個編號項目前都要空一行。"
     )
-    if strategy_id in {"multi_agent_search_1", "multi_agent_search_2"}:
+    if strategy_id in {
+        "multi_agent_search_1", "multi_agent_search_2", "multi_agent_search_3",
+    }:
         system_instruction += (
             "你是主 Agent。先參考各文件 Agent 的答案草稿，再逐項核對下方原始證據；"
             "只保留有原始證據支持的內容，整合互補資訊、去除重複。"
@@ -313,7 +315,10 @@ def answer_graph_question(
                         "agent_warnings": list(dict.fromkeys(multi_agent_warnings)),
                         "evidence": answer_evidence,
                     }, ensure_ascii=False)
-                    if strategy_id in {"multi_agent_search_1", "multi_agent_search_2"}
+                    if strategy_id in {
+                        "multi_agent_search_1", "multi_agent_search_2",
+                        "multi_agent_search_3",
+                    }
                     else "問題：{}\n\n證據：\n{}".format(
                         question.strip(), json.dumps(evidence, ensure_ascii=False)
                     )

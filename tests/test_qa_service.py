@@ -97,6 +97,36 @@ def test_multi_agent_search_2_passes_chatroom_history_to_final_integrator(monkey
     assert "multi_agent_discussion" not in user_content
 
 
+def test_multi_agent_search_3_passes_orchestrator_drafts_and_evidence(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(_url, payload, _api_key, **_kwargs):
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": "整合答案"}}]}
+
+    monkeypatch.setattr(qa_service, "_post_json", fake_post)
+    evidence = [{
+        "evidence_id": "ev-3", "text": "原文支持內容", "document_id": "doc-a",
+        "multi_agent_documents": ["a.pdf", "b.pdf"],
+        "multi_agent_answers": {"a.pdf": "文件 Agent 找到相關規格"},
+        "multi_agent_discussion": [{
+            "phase": "主 Agent 查詢第 1 步", "message": "找到來源頁 3",
+        }],
+    }]
+
+    qa_service.answer_graph_question(
+        "http://models/v1", "secret", "model-a", "問題",
+        "multi_agent_search_3", evidence,
+    )
+
+    payload = captured["payload"]
+    assert "主 Agent" in payload["messages"][0]["content"]
+    user_content = payload["messages"][1]["content"]
+    assert "文件 Agent 找到相關規格" in user_content
+    assert "主 Agent 查詢第 1 步" in user_content
+    assert "原文支持內容" in user_content
+
+
 def test_luna_answer_uses_low_reasoning_without_temperature(monkeypatch) -> None:
     captured = {}
 

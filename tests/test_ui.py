@@ -3284,8 +3284,8 @@ def test_run_experiment_groups_outputs_each_group_summary_and_details(monkeypatc
 
     assert status.startswith("✅ 已完成 2 個實驗組")
     assert summaries == [
-        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
-        ["混合擴展", "model-b", "Reranker", "證據擴展", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
+        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
+        ["混合擴展", "model-b", "Reranker", "證據擴展", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
     ]
     assert len(details) == len(results) == 4
     assert captured["workers"] == 2
@@ -4664,7 +4664,7 @@ def test_saved_experiment_run_is_sampled_distributed_and_compared_with_human_sco
     assert summaries[0][3] == 5
     assert summaries[0][4] == "0.80"
     assert summaries[0][5] == "1.20"
-    assert retrieval_summaries == [["向量組", 5, "40.0%", "37.0%", "60.0%"]]
+    assert retrieval_summaries == [["向量組", 5, "40.0%", "—", "37.0%", "60.0%"]]
     assert len(details) == 5
     assert {row[12] for row in details} == set(ui.KNOWN_USERS)
     assert {row[13] for row in details} == set(ui.KNOWN_USERS)
@@ -4736,8 +4736,8 @@ def test_human_review_results_show_retrieval_metrics_for_each_experiment_group(t
 
     assert [row[0] for row in human_summaries] == ["向量組", "混合組"]
     assert retrieval_summaries == [
-        ["向量組", 2, "50.0%", "75.0%", "100.0%"],
-        ["混合組", 1, "0.0%", "25.0%", "100.0%"],
+        ["向量組", 2, "50.0%", "—", "75.0%", "100.0%"],
+        ["混合組", 1, "0.0%", "—", "25.0%", "100.0%"],
     ]
 
 

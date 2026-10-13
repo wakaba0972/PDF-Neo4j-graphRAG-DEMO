@@ -1,0 +1,57 @@
+id: multi_agent_search_3
+name: Multi-Agent Search 3（動態協調）
+order: 62
+supported_graph_modes:
+  - per_document
+implementation:
+  file: multi_agent_search_3/strategy.py
+  class: MultiAgentSearch3Strategy
+parameters:
+  candidate_top_k:
+    type: integer
+    minimum: 1
+    maximum: 50
+    minimum_is_top_k: true
+    visible: false
+  result_limit:
+    type: integer
+    label: 每次 Cypher 查詢最多回傳證據數
+    default: 8
+    minimum: 1
+    maximum: 20
+    control: slider
+  max_orchestration_steps:
+    type: integer
+    label: 主 Agent 最多決策步數
+    default: 8
+    minimum: 1
+    maximum: 20
+    control: slider
+  max_tool_calls:
+    type: integer
+    label: 主 Agent 工具呼叫總上限
+    default: 16
+    minimum: 1
+    maximum: 40
+    control: slider
+  max_parallel_agents:
+    type: integer
+    label: 最多派任文件 Agent 數
+    default: 4
+    minimum: 1
+    maximum: 16
+    control: slider
+  worker_max_tool_calls:
+    type: integer
+    label: 每位文件 Agent 最多 Cypher 呼叫數
+    default: 4
+    minimum: 1
+    maximum: 12
+    control: slider
+  max_runtime_seconds:
+    type: number
+    label: 搜尋總時間上限（秒）
+    default: 90.0
+    minimum: 10
+    maximum: 300
+    control: slider
