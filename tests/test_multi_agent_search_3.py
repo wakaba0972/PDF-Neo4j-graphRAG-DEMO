@@ -274,12 +274,36 @@ def test_luna_uses_responses_api_function_tools(monkeypatch):
     message = multi_agent._call_model(
         context,
         [{"role": "system", "content": "系統"}, {"role": "user", "content": "問題"}],
-        multi_agent._tool_schema(allow_delegation=False), 30,
+        multi_agent._tool_schema(allow_delegation=False), 30, require_tool=True,
     )
 
     assert captured["url"].endswith("/responses")
     assert captured["payload"]["instructions"] == "系統"
     assert captured["payload"]["reasoning"] == {"effort": "low"}
+    assert captured["payload"]["tool_choice"] == "required"
     assert captured["payload"]["store"] is False
     assert message["tool_calls"][0]["id"] == "call-1"
     assert message["__responses_output"][0]["type"] == "function_call"
+
+
+def test_chat_completions_can_require_an_initial_tool_call(monkeypatch):
+    context = SimpleNamespace(
+        model_base_url="https://api.example/v1", model_api_key="secret",
+        model="gpt-4.1-mini", reasoning_effort="low",
+    )
+    captured = {}
+
+    def fake_post(url, payload, _api_key, **_kwargs):
+        captured["url"] = url
+        captured["payload"] = payload
+        return {"choices": [{"message": {"tool_calls": []}}]}
+
+    monkeypatch.setattr(multi_agent, "_post_json", fake_post)
+    multi_agent._call_model(
+        context,
+        [{"role": "system", "content": "系統"}, {"role": "user", "content": "問題"}],
+        multi_agent._tool_schema(allow_delegation=True), 30, require_tool=True,
+    )
+
+    assert captured["url"].endswith("/chat/completions")
+    assert captured["payload"]["tool_choice"] == "required"

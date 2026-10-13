@@ -284,6 +284,7 @@ def _call_model(
     context: RetrievalContext, messages: list[dict[str, Any]],
     tools: list[dict[str, Any]], timeout: int,
     responses_input: list[dict[str, Any]] | None = None,
+    *, require_tool: bool = False,
 ) -> dict[str, Any]:
     if not context.model_base_url.strip() or not context.model_api_key.strip() or not context.model.strip():
         raise ValueError("Multi-Agent Search 3 需要可用的 OpenAI 問答模型設定")
@@ -307,7 +308,7 @@ def _call_model(
                 "instructions": system_prompt,
                 "input": input_items,
                 "tools": _responses_tools(tools),
-                "tool_choice": "auto",
+                "tool_choice": "required" if require_tool else "auto",
                 "reasoning": {"effort": effort},
                 "store": False,
             },
@@ -339,7 +340,7 @@ def _call_model(
             "model": context.model.strip(),
             "messages": messages,
             "tools": tools,
-            "tool_choice": "auto",
+            "tool_choice": "required" if require_tool else "auto",
             "temperature": 0,
         }
     response = _post_json(
@@ -407,7 +408,7 @@ class MultiAgentSearch3Strategy:
             message = _call_model(
                 context, messages, tools,
                 max(5, int(deadline - time.monotonic())),
-                responses_input,
+                responses_input, require_tool=(used == 0),
             )
             response_output = message.pop("__responses_output", None)
             calls = message.get("tool_calls")
@@ -528,6 +529,7 @@ class MultiAgentSearch3Strategy:
                 break
             message = _call_model(
                 context, messages, tools, max(5, int(remaining)), responses_input,
+                require_tool=(step == 1),
             )
             response_output = message.pop("__responses_output", None)
             calls = message.get("tool_calls")
