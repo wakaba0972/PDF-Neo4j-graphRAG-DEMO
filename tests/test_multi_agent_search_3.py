@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-import pytest
-
 from manual_graphrag.retrieval import (
     RETRIEVAL_STRATEGIES,
     RetrievalConfig,
@@ -95,31 +93,15 @@ def test_strategy_is_registered_for_document_partitioned_graphs():
     )
 
 
-@pytest.mark.parametrize("query", [
-    "MATCH (n:GraphEvidence) SET n.text = 'changed' RETURN n AS evidence",
-    "MATCH (n:GraphEvidence) DETACH DELETE n RETURN n AS evidence",
-    "MATCH (n:GraphEvidence) CALL db.labels() YIELD label RETURN n AS evidence",
-    "MATCH (n:GraphEvidence) RETURN n AS evidence LIMIT 5",
-    "MATCH p=(a:ExtractedEntity)-[:EXTRACTED_RELATION*..99]->(b) RETURN a AS evidence",
-    "MATCH (n:UnknownLabel) RETURN n AS evidence",
-    "MATCH (n:GraphEvidence) RETURN n AS evidence; CREATE (x)",
-])
-def test_cypher_validator_rejects_writes_admin_unbounded_and_unscoped_features(query):
-    with pytest.raises(ValueError):
-        multi_agent._validate_read_only_cypher(query)
+def test_tools_expose_no_custom_cypher_and_only_allow_document_scoped_search():
+    tools = multi_agent._tool_schema(allow_delegation=True)
+    names = {tool["function"]["name"] for tool in tools}
+    assert names == {"search_graph_evidence", "delegate_document_agents"}
+    search = next(tool["function"] for tool in tools if tool["function"]["name"] == "search_graph_evidence")
+    assert "cypher" not in json.dumps(search).casefold()
 
 
-def test_cypher_validator_accepts_bounded_read_only_graph_query():
-    query = (
-        "MATCH (seed:GraphEvidence)-[:MENTIONS_ENTITY|REPRESENTS]-"
-        "(entity:ExtractedEntity)-[:EXTRACTED_RELATION*1..3]-(other:ExtractedEntity) "
-        "MATCH (evidence:GraphEvidence)-[:MENTIONS_ENTITY]-(other) "
-        "WHERE seed.kind = '原文' RETURN evidence { .evidence_id, .text, .document_id } AS evidence"
-    )
-    assert multi_agent._validate_read_only_cypher(query) == query
-
-
-def test_read_only_query_is_wrapped_scoped_and_sanitized():
+def test_fixed_search_tool_uses_vector_index_and_scopes_documents():
     evidence = {
         "evidence_id": "doc-a:chunk-1", "document_id": "doc-a",
         "kind": "原文", "text": "證據", "embedding": [0.5],
@@ -128,10 +110,8 @@ def test_read_only_query_is_wrapped_scoped_and_sanitized():
     driver = _Driver([{"evidence": evidence}])
     context = _context(driver)
 
-    results = multi_agent._run_read_only_cypher(
-        context,
-        "MATCH (e:GraphEvidence) RETURN e { .evidence_id, .kind, .text, .document_id, .source_pages, .source_documents } AS evidence",
-        {}, ["doc-a"], {"doc-a", "doc-b"}, 6,
+    results = multi_agent._search_graph_evidence(
+        context, ["doc-a"], {"doc-a", "doc-b"}, 6,
     )
 
     assert len(results) == 1
@@ -140,9 +120,10 @@ def test_read_only_query_is_wrapped_scoped_and_sanitized():
     session = driver.sessions[0]
     assert session.options["default_access_mode"] == multi_agent.READ_ACCESS
     assert session.transaction.options["timeout"] == 5.0
-    assert "WITH evidence WHERE evidence.document_id IN $__scope_document_ids" in session.transaction.query
-    assert session.transaction.parameters["__scope_document_ids"] == ["doc-a"]
-    assert session.transaction.parameters["__result_limit"] == 6
+    assert "db.index.vector.queryNodes" in session.transaction.query
+    assert "node.document_id IN $document_ids" in session.transaction.query
+    assert session.transaction.parameters["document_ids"] == ["doc-a"]
+    assert session.transaction.parameters["result_limit"] == 6
 
 
 def test_orchestrator_can_choose_only_one_document_agent(monkeypatch):
@@ -189,7 +170,7 @@ def test_orchestrator_can_choose_only_one_document_agent(monkeypatch):
     assert result[0]["multi_agent_documents"] == ["a.pdf", "b.pdf"]
 
 
-def test_orchestrator_can_search_graph_itself_with_generated_cypher(monkeypatch):
+def test_orchestrator_can_search_graph_with_fixed_vector_tool(monkeypatch):
     evidence = {
         "evidence_id": "doc-a:ev-1", "document_id": "doc-a",
         "kind": "原文", "text": "每 12 個月保養。", "source_pages": [3],
@@ -231,12 +212,8 @@ def test_orchestrator_can_search_graph_itself_with_generated_cypher(monkeypatch)
     tool_call = {
         "id": "query-1", "type": "function",
         "function": {
-            "name": "run_read_only_cypher",
+            "name": "search_graph_evidence",
             "arguments": json.dumps({
-                "cypher": (
-                    "MATCH (e:GraphEvidence) "
-                    "RETURN e { .evidence_id, .kind, .text, .document_id, .source_pages } AS evidence"
-                ),
                 "document_ids": ["doc-a"], "limit": 10,
             }),
         },
@@ -250,8 +227,8 @@ def test_orchestrator_can_search_graph_itself_with_generated_cypher(monkeypatch)
     result = multi_agent.MultiAgentSearch3Strategy().retrieve(context, _config())
 
     assert [item["evidence_id"] for item in result] == ["doc-a:ev-1"]
-    assert "CALL {" in driver.queries[1][0]
-    assert driver.queries[1][1]["__scope_document_ids"] == ["doc-a"]
+    assert "db.index.vector.queryNodes" in driver.queries[1][0]
+    assert driver.queries[1][1]["document_ids"] == ["doc-a"]
     assert result[0]["multi_agent_discussion"][0]["phase"] == "主 Agent 查詢第 1 步"
 
 
@@ -314,7 +291,7 @@ def test_luna_uses_responses_api_function_tools(monkeypatch):
         captured["payload"] = payload
         return {"output": [{
             "type": "function_call", "call_id": "call-1",
-            "name": "run_read_only_cypher", "arguments": '{"document_ids":["doc-a"]}',
+            "name": "search_graph_evidence", "arguments": '{"document_ids":["doc-a"]}',
         }]}
 
     monkeypatch.setattr(multi_agent, "_post_json", fake_post)
