@@ -14,6 +14,7 @@ from ..retrieval import (
 
 
 _VALUE_TYPES = {"string": str, "integer": int, "number": float, "boolean": bool}
+_POSTPROCESSORS = {"reranker", "evidence_expansion"}
 
 
 def _parameter_from_document(name: str, document: dict[str, Any]) -> RetrievalParameterSpec:
@@ -68,6 +69,10 @@ def load_strategy_specs(strategies_dir: Path | None = None) -> tuple[str, ...]:
             order = document.get("order", 1000)
             implementation = document.get("implementation")
             parameters = document.get("parameters", {})
+            supported_graph_modes = document.get(
+                "supported_graph_modes", ["merged"]
+            )
+            postprocessors = document.get("postprocessors", [])
             if not isinstance(strategy_id, str) or not strategy_id.strip():
                 raise ValueError("必須設定非空 id")
             if not isinstance(name, str) or not name.strip():
@@ -86,6 +91,19 @@ def load_strategy_specs(strategies_dir: Path | None = None) -> tuple[str, ...]:
                 raise ValueError("implementation.class 必須是有效的 Python class 名稱")
             if not isinstance(parameters, dict):
                 raise ValueError("parameters 必須是 YAML mapping")
+            if (not isinstance(supported_graph_modes, list) or not supported_graph_modes
+                    or any(mode not in {"merged", "per_document"}
+                           for mode in supported_graph_modes)
+                    or len(set(supported_graph_modes)) != len(supported_graph_modes)):
+                raise ValueError(
+                    "supported_graph_modes 必須是包含 merged/per_document 的非空、不重複清單"
+                )
+            if (not isinstance(postprocessors, list)
+                    or any(item not in _POSTPROCESSORS for item in postprocessors)
+                    or len(set(postprocessors)) != len(postprocessors)):
+                raise ValueError(
+                    "postprocessors 必須是包含 reranker/evidence_expansion 的不重複清單"
+                )
             if strategy_id in seen_ids or name in seen_names:
                 raise ValueError(f"策略 id 或 name 重複：{strategy_id} / {name}")
             seen_ids.add(strategy_id)
@@ -95,6 +113,8 @@ def load_strategy_specs(strategies_dir: Path | None = None) -> tuple[str, ...]:
                 label=name,
                 parameters={key: _parameter_from_document(key, value)
                             for key, value in parameters.items()},
+                supported_graph_modes=tuple(supported_graph_modes),
+                postprocessors=tuple(postprocessors),
             )
             loaded.append((order, strategy_spec, implementation_file, class_name))
         except (OSError, yaml.YAMLError, TypeError, ValueError) as exc:

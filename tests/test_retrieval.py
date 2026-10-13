@@ -15,6 +15,7 @@ from manual_graphrag.retrieval import (
     RETRIEVAL_STRATEGIES,
     register_retrieval_strategy,
     strategy_choices,
+    strategy_choices_for_graph_modes,
     strategy_id_from_label,
     strategy_label,
 )
@@ -98,6 +99,65 @@ def test_builtin_strategy_registry_loads_implementations_from_yaml() -> None:
     assert vector.__class__.__module__ == "strategies.implementations.vector.strategy"
     assert hybrid.__class__.__module__ == "strategies.implementations.hybrid.strategy"
     assert "agentic_search_2" not in RETRIEVAL_STRATEGIES.ids()
+    assert RETRIEVAL_STRATEGIES.get_spec("multi_agent_search_1").supported_graph_modes == (
+        "per_document",
+    )
+    for strategy_id in ("vector", "hybrid", "agentic", "agentic_search_3"):
+        assert RETRIEVAL_STRATEGIES.get_spec(strategy_id).supported_graph_modes == ("merged",)
+
+
+def test_strategy_choices_respect_graph_mode_compatibility() -> None:
+    merged = strategy_choices_for_graph_modes("merged")
+    partitioned = strategy_choices_for_graph_modes("per_document")
+
+    assert set(merged) == {
+        "基本向量檢索", "混合檢索", "Agentic Search", "Agentic Search 3",
+    }
+    assert "Multi-Agent Search 1" not in merged
+    assert "Multi-Agent Search 1" in partitioned
+    assert "基本向量檢索" not in partitioned
+    assert "混合檢索" not in partitioned
+    assert "Agentic Search" not in partitioned
+    assert "Agentic Search 3" not in partitioned
+    assert strategy_choices_for_graph_modes({"merged", "per_document"}) == []
+
+
+@pytest.mark.parametrize("strategy_id", ["agentic", "agentic_search_3", "multi_agent_search_1"])
+@pytest.mark.parametrize("component", ["reranker", "expansion"])
+def test_non_vector_strategies_reject_reranker_and_evidence_expansion(
+    strategy_id: str, component: str,
+) -> None:
+    kwargs = {component: {
+        "id": "lexical" if component == "reranker" else "legacy_name_chunk",
+        "params": {},
+    }}
+    config = RetrievalConfig(strategy_id=strategy_id, top_k=5, **kwargs)
+
+    with pytest.raises(ValueError, match="僅基本向量檢索與混合檢索可使用"):
+        config.validated()
+
+
+def test_legacy_non_vector_postprocessors_load_as_disabled() -> None:
+    stored = RetrievalConfig.from_ui(
+        "基本向量檢索", 5, "Reranker", "證據擴展",
+    ).to_dict()
+    stored["strategy_id"] = "agentic"
+
+    loaded = RetrievalConfig.from_dict(stored)
+
+    assert loaded.reranker["id"] == "disabled"
+    assert loaded.expansion["id"] == "disabled"
+
+
+def test_ui_config_ignores_postprocessors_for_incompatible_strategy() -> None:
+    config = RetrievalConfig.from_ui(
+        "Agentic Search", 5, "LLM Reranker", "證據擴展",
+        rerank_candidates=True,
+    )
+
+    assert config.reranker["id"] == "disabled"
+    assert config.expansion["id"] == "disabled"
+    assert config.params["candidate_top_k"] == 5
 
 
 def test_strategy_specs_load_yaml_and_implementation_from_strategy_directory(tmp_path: Path, request) -> None:
@@ -133,6 +193,7 @@ def test_strategy_specs_load_yaml_and_implementation_from_strategy_directory(tmp
     spec = RETRIEVAL_STRATEGIES.get_spec("sample")
     assert spec.label == "測試策略"
     assert spec.parameters["beam_width"].default == 4
+    assert spec.supported_graph_modes == ("merged",)
     assert RETRIEVAL_STRATEGIES.get("sample").strategy_id == "sample"
 
 

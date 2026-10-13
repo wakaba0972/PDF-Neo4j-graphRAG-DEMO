@@ -1,6 +1,11 @@
 id: hybrid
 name: 混合檢索
 order: 20
+supported_graph_modes:
+  - merged
+postprocessors:
+  - reranker
+  - evidence_expansion
 implementation:
   file: hybrid/strategy.py
   class: HybridRetrievalStrategy

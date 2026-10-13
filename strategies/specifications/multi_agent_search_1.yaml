@@ -1,6 +1,8 @@
 id: multi_agent_search_1
 name: Multi-Agent Search 1
 order: 60
+supported_graph_modes:
+  - per_document
 implementation:
   file: multi_agent_search_1/strategy.py
   class: MultiAgentSearch1Strategy

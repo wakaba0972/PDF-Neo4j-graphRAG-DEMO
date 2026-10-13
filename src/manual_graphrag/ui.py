@@ -105,6 +105,7 @@ from .retrieval import (
     RETRIEVAL_STRATEGIES,
     RetrievalConfig,
     strategy_choices,
+    strategy_choices_for_graph_modes,
     strategy_id_from_label,
     strategy_label,
 )
@@ -1220,6 +1221,12 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
     else:
         graph_status, import_status = "尚未執行抽取。", "尚未執行 Embedding 與匯入。"
     strategy_parameter_updates = _single_strategy_parameter_updates(project_retrieval)
+    graph_mode = get("graph_partition_mode", "merged")
+    compatible_strategies = strategy_choices_for_graph_modes(graph_mode)
+    selected_strategy = project_retrieval.ui_values()[0]
+    strategy_options: list[Any] = list(compatible_strategies)
+    if selected_strategy not in compatible_strategies:
+        strategy_options.insert(0, (f"{selected_strategy}（與目前圖譜模式不相容）", selected_strategy))
     return (
         _project_ui_state(project), f"✅ 已載入專案「{project['name']}」。",
         get("neo4j_uri", env["NEO4J_URI"]), project.get("neo4j_database") or project_database_name(project_id),
@@ -1232,7 +1239,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         get("extraction_llm_model", DEFAULT_LLM_MODEL),
         get("extraction_max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
-        *project_retrieval.ui_values()[:2], "",
+        gr.update(choices=strategy_options, value=selected_strategy), project_retrieval.top_k, "",
         documents, chunks, graph, active_preview, active_chunks,
         _document_rows(documents), _document_choices(documents),
         _chunk_rows(active_chunks), document_status,
@@ -1253,7 +1260,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
             choices=list(GPT_6_LUNA_REASONING_EFFORTS),
         ),
         strategy_parameter_updates[0],
-        get("graph_partition_mode", "merged"),
+        graph_mode,
         *strategy_parameter_updates[1:],
     )
 
@@ -1942,7 +1949,10 @@ def load_experiment_project_for_ui(
             try:
                 members.append(_experiment_member_summary_row(member_id))
             except (OSError, ValueError):
-                members.append(["（原專案不存在）", member_id, "未知", 0, 0, 0, "", "", "None", ""])
+                members.append([
+                    "（原專案不存在）", member_id, "未知", 0, "未知", 0, 0,
+                    "", "", "None", "",
+                ])
         return (
             project, members,
             gr.update(choices=_built_project_choices(), value=project.get("members", [])),
@@ -1996,6 +2006,8 @@ def _experiment_member_summary_row(project_id: str) -> list[Any]:
         project_id,
         summary.get("created_by", "未知"),
         summary.get("document_count", 0),
+        "每份文件分區" if summary.get("graph_partition_mode") == "per_document"
+        else "所有文件合併",
         summary.get("chunk_count", 0),
         question_count,
         summary.get("chunk_size") if summary.get("chunk_size") is not None else "",
@@ -2079,10 +2091,11 @@ def load_experiment_project_setup_for_ui(
     project: dict[str, Any] | None, experiment_llm_state: dict[str, Any] | None = None,
 ) -> tuple[Any, ...]:
     groups = (project or {}).get("groups", [])
+    graph_modes = _experiment_project_graph_modes(project)
     group_slots = _inline_group_updates(
         groups, _configured_service_choice_items(
             experiment_llm_state or load_service_settings("experiment_llm")
-        ),
+        ), graph_modes,
     )
     return (
         *group_slots,
@@ -2195,6 +2208,7 @@ def _experiment_project_inline_group_response(
         *_inline_group_updates(
             list(project.get("groups") or []),
             _configured_service_choice_items(llm_state),
+            _experiment_project_graph_modes(project),
         ),
         project, status,
     )
@@ -2319,6 +2333,7 @@ def _inline_group_values(groups: list[dict[str, Any]]) -> list[Any]:
 
 def _inline_group_updates(
     groups: list[dict[str, Any]], model_choices: list[tuple[str, str]] | None = None,
+    graph_modes: list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> list[Any]:
     choices = list(model_choices or [])
     available_models = {value for _, value in choices}
@@ -2336,6 +2351,12 @@ def _inline_group_updates(
             RetrievalConfig.from_dict(_default_retrieval_config())
         )
         strategy, top_k, reranker, expansion = config.ui_values()
+        retrieval_choices: list[Any] = list(strategy_choices_for_graph_modes(graph_modes))
+        if strategy not in retrieval_choices:
+            retrieval_choices.insert(0, (f"{strategy}（與目前圖譜模式不相容）", strategy))
+        reranker_update, expansion_update = _postprocessing_control_updates(
+            strategy, reranker, expansion, row_visible=visible,
+        )
         model_update = gr.update(value=item.get("answer_model"), visible=visible)
         answer_effort_model = item.get("answer_model")
         if model_choices is not None or choices:
@@ -2348,15 +2369,81 @@ def _inline_group_updates(
                 visible=visible and str(answer_effort_model or "").casefold() == GPT_6_LUNA_MODEL,
                 choices=list(GPT_6_LUNA_REASONING_EFFORTS),
             ),
-            gr.update(value=strategy, visible=visible),
+            gr.update(value=strategy, choices=retrieval_choices, visible=visible),
             gr.update(value=top_k, visible=visible),
-            gr.update(value=reranker, visible=visible),
-            gr.update(value=expansion, visible=visible),
+            reranker_update,
+            expansion_update,
             gr.update(value=_visible_params_for_strategy(config)),
             *_experiment_strategy_parameter_updates(config, visible),
             gr.update(visible=visible),
         ])
     return values
+
+
+def _project_graph_mode(project: dict[str, Any] | None) -> str:
+    project = project or {}
+    graph_state = project.get("graph_state") or {}
+    settings = project.get("settings") or {}
+    mode = graph_state.get("graph_partition_mode") or settings.get("graph_partition_mode")
+    return mode if mode in {"merged", "per_document"} else "merged"
+
+
+def _experiment_project_graph_modes(project: dict[str, Any] | None) -> list[str]:
+    modes: list[str] = []
+    for member_id in (project or {}).get("members", []):
+        try:
+            modes.append(_project_graph_mode(load_project(member_id)))
+        except (OSError, ValueError):
+            # Keep the selector usable when a member is temporarily unavailable;
+            # the runtime graph-mode check will report the precise failure.
+            continue
+    return modes
+
+
+def _strategy_dropdown_updates_for_graph_mode(
+    graph_mode: str | None, *values: Any,
+) -> tuple[Any, ...]:
+    choices = strategy_choices_for_graph_modes(graph_mode or "merged")
+    updates = []
+    for value in values:
+        options: list[Any] = list(choices)
+        if value and value not in choices:
+            options.insert(0, (f"{value}（與目前圖譜模式不相容）", value))
+        updates.append(gr.update(choices=options, value=value))
+    return tuple(updates)
+
+
+def _postprocessing_control_updates(
+    strategy: str | None, reranker: str | None, expansion: str | None,
+    *, row_visible: bool = True,
+) -> tuple[Any, Any]:
+    try:
+        spec = RETRIEVAL_STRATEGIES.get_spec(strategy_id_from_label(str(strategy or "")))
+        supports_reranker = "reranker" in spec.postprocessors
+        supports_expansion = "evidence_expansion" in spec.postprocessors
+    except ValueError:
+        supports_reranker = supports_expansion = False
+    return (
+        gr.update(
+            value=reranker if supports_reranker else "停用",
+            interactive=supports_reranker,
+            visible=row_visible and supports_reranker,
+        ),
+        gr.update(
+            value=expansion if supports_expansion else "停用",
+            interactive=supports_expansion,
+            visible=row_visible and supports_expansion,
+        ),
+    )
+
+
+def _single_project_graph_modes(project_id: str | None) -> list[str]:
+    if not project_id:
+        return []
+    try:
+        return [_project_graph_mode(load_project(project_id))]
+    except (OSError, ValueError):
+        return []
 
 
 def _groups_from_inline_values(values: tuple[Any, ...]) -> list[dict[str, Any]]:
@@ -2468,10 +2555,16 @@ def add_inline_experiment_group_for_ui(
         )
         if status.startswith("❌"):
             raise ValueError(status.removeprefix("❌ "))
-        return (*_inline_group_updates(saved_groups, service_choice_items(llm_state)), saved_groups, status, result_status)
+        return (*_inline_group_updates(
+            saved_groups, service_choice_items(llm_state),
+            _single_project_graph_modes(project_id),
+        ), saved_groups, status, result_status)
     except (OSError, TypeError, ValueError) as exc:
         return (
-            *_inline_group_updates(list(current_groups or []), service_choice_items(llm_state)),
+            *_inline_group_updates(
+                list(current_groups or []), service_choice_items(llm_state),
+                _single_project_graph_modes(project_id),
+            ),
             list(current_groups or []), f"❌ {exc}", gr.update(),
         )
 
@@ -2490,7 +2583,10 @@ def remove_inline_experiment_group_for_ui(
         *_inline_group_values(groups), allow_empty=True,
     )
     return (
-        *_inline_group_updates(saved_groups, service_choice_items(llm_state)),
+        *_inline_group_updates(
+            saved_groups, service_choice_items(llm_state),
+            _single_project_graph_modes(project_id),
+        ),
         saved_groups, status, result_status,
     )
 
@@ -2581,7 +2677,10 @@ def load_experiment_for_ui(
         questions, f"目前專案題庫共 {len(questions)} 題。", groups, results,
         data.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS), status,
         summary_rows, detail_rows,
-        *_inline_group_updates(groups, service_choice_items(llm_state)),
+        *_inline_group_updates(
+            groups, service_choice_items(llm_state),
+            [_project_graph_mode(project)] if project else None,
+        ),
         gr.update(
             value=global_judge_model,
             choices=judge_choices,
@@ -5747,7 +5846,10 @@ def import_graph_for_ui(
             if not document_names:
                 raise ValueError("文件分區模式需要每份文件都有 document_id，請重新解析 PDF 後再抽取")
             graph_documents = [
-                {"document_id": document_id, "file_name": name}
+                {
+                    "document_id": document_id, "file_name": name,
+                    "graph_partition_mode": "per_document",
+                }
                 for document_id, name in document_names.items()
             ]
             for item in [*updated_state["entities"], *updated_state["relationships"], *evidence]:
@@ -5776,6 +5878,7 @@ def import_graph_for_ui(
             graph_documents = [{
                 "document_id": "",
                 "file_name": updated_state.get("document", ""),
+                "graph_partition_mode": "merged",
             }]
             for item in [*updated_state["entities"], *updated_state["relationships"], *evidence]:
                 item["document_id"] = ""
@@ -6153,7 +6256,8 @@ def build_app() -> gr.Blocks:
                 label="圖譜範圍",
                 info=(
                     "文件分區仍存放在同一個專案 Neo4j 資料庫。選擇每份文件各自成圖時，"
-                    "會逐文件抽取；目前檢索策略仍可搜尋專案內所有文件。"
+                    "會逐文件抽取；基本向量、混合與 Agentic Search 1／3 僅供合併圖譜，"
+                    "Multi-Agent Search 1 僅供文件分區圖譜。"
                 ),
             )
             with gr.Row():
@@ -6299,7 +6403,10 @@ def build_app() -> gr.Blocks:
             )
             question = gr.Textbox(label="問題", placeholder="例如：設備出現 E01 時該如何處理？")
             with gr.Row():
-                retrieval_mode = gr.Radio(strategy_choices(), value="混合檢索", label="檢索模式")
+                retrieval_mode = gr.Radio(
+                    strategy_choices_for_graph_modes("merged"),
+                    value="混合檢索", label="檢索模式",
+                )
                 top_k = gr.Slider(1, 50, value=8, step=1, label="Top K")
                 use_reranker = gr.Dropdown(
                     choices=list(RERANKER_MODES), value="停用", label="Reranker 模式",
@@ -6431,7 +6538,7 @@ def build_app() -> gr.Blocks:
                         visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
                     )
                     evaluation_retrieval_mode = gr.Dropdown(
-                        strategy_choices(), value="混合檢索", label="檢索策略",
+                        strategy_choices_for_graph_modes("merged"), value="混合檢索", label="檢索策略",
                         allow_custom_value=False,
                     )
                     evaluation_top_k = gr.Number(
@@ -6538,7 +6645,7 @@ def build_app() -> gr.Blocks:
                         visible=False, scale=1,
                     )
                     group_retrieval = gr.Dropdown(
-                        choices=strategy_choices(), value="混合檢索",
+                        choices=strategy_choices_for_graph_modes("merged"), value="混合檢索",
                         label="檢索策略", visible=False, scale=2,
                     )
                     group_top_k = gr.Number(value=8, minimum=1, maximum=50, precision=0, label="Top K", visible=False, scale=1)
@@ -6680,10 +6787,10 @@ def build_app() -> gr.Blocks:
             save_experiment_members_button = gr.Button("保存成員專案")
             experiment_project_members_table = gr.Dataframe(
                 headers=[
-                    "專案", "專案 ID", "建立者", "文件數", "Chunk 數", "問題集題數",
+                    "專案", "專案 ID", "建立者", "文件數", "圖譜模式", "Chunk 數", "問題集題數",
                     "Chunk Size", "Overlap", "Schema 粒度", "Neo4j Database",
                 ],
-                datatype=["str", "str", "str", "number", "number", "number", "number", "number", "str", "str"],
+                datatype=["str", "str", "str", "number", "str", "number", "number", "number", "number", "str", "str"],
                 interactive=False, wrap=True,
             )
 
@@ -6717,7 +6824,7 @@ def build_app() -> gr.Blocks:
                         visible=False, scale=1,
                     )
                     group_retrieval = gr.Dropdown(
-                        choices=strategy_choices(), value="混合檢索",
+                        choices=strategy_choices_for_graph_modes("merged"), value="混合檢索",
                         label="檢索策略", visible=False, scale=2,
                     )
                     group_top_k = gr.Number(
@@ -7835,6 +7942,15 @@ def build_app() -> gr.Blocks:
                      embedding_test_button, embedding_list_button, embedding_connection_status],
             show_progress="hidden",
         )
+        for project_load_event in (
+            import_load_event, load_project_event, initialize_project_event,
+        ):
+            project_load_event.success(
+                _strategy_dropdown_updates_for_graph_mode,
+                inputs=[graph_partition_mode, retrieval_mode, evaluation_retrieval_mode],
+                outputs=[retrieval_mode, evaluation_retrieval_mode],
+                show_progress="hidden",
+            )
         delete_project_button.click(
             request_project_deletion_for_ui,
             inputs=project_selector,
@@ -7896,6 +8012,29 @@ def build_app() -> gr.Blocks:
             component.input(
                 save_project_for_ui, inputs=project_setting_inputs,
                 outputs=[project_state, project_status], show_progress="hidden",
+            )
+
+        graph_mode_strategy_controls = [
+            retrieval_mode, evaluation_retrieval_mode,
+            *[row[3] for row in experiment_group_rows],
+        ]
+        graph_partition_mode.change(
+            _strategy_dropdown_updates_for_graph_mode,
+            inputs=[graph_partition_mode, *graph_mode_strategy_controls],
+            outputs=graph_mode_strategy_controls,
+            show_progress="hidden",
+        )
+        for strategy_control, reranker_control, expansion_control in [
+            (retrieval_mode, use_reranker, expand_evidence),
+            (evaluation_retrieval_mode, evaluation_use_reranker, evaluation_expand_evidence),
+            *[(row[3], row[5], row[6]) for row in experiment_group_rows],
+            *[(row[3], row[5], row[6]) for row in experiment_project_group_rows],
+        ]:
+            strategy_control.change(
+                _postprocessing_control_updates,
+                inputs=[strategy_control, reranker_control, expansion_control],
+                outputs=[reranker_control, expansion_control],
+                show_progress="hidden",
             )
 
         neo4j_test_event = neo4j_test_button.click(

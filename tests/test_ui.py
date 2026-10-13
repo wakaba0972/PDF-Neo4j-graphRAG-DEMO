@@ -41,6 +41,12 @@ def test_build_app_returns_blocks() -> None:
     assert concurrency["props"]["value"] == 10
     assert concurrency["props"]["minimum"] == 1
     assert concurrency["props"]["maximum"] == 32
+    member_table = next(
+        component for component in app.config["components"]
+        if (component.get("props", {}).get("headers") or [None])[0] == "專案"
+        and "圖譜模式" in component.get("props", {}).get("headers", [])
+    )
+    assert "圖譜模式" in member_table["props"]["headers"]
 
 
 def test_embedded_evidence_batches_run_with_bounded_concurrency(monkeypatch) -> None:
@@ -97,9 +103,59 @@ def test_experiment_project_selector_defaults_to_first_existing_project(monkeypa
     assert selector["props"]["value"] == "exp-a"
 
 
+def test_experiment_member_summary_shows_graph_partition_mode(monkeypatch) -> None:
+    monkeypatch.setattr(ui, "load_project", lambda _project_id: {"name": "車型 A"})
+    monkeypatch.setattr(ui, "load_project_summary", lambda _project_id: {
+        "created_by": "57", "document_count": 2, "chunk_count": 10,
+        "question_count": 0, "chunk_size": 1500, "chunk_overlap": 200,
+        "schema_granularity": None, "graph_partition_mode": "per_document",
+    })
+    monkeypatch.setattr(ui, "migrate_project_question_sets", lambda _project_id: [])
+
+    row = ui._experiment_member_summary_row("vehicle-a")
+
+    assert row[0] == "車型 A"
+    assert row[4] == "每份文件分區"
+    assert len(row) == 11
+
+
 def test_current_project_banner_reflects_project_name() -> None:
     assert ui._current_project_banner({}) == "### 📁 目前專案：尚未選擇"
     assert ui._current_project_banner({"name": "手冊專案"}) == "### 📁 目前專案：手冊專案"
+
+
+def test_strategy_selector_options_follow_graph_partition_mode() -> None:
+    merged_update = ui._strategy_dropdown_updates_for_graph_mode(
+        "merged", "Multi-Agent Search 1", "混合檢索",
+    )
+    partitioned_update = ui._strategy_dropdown_updates_for_graph_mode(
+        "per_document", "Multi-Agent Search 1", "混合檢索",
+    )
+
+    assert "Multi-Agent Search 1" not in merged_update[1]["choices"]
+    assert merged_update[0]["choices"][0][1] == "Multi-Agent Search 1"
+    assert "不相容" in merged_update[0]["choices"][0][0]
+    assert "Multi-Agent Search 1" in partitioned_update[0]["choices"]
+
+
+def test_reranker_and_expansion_controls_are_strategy_specific() -> None:
+    supported = ui._postprocessing_control_updates(
+        "基本向量檢索", "LLM Reranker", "證據擴展",
+    )
+    unsupported = ui._postprocessing_control_updates(
+        "Agentic Search", "LLM Reranker", "證據擴展",
+    )
+
+    assert supported[0]["interactive"] is True
+    assert supported[0]["value"] == "LLM Reranker"
+    assert supported[1]["interactive"] is True
+    assert supported[1]["value"] == "證據擴展"
+    assert unsupported[0]["interactive"] is False
+    assert unsupported[0]["value"] == "停用"
+    assert unsupported[0]["visible"] is False
+    assert unsupported[1]["interactive"] is False
+    assert unsupported[1]["value"] == "停用"
+    assert unsupported[1]["visible"] is False
 
 
 def test_delete_experiment_project_ui_clears_selected_workspace(monkeypatch) -> None:
@@ -3705,9 +3761,16 @@ def _importable_graph_state() -> dict:
         "entities": [{
             "name": "設備 A", "type": "DEVICE", "description": "設備",
             "source_chunk_numbers": [1], "source_pages": [1],
+            "source_references": [{
+                "document_id": "doc-a", "document": "manual.pdf",
+                "chunk_numbers": [1], "pages": [1],
+            }],
         }],
         "relationships": [],
-        "chunks": [{"number": 1, "text": "設備說明", "pages": [1]}],
+        "chunks": [{
+            "number": 1, "text": "設備說明", "pages": [1],
+            "document": "manual.pdf", "document_id": "doc-a",
+        }],
         "neo4j_imported": False,
     }
 
@@ -3720,6 +3783,7 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
     def fake_import(*args, **kwargs):
         captured["args"] = args
         captured["batches"] = list(args[10])
+        captured["graph_documents"] = kwargs["graph_documents"]
         captured["progress"] = kwargs.get("progress")
         return ImportSummary(2, 1, 1)
 
@@ -3747,6 +3811,13 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
     assert state["vector_index_name"] == "graph_evidence_embedding_1"
     assert provisioned == [("bolt://db", "neo4j", "user", "password")]
     assert captured["args"][4] == "manual.pdf"
+    assert captured["graph_documents"] == [{
+        "document_id": "", "file_name": "manual.pdf",
+        "graph_partition_mode": "merged",
+    }]
+    assert captured["args"][8][0]["document_id"] == ""
+    assert captured["args"][8][0]["source_references"][0]["document_id"] == "doc-a"
+    assert captured["batches"][0][0]["source_references"][0]["document_id"] == "doc-a"
     assert [len(batch) for batch in captured["batches"]] == [2]
     assert all("embedding" in item for batch in captured["batches"] for item in batch)
     assert captured["max_concurrency"] == 2
@@ -3794,8 +3865,8 @@ def test_import_graph_for_ui_passes_document_partitions_to_neo4j(monkeypatch) ->
     assert status.startswith("✅")
     assert state["neo4j_imported"] is True
     assert captured["graph_documents"] == [
-        {"document_id": "doc-a", "file_name": "a.pdf"},
-        {"document_id": "doc-b", "file_name": "b.pdf"},
+        {"document_id": "doc-a", "file_name": "a.pdf", "graph_partition_mode": "per_document"},
+        {"document_id": "doc-b", "file_name": "b.pdf", "graph_partition_mode": "per_document"},
     ]
     assert [item["document_id"] for item in captured["entities"]] == ["doc-a", "doc-b"]
     assert {item["document_id"] for item in captured["evidence"]} == {"doc-a", "doc-b"}
@@ -4242,7 +4313,8 @@ def test_experiment_project_members_require_existing_built_graphs(tmp_path, monk
     assert status.startswith("✅")
     assert state["members"] == [built["project_id"]]
     assert rows == [[
-        "已建圖車型", built["project_id"], "未知", 1, 1, 0, 1500, 200, "粗略",
+        "已建圖車型", built["project_id"], "未知", 1, "所有文件合併", 1, 0,
+        1500, 200, "粗略",
         built["neo4j_database"],
     ]]
     summary_file = tmp_path / "data" / "projects" / built["project_id"] / "summary.json"
@@ -4277,7 +4349,7 @@ def test_legacy_experiment_question_sets_move_to_each_member_project(tmp_path, m
     migrated = ui.bound_question_sets(stored_member)
     assert migrated[0]["questions"] == [question]
     assert "questions" not in stored_member.get("evaluation", {})
-    assert rows[0][5] == 1
+    assert rows[0][6] == 1
 
 
 def test_experiment_project_banner_uses_experiment_name():

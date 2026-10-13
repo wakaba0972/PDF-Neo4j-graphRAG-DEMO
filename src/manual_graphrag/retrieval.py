@@ -5,7 +5,7 @@ from importlib import import_module, util
 from pathlib import Path
 import sys
 from threading import RLock
-from typing import Any, Protocol
+from typing import Any, Iterable, Protocol
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,8 @@ class RetrievalStrategySpec:
     strategy_id: str
     label: str
     parameters: dict[str, RetrievalParameterSpec] = field(default_factory=dict)
+    supported_graph_modes: tuple[str, ...] = ("merged",)
+    postprocessors: tuple[str, ...] = ()
 
     def validate_params(self, params: dict[str, Any], top_k: int) -> None:
         unknown = set(params) - set(self.parameters)
@@ -169,6 +171,8 @@ def register_retrieval_strategy(
 
 RERANKER_IDS = {"disabled", "lexical", "llm"}
 EXPANSION_IDS = {"disabled", "legacy_name_chunk"}
+RERANKER_POSTPROCESSOR = "reranker"
+EXPANSION_POSTPROCESSOR = "evidence_expansion"
 RERANKER_LABEL_IDS = {
     "停用": "disabled", "Reranker": "lexical", "LLM Reranker": "llm",
 }
@@ -196,6 +200,22 @@ def strategy_label(strategy_id: str) -> str:
 def strategy_choices() -> list[str]:
     """UI labels in registration order; views should not maintain duplicates."""
     return [spec.label for spec in RETRIEVAL_STRATEGIES.specs.values()]
+
+
+def strategy_choices_for_graph_modes(graph_modes: Iterable[str] | str | None) -> list[str]:
+    """Return strategies compatible with every graph mode in the target scope."""
+    if graph_modes is None:
+        return strategy_choices()
+    modes = {graph_modes} if isinstance(graph_modes, str) else set(graph_modes)
+    if not modes:
+        return strategy_choices()
+    unknown = modes - {"merged", "per_document"}
+    if unknown:
+        raise ValueError(f"不支援的圖譜模式：{', '.join(sorted(unknown))}")
+    return [
+        spec.label for spec in RETRIEVAL_STRATEGIES.specs.values()
+        if modes.issubset(set(spec.supported_graph_modes))
+    ]
 
 
 @dataclass(frozen=True)
@@ -237,6 +257,15 @@ class RetrievalConfig:
                 params = component.get("params", {})
                 if params:
                     raise ValueError(f"{component['id']} 不接受擴展參數")
+        for component_name, component, capability in (
+            ("Reranker", self.reranker, RERANKER_POSTPROCESSOR),
+            ("證據擴展", self.expansion, EXPANSION_POSTPROCESSOR),
+        ):
+            if component.get("id") != "disabled" and capability not in strategy.postprocessors:
+                raise ValueError(
+                    f"檢索策略「{strategy.label}」不支援{component_name}；"
+                    "僅基本向量檢索與混合檢索可使用。"
+                )
         return self
 
     def to_dict(self) -> dict[str, Any]:
@@ -267,10 +296,16 @@ class RetrievalConfig:
             raise ValueError(f"檢索設定選項無效：{exc.args[0]}") from exc
         selected_top_k = int(top_k)
         strategy = RETRIEVAL_STRATEGIES.get_spec(strategy_id)
+        if RERANKER_POSTPROCESSOR not in strategy.postprocessors:
+            reranker_id = "disabled"
+        if EXPANSION_POSTPROCESSOR not in strategy.postprocessors:
+            expansion_id = "disabled"
         params: dict[str, Any] = {}
         if "candidate_top_k" in strategy.parameters:
             params["candidate_top_k"] = (
-                min(selected_top_k * 3, 50) if rerank_candidates else selected_top_k
+                min(selected_top_k * 3, 50)
+                if rerank_candidates and reranker_id != "disabled"
+                else selected_top_k
             )
         if "effective_search_ratio" in strategy.parameters:
             ratio_default = strategy.parameters["effective_search_ratio"].default
@@ -321,11 +356,17 @@ class RetrievalConfig:
             # Saved projects may still carry the removed V2 mode. Load them
             # safely with expansion disabled rather than breaking the project.
             expansion = {"id": "disabled", "params": {}}
+        strategy_spec = RETRIEVAL_STRATEGIES.get_spec(value["strategy_id"])
+        reranker = dict(value["reranker"])
+        if RERANKER_POSTPROCESSOR not in strategy_spec.postprocessors:
+            reranker = {"id": "disabled", "params": {}}
+        if EXPANSION_POSTPROCESSOR not in strategy_spec.postprocessors:
+            expansion = {"id": "disabled", "params": {}}
         config = cls(
             strategy_id=value["strategy_id"],
             top_k=value["top_k"],
             params=params,
-            reranker=value["reranker"],
+            reranker=reranker,
             expansion=expansion,
         )
         return config.validated()

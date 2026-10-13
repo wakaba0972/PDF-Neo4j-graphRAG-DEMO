@@ -205,12 +205,29 @@ def test_document_partition_writes_scope_nodes_and_relationship_endpoints() -> N
 
     entity_query, entity_params = transaction.calls[0]
     relation_query, relation_params = transaction.calls[1]
-    assert "GraphDocument {document_id: item.document_id}" in entity_query
+    assert "MATCH (document:GraphDocument)" in entity_query
+    assert "coalesce(document.document_id, '') = item.document_id" in entity_query
     assert "document_id: item.document_id" in entity_query
     assert entity_params["entities"][0]["document_id"] == "doc-a"
     assert "source:ExtractedEntity {document_id: item.document_id" in relation_query
     assert "target:ExtractedEntity {document_id: item.document_id" in relation_query
     assert relation_params["relationships"][0]["document_id"] == "doc-a"
+
+
+def test_merged_graph_document_uses_mode_without_empty_document_id() -> None:
+    transaction = FakeTransaction()
+
+    neo4j_service._create_graph_documents(
+        transaction,
+        [{"document_id": "", "file_name": "manual.pdf", "graph_partition_mode": "merged"}],
+        "llm", "embed", {}, 1536, "graph_evidence_embedding_1536",
+    )
+
+    query, parameters = transaction.calls[0]
+    assert "graph_partition_mode" in query
+    assert "SET document.document_id = CASE" in query
+    assert "THEN null" in query
+    assert parameters["documents"][0]["graph_partition_mode"] == "merged"
 
 
 def test_load_latest_graph_metadata_does_not_collect_all_graph_nodes(monkeypatch) -> None:
@@ -535,6 +552,12 @@ class SearchSession:
 
     def run(self, query, **parameters):
         self.calls.append((query, parameters))
+        if "partitioned_count" in query:
+            return type("GraphModeResult", (), {
+                "single": lambda _self: {
+                    "document_count": 1, "partitioned_count": 0,
+                },
+            })()
         if "count(node)" in query:
             return FakeResult(3)
         raise AssertionError(f"unexpected query: {query}")
@@ -687,6 +710,35 @@ def test_search_graph_evidence_uses_official_hybrid_retriever(monkeypatch) -> No
     assert not any("count(node)" in query for query, _parameters in session.calls)
 
 
+def test_document_scoped_strategy_rejects_merged_graph_before_retrieving(monkeypatch) -> None:
+    class GraphModeResult:
+        def single(self):
+            return {"document_count": 2, "partitioned_count": 0}
+
+    class GraphModeSession(SearchSession):
+        def run(self, query, **parameters):
+            self.calls.append((query, parameters))
+            if "MATCH (document:GraphDocument)" in query:
+                return GraphModeResult()
+            raise AssertionError("strategy retrieval must not run on merged graph")
+
+    session = GraphModeSession()
+    monkeypatch.setattr(
+        neo4j_service.GraphDatabase,
+        "driver",
+        lambda *args, **kwargs: SearchDriver(session),
+    )
+    config = RetrievalConfig(strategy_id="multi_agent_search_1", top_k=3)
+
+    with pytest.raises(ValueError, match="目前專案是「所有文件合併」圖譜"):
+        neo4j_service.search_graph_evidence(
+            "bolt://db", "neo4j", "user", "password",
+            "question", [0.1], config,
+        )
+
+    assert len(session.calls) == 1
+
+
 def test_basic_vector_retrieval_uses_vector_cypher_retriever(monkeypatch) -> None:
     session = SearchSession()
     monkeypatch.setattr(
@@ -735,6 +787,12 @@ class ExpansionSearchSession:
 
     def run(self, query, **parameters):
         self.calls.append((query, parameters))
+        if "partitioned_count" in query:
+            return type("GraphModeResult", (), {
+                "single": lambda _self: {
+                    "document_count": 1, "partitioned_count": 0,
+                },
+            })()
         if "MATCH (candidate:GraphEvidence" in query:
             return FakeResult(rows=[{
                 "evidence": {
