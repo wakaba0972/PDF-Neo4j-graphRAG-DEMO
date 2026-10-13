@@ -2954,7 +2954,10 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         if component.get("props", {}).get("headers", [])[:3] == ["編號", "問題", "標準答案"]
     )
     assert evaluation_table["props"]["static_columns"] == list(range(8))
-    strategy_choices = [(label, label) for label in ui.strategy_choices()]
+    strategy_choices = [
+        (label, label)
+        for label in ui.strategy_choices_for_graph_modes("merged")
+    ]
     assert sum(
         component.get("props", {}).get("choices") == strategy_choices
         and component.get("type") == "dropdown"
