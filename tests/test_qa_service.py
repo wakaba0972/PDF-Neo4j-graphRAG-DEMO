@@ -129,6 +129,8 @@ def test_rerank_evidence_uses_model_ranking_and_marks_results(monkeypatch) -> No
     assert captured["api_key"] == "secret"
     prompt = captured["payload"]["messages"][1]["content"]
     assert "E01 怎麼處理？" in prompt
+    assert prompt.startswith("Question:")
+    assert "Candidate evidence:" in prompt
     assert '"expanded_from_graph": true' in prompt
 
 

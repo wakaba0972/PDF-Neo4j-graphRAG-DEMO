@@ -97,15 +97,16 @@ def rerank_evidence(
             {
                 "role": "system",
                 "content": (
-                    "你是檢索證據重排器。依據證據對回答使用者問題的直接幫助程度排序；"
-                    "優先選擇包含可驗證答案細節的證據，不要因為證據是圖譜擴展而降低排名。"
-                    "只輸出 JSON 物件，格式為 {\"ranking\":[候選 id，從最相關到最不相關]}。"
-                    "不得改寫、補充或臆測證據內容。"
+                    "You are a retrieval-evidence reranker. Rank evidence by how directly it helps "
+                    "answer the user's question. Prefer evidence containing verifiable answer details; "
+                    "do not penalize evidence because it was found through graph expansion. Return "
+                    "JSON only in this format: {\"ranking\":[candidate IDs from most to least relevant]}. "
+                    "Do not rewrite, add to, or infer beyond the evidence."
                 ),
             },
             {
                 "role": "user",
-                "content": "問題：{}\n候選證據：{}".format(
+                "content": "Question: {}\nCandidate evidence: {}".format(
                     question.strip(), json.dumps(candidate_payload, ensure_ascii=False)
                 ),
             },

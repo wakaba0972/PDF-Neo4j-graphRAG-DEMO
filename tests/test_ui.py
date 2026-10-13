@@ -3800,6 +3800,8 @@ def test_graph_evidence_separates_merged_sources_by_pdf() -> None:
     assert [item["source_chunk_numbers"] for item in evidence] == [
         [1], [8], [1], [8]
     ]
+    assert evidence[0]["text"] == "Entity: 共用設備; Type: DEVICE; Description: 設備"
+    assert evidence[2]["text"] == "Relationship: 共用設備 -[USES]-> 配件; Description: 使用"
     assert all(len(item["source_references"]) == 1 for item in evidence)
 
 

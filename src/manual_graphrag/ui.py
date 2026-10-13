@@ -5720,7 +5720,7 @@ def _build_graph_evidence(
                 "evidence_id": f"entity-{index}-{source_index}", "kind": "實體",
                 "document_id": document_id,
                 "name": item.get("name", ""), "source": "", "target": "",
-                "text": "實體：{}；類型：{}；說明：{}".format(
+                "text": "Entity: {}; Type: {}; Description: {}".format(
                     item.get("name", ""), item.get("type", ""), item.get("description", "")
                 ),
                 **sources,
@@ -5733,7 +5733,7 @@ def _build_graph_evidence(
                 "document_id": document_id,
                 "kind": "關係", "name": "",
                 "source": item.get("source", ""), "target": item.get("target", ""),
-                "text": "關係：{} -[{}]-> {}；說明：{}".format(
+                "text": "Relationship: {} -[{}]-> {}; Description: {}".format(
                     item.get("source", ""), item.get("type", ""),
                     item.get("target", ""), item.get("description", "")
                 ),
