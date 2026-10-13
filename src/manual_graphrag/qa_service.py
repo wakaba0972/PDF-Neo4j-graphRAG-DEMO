@@ -235,6 +235,7 @@ def answer_graph_question(
     multi_agent_answers: dict[str, str] = {}
     multi_agent_warnings: list[str] = []
     multi_agent_documents: list[str] = []
+    multi_agent_discussion: list[dict[str, str]] = []
     answer_evidence = []
     for item in evidence:
         document_name = str(item.get("document_agent_name") or "")
@@ -252,11 +253,21 @@ def answer_graph_question(
         warnings = item.get("multi_agent_warnings") or []
         if isinstance(warnings, list):
             multi_agent_warnings.extend(str(value) for value in warnings)
+        discussion = item.get("multi_agent_discussion") or []
+        if isinstance(discussion, list) and not multi_agent_discussion:
+            multi_agent_discussion = [
+                {
+                    "phase": str(entry.get("phase", "")),
+                    "document": str(entry.get("document", "")),
+                    "message": str(entry.get("message", "")),
+                }
+                for entry in discussion if isinstance(entry, dict)
+            ]
         answer_evidence.append({
             key: value for key, value in item.items()
             if key not in {
                 "document_agent_name", "document_agent_answer", "multi_agent_warnings",
-                "multi_agent_documents", "multi_agent_answers",
+                "multi_agent_documents", "multi_agent_answers", "multi_agent_discussion",
             }
         })
     system_instruction = (
@@ -267,12 +278,17 @@ def answer_graph_question(
         "粗體或斜體標記、項目符號、表格或程式碼區塊。"
         "若需要列出多個要點，使用編號形式（例如 1.、2.），每個編號項目前都要空一行。"
     )
-    if strategy_id == "multi_agent_search_1":
+    if strategy_id in {"multi_agent_search_1", "multi_agent_search_2"}:
         system_instruction += (
             "你是主 Agent。先參考各文件 Agent 的答案草稿，再逐項核對下方原始證據；"
             "只保留有原始證據支持的內容，整合互補資訊、去除重複。"
             "若不同文件的原始證據互相矛盾，請清楚指出差異與來源，不可自行選邊或臆測。"
             "Agent 草稿只是整理線索，不是權威證據；最終答案必須由原始證據支持。"
+        )
+    if strategy_id == "multi_agent_search_2":
+        system_instruction += (
+            "文件 Agent 的聊天室紀錄只代表討論過程與待查證主張，不等於已證實資訊；"
+            "只採用下方檢索到的原始證據作為事實依據。"
         )
     payload = {
         "model": answer_model.strip(),
@@ -289,6 +305,7 @@ def answer_graph_question(
                     json.dumps({
                         "question": question.strip(),
                         "document_agent_drafts": multi_agent_answers,
+                        "agent_discussion": multi_agent_discussion,
                         "documents_without_evidence": [
                             name for name in dict.fromkeys(multi_agent_documents)
                             if name not in multi_agent_answers
@@ -296,7 +313,7 @@ def answer_graph_question(
                         "agent_warnings": list(dict.fromkeys(multi_agent_warnings)),
                         "evidence": answer_evidence,
                     }, ensure_ascii=False)
-                    if strategy_id == "multi_agent_search_1"
+                    if strategy_id in {"multi_agent_search_1", "multi_agent_search_2"}
                     else "問題：{}\n\n證據：\n{}".format(
                         question.strip(), json.dumps(evidence, ensure_ascii=False)
                     )
