@@ -263,6 +263,59 @@ def _run_read_only_cypher(
     return evidence_items
 
 
+def _fallback_vector_search(
+    context: RetrievalContext,
+    known_document_ids: set[str],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Return a safe vector-search baseline if the orchestrator yields no evidence."""
+    search_limit = min(max(int(limit) * 4, int(limit)), 100)
+
+    def operation() -> list[dict[str, Any]]:
+        with context.driver.session(
+            database=context.database, default_access_mode=READ_ACCESS,
+        ) as session, session.begin_transaction(timeout=5.0) as transaction:
+            return transaction.run(
+                """
+                CALL db.index.vector.queryNodes($index_name, $search_limit, $embedding)
+                YIELD node, score
+                WITH node, score
+                WHERE node:GraphEvidence AND node.kind = '原文'
+                  AND node.document_id IN $document_ids
+                RETURN node {
+                    .evidence_id, .kind, .name, .source, .target, .text,
+                    .source_documents, .source_pages, .source_chunk_numbers,
+                    .source_references_json, .document_id
+                } AS evidence, score
+                ORDER BY score DESC
+                LIMIT $result_limit
+                """,
+                {
+                    "index_name": context.vector_index_name,
+                    "search_limit": search_limit,
+                    "embedding": context.embedding,
+                    "document_ids": list(known_document_ids),
+                    "result_limit": max(int(limit), 1),
+                },
+            ).data()
+
+    results = []
+    for row in context.retry(operation):
+        if not isinstance(row, dict):
+            continue
+        item = _normalize_evidence(row.get("evidence"))
+        if not item or item["document_id"] not in known_document_ids:
+            continue
+        score = float(row.get("score", 0.0) or 0.0)
+        item.update({
+            "score": score,
+            "fusion_score": score,
+            "matched_by": ["multi-agent-search-3-vector-fallback"],
+        })
+        results.append(item)
+    return results
+
+
 def _tool_schema(*, allow_delegation: bool) -> list[dict[str, Any]]:
     return _tool_definitions(allow_delegation=allow_delegation)
 
@@ -500,6 +553,7 @@ class MultiAgentSearch3Strategy:
         drafts: dict[str, str] = {}
         trace: list[dict[str, str]] = []
         delegated: set[str] = set()
+        orchestration_errors: list[str] = []
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": _ORCHESTRATOR_SYSTEM},
             {"role": "user", "content": json.dumps({
@@ -527,10 +581,18 @@ class MultiAgentSearch3Strategy:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            message = _call_model(
-                context, messages, tools, max(5, int(remaining)), responses_input,
-                require_tool=(step == 1),
-            )
+            try:
+                message = _call_model(
+                    context, messages, tools, max(5, int(remaining)), responses_input,
+                    require_tool=(step == 1),
+                )
+            except Exception as exc:  # noqa: BLE001 - try safe retrieval if the agent API fails
+                orchestration_errors.append(str(exc)[:1000])
+                trace.append({
+                    "phase": "主 Agent API 失敗",
+                    "message": str(exc)[:1000],
+                })
+                break
             response_output = message.pop("__responses_output", None)
             calls = message.get("tool_calls")
             if not isinstance(calls, list) or not calls:
@@ -654,9 +716,17 @@ class MultiAgentSearch3Strategy:
             reverse=True,
         )[:candidate_limit]
         if not selected:
-            if time.monotonic() >= deadline:
-                raise ValueError("Multi-Agent Search 3 搜尋時間用盡，未找到可用原文證據")
-            raise ValueError("Multi-Agent Search 3 未找到可用原文證據；可調整查詢或檢查文件圖譜")
+            selected = _fallback_vector_search(context, known_ids, candidate_limit)
+            if selected:
+                trace.append({
+                    "phase": "向量檢索保底",
+                    "message": "Agent 未回傳證據，已用向量檢索取得原文證據。",
+                })
+            else:
+                detail = f"；Agent 錯誤：{'｜'.join(orchestration_errors)}" if orchestration_errors else ""
+                if time.monotonic() >= deadline:
+                    raise ValueError(f"Multi-Agent Search 3 搜尋時間用盡，且向量保底也未找到原文證據{detail}")
+                raise ValueError(f"Multi-Agent Search 3 未找到可用原文證據；向量保底也沒有結果{detail}")
         documents_used = [item["file_name"] for item in documents]
         for item in selected:
             item["multi_agent_documents"] = documents_used

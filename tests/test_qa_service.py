@@ -1,3 +1,5 @@
+import pytest
+
 from manual_graphrag import qa_service
 
 
@@ -125,6 +127,21 @@ def test_multi_agent_search_3_passes_orchestrator_drafts_and_evidence(monkeypatc
     assert "文件 Agent 找到相關規格" in user_content
     assert "主 Agent 查詢第 1 步" in user_content
     assert "原文支持內容" in user_content
+
+
+def test_answer_graph_question_rejects_empty_model_completion(monkeypatch) -> None:
+    monkeypatch.setattr(
+        qa_service, "_post_json",
+        lambda *_args, **_kwargs: {
+            "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+        },
+    )
+
+    with pytest.raises(ValueError, match="回答模型回傳空白內容.*finish_reason=length"):
+        qa_service.answer_graph_question(
+            "http://models/v1", "secret", "model-a", "問題", "multi_agent_search_3",
+            [{"evidence_id": "ev-1", "text": "來源證據"}],
+        )
 
 
 def test_luna_answer_uses_low_reasoning_without_temperature(monkeypatch) -> None:

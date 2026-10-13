@@ -255,6 +255,53 @@ def test_orchestrator_can_search_graph_itself_with_generated_cypher(monkeypatch)
     assert result[0]["multi_agent_discussion"][0]["phase"] == "主 Agent 查詢第 1 步"
 
 
+def test_orchestrator_uses_vector_fallback_when_agent_api_fails(monkeypatch):
+    evidence = {
+        "evidence_id": "doc-a:chunk-1", "document_id": "doc-a",
+        "kind": "原文", "text": "設備需每年保養。", "source_pages": [2],
+    }
+
+    class _FallbackDriver:
+        def __init__(self):
+            self.queries = []
+
+        def session(self, **_kwargs):
+            driver = self
+
+            class _ReadSession:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return None
+
+                def begin_transaction(self, **_options):
+                    return self
+
+                def run(self, query, parameters=None):
+                    driver.queries.append((query, parameters or {}))
+                    if "MATCH (document:GraphDocument)" in query:
+                        rows = [{"document_id": "doc-a", "file_name": "a.pdf"}]
+                    else:
+                        rows = [{"evidence": evidence, "score": 0.91}]
+                    return SimpleNamespace(data=lambda: rows)
+
+            return _ReadSession()
+
+    driver = _FallbackDriver()
+    monkeypatch.setattr(
+        multi_agent, "_call_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("tool API unavailable")),
+    )
+    result = multi_agent.MultiAgentSearch3Strategy().retrieve(_context(driver), _config())
+
+    assert len(result) == 1
+    assert result[0]["text"] == "設備需每年保養。"
+    assert result[0]["matched_by"] == ["multi-agent-search-3-vector-fallback"]
+    assert result[0]["multi_agent_discussion"][-1]["phase"] == "向量檢索保底"
+    assert "db.index.vector.queryNodes" in driver.queries[-1][0]
+
+
 def test_luna_uses_responses_api_function_tools(monkeypatch):
     context = SimpleNamespace(
         model_base_url="https://api.example/v1", model_api_key="secret",

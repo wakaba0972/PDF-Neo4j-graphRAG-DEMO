@@ -5,8 +5,12 @@ import re
 from typing import Any
 
 from .graph_service import (
-    GPT_6_LUNA_MODEL, GPT_6_LUNA_REASONING_EFFORTS,
-    _api_url, _chat_response_content, _extract_json_text, _post_json,
+    GPT_6_LUNA_MODEL,
+    GPT_6_LUNA_REASONING_EFFORTS,
+    _api_url,
+    _chat_response_content,
+    _extract_json_text,
+    _post_json,
 )
 from .retrieval import RETRIEVAL_STRATEGIES
 
@@ -337,5 +341,9 @@ def answer_graph_question(
         payload,
         api_key,
     )
-    answer, _ = _chat_response_content(response)
-    return {"answer": answer.strip(), "evidence": evidence}
+    answer, finish_reason = _chat_response_content(response)
+    answer = answer.strip()
+    if not answer:
+        reason = finish_reason or "unknown"
+        raise ValueError(f"回答模型回傳空白內容（finish_reason={reason}）")
+    return {"answer": answer, "evidence": evidence}

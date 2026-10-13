@@ -2796,13 +2796,37 @@ def test_generate_experiment_answers_populates_table_without_judging(monkeypatch
         "project", questions, groups, 2, {}, "embed", "key", "bolt", "database", "user", "pass",
     )
 
-    assert status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
+    assert status.startswith("✅ 已處理 1 個實驗題次；成功 1、失敗 0")
     assert pending[0]["actual_answer"] == "隱藏答案"
     assert results == group_summaries == summaries == []
     assert details == [["G", 1, "", "未分類題目集", "Q", "A", "隱藏答案", None, None, ""]]
     assert captured["experiment"]["pending_answers"] == pending
     assert captured["experiment"]["results"] == []
     assert captured["experiment"]["detail_rows"] == details
+
+
+def test_experiment_answer_generation_exposes_failure_in_status_and_reason(monkeypatch) -> None:
+    monkeypatch.setattr(ui, "resolve_model_credentials_for_ui", lambda *_: ("answer-endpoint", "key"))
+    monkeypatch.setattr(
+        ui, "answer_question_for_ui",
+        lambda *_args, **_kwargs: ("❌ Neo4j 檢索失敗：找不到向量索引", "", []),
+    )
+    monkeypatch.setattr(ui, "load_project", lambda _project_id: {"experiment": {}})
+    monkeypatch.setattr(ui, "save_project", lambda _project_id, _payload: {})
+    questions = [{"number": 1, "question": "Q", "expected_answer": "A"}]
+    groups = [{
+        "name": "G", "answer_model": "answer-model",
+        "retrieval_config": _retrieval_config(),
+    }]
+
+    status, pending, _results, _group_summaries, _summaries, details = ui.generate_experiment_answers_for_ui(
+        "project", questions, groups, 1, {}, "embed", "key", "bolt", "database", "user", "pass",
+    )
+
+    assert "成功 0、失敗 1" in status
+    assert "找不到向量索引" in status
+    assert pending[0]["actual_answer"] == ""
+    assert details[0][-1] == "❌ Neo4j 檢索失敗：找不到向量索引"
 
 
 def test_evaluate_experiment_answers_and_manual_edit_recompute_summary(monkeypatch) -> None:
@@ -4565,7 +4589,7 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     generated_status, pending, group_summaries, summaries, details, saved = ui.generate_experiment_project_answers_for_ui(
         experiment, 2, {}, "embed", "key", "bolt", "user", "password",
     )
-    assert generated_status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
+    assert generated_status.startswith("✅ 已處理 1 個實驗題次；成功 1、失敗 0")
     assert len(pending) == 1 and pending[0]["actual_answer"] == "A"
     assert summaries == []
     assert group_summaries == []

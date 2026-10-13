@@ -3978,7 +3978,9 @@ def generate_experiment_answers_for_ui(
             "question_set_name": question.get("question_set_name", "未分類題目集"),
             "question": question["question"], "expected_answer": question["expected_answer"],
             "document": question.get("document", ""), "actual_answer": actual,
-            "answer_status": status, **retrieval_metrics,
+            "answer_status": status,
+            "reason": "" if status.startswith("✅") else status,
+            **retrieval_metrics,
         }
 
     try:
@@ -3994,12 +3996,17 @@ def generate_experiment_answers_for_ui(
                 control.answer_generation_progress = (completed, len(tasks))
                 progress(completed / len(tasks), desc=f"已生成 {completed} / {len(tasks)} 個實驗題次回答")
         generated = [item for item in answers if item is not None]
+        failed = [item for item in generated if not str(item.get("answer_status", "")).startswith("✅")]
         project = load_project(project_id)
         previous = project.get("experiment") or {}
         saved_groups = [{key: value for key, value in group.items()
                          if key not in {"judge_model", "judge_reasoning_effort"}}
                         for group in groups]
-        status = f"✅ 已生成 {len(generated)} 個實驗題次回答並填入逐題表格；尚未評測。"
+        status_icon = "⚠️" if failed else "✅"
+        status = f"{status_icon} 已處理 {len(generated)} 個實驗題次；成功 {len(generated) - len(failed)}、失敗 {len(failed)}，尚未評測。"
+        if failed:
+            first_error = str(failed[0].get("answer_status") or "未知錯誤")
+            status += f" 首筆失敗原因：{first_error[:500]}"
         details = _single_experiment_detail_rows(generated)
         _save_experiment_data(project_id, {
             **previous, "questions": questions, "groups": saved_groups,
@@ -4554,7 +4561,9 @@ def generate_experiment_project_answers_for_ui(
             "question_set_name": question.get("question_set_name", "未分類題目集"),
             "question": question["question"], "expected_answer": question["expected_answer"],
             "document": question.get("document", ""), "actual_answer": actual,
-            "answer_status": status, **retrieval_metrics,
+            "answer_status": status,
+            "reason": "" if status.startswith("✅") else status,
+            **retrieval_metrics,
         }
 
     try:
@@ -4569,7 +4578,12 @@ def generate_experiment_project_answers_for_ui(
                 progress(completed / len(tasks), desc=f"已生成 {completed} / {len(tasks)} 個跨專案實驗題次回答")
         generated = [item for item in answers if item is not None]
         details = _experiment_project_detail_rows(generated)
-        status = f"✅ 已生成 {len(generated)} 個實驗題次回答並填入逐題表格；尚未評測。"
+        failed = [item for item in generated if not str(item.get("answer_status", "")).startswith("✅")]
+        status_icon = "⚠️" if failed else "✅"
+        status = f"{status_icon} 已處理 {len(generated)} 個實驗題次；成功 {len(generated) - len(failed)}、失敗 {len(failed)}，尚未評測。"
+        if failed:
+            first_error = str(failed[0].get("answer_status") or "未知錯誤")
+            status += f" 首筆失敗原因：{first_error[:500]}"
         updated = save_experiment_project(current["experiment_project_id"], {
             "pending_answers": generated, "results": [], "group_summary_rows": [],
             "summary_rows": [], "detail_rows": details,
