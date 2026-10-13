@@ -2349,6 +2349,7 @@ def _inline_group_updates(
             retrieval_choices.insert(0, (f"{strategy}（與目前圖譜模式不相容）", strategy))
         reranker_update, expansion_update = _postprocessing_control_updates(
             strategy, reranker, expansion, row_visible=visible,
+            graph_modes=graph_modes,
         )
         model_update = gr.update(value=item.get("answer_model"), visible=visible)
         answer_effort_model = item.get("answer_model")
@@ -2409,11 +2410,15 @@ def _strategy_dropdown_updates_for_graph_mode(
 def _postprocessing_control_updates(
     strategy: str | None, reranker: str | None, expansion: str | None,
     *, row_visible: bool = True,
+    graph_modes: list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> tuple[Any, Any]:
     try:
         spec = RETRIEVAL_STRATEGIES.get_spec(strategy_id_from_label(str(strategy or "")))
         supports_reranker = "reranker" in spec.postprocessors
         supports_expansion = "evidence_expansion" in spec.postprocessors
+        requested_modes = set(graph_modes or [])
+        if requested_modes and not requested_modes.issubset(set(spec.supported_graph_modes)):
+            supports_reranker = supports_expansion = False
     except ValueError:
         supports_reranker = supports_expansion = False
     return (

@@ -2938,6 +2938,31 @@ def test_inline_experiment_group_add_and_remove(tmp_path, monkeypatch) -> None:
     assert ui.load_project(project["project_id"])["experiment"]["groups"] == removed[-3]
 
 
+def test_removing_last_group_hides_postprocessors_for_per_document_project(
+    tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("partitioned-experiment")
+    llm_state = settings.load_service_settings("llm")
+    groups = [{
+        "name": "實驗組 1", "answer_model": "gpt-4o-mini",
+        "retrieval_config": _retrieval_config(),
+    }]
+    monkeypatch.setattr(ui, "_single_project_graph_modes", lambda _project_id: ["per_document"])
+
+    removed = ui.remove_inline_experiment_group_for_ui(
+        0, project["project_id"], [], 1, llm_state, groups,
+        *ui._inline_group_values(groups),
+    )
+
+    assert removed[-3] == []
+    assert removed[5]["visible"] is False
+    assert removed[6]["visible"] is False
+    second_row = ui.EXPERIMENT_GROUP_COMPONENTS
+    assert removed[second_row + 5]["visible"] is False
+    assert removed[second_row + 6]["visible"] is False
+
+
 def test_remove_inline_group_accepts_integral_value_for_float_strategy_parameter(
     tmp_path, monkeypatch,
 ) -> None:
