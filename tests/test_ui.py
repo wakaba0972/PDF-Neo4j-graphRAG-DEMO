@@ -505,8 +505,8 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
         tab["props"]["label"]: tab["props"]["interactive"]
         for tab in experiment_tabs
     }
-    assert experiment_tab_states == {
-        "2-0 實驗專案": False,
+    assert experiment_tab_states["2-0 實驗專案"] is not False
+    assert {label: state for label, state in experiment_tab_states.items() if label != "2-0 實驗專案"} == {
         "2-1 成員專案連線測試": False,
         "2-2 自動實驗測試": False,
     }
@@ -727,7 +727,7 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     assert "從 PDF 建立題目與答案" in values
     assert values.count("檢索並生成回答") == 3
     assert "進行評測" in values
-    assert "匯入中央題庫" in values
+    assert "匯入" in values
     assert "匯入題目" in values
     assert "儲存題目" not in values
     assert "匯出題目" in values
@@ -789,9 +789,10 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     labels = [
         component.get("props", {}).get("label") for component in app.config["components"]
     ]
-    assert labels.index("0-0 使用者") < labels.index("0-1 管理題目集")
-    assert labels.index("0-1 管理題目集") < labels.index("0-2 綁定題目集")
-    assert labels.index("0-2 綁定題目集") < labels.index("0-3 API Key 設定")
+    assert "0-0 登入" not in labels
+    assert labels.index("0 系統設定") < labels.index("1-0 專案設定")
+    assert labels.index("API Key 設定") < labels.index("題目集管理") < labels.index("專案綁定題目集")
+    assert not {"0-1 管理題目集", "0-2 綁定題目集", "0-3 API Key 設定"} & set(labels)
     assert "0-4 API Key 設定" not in labels
     assert "1-7 單一專案實驗" not in labels
     assert labels.index("1-0 專案設定") < labels.index("1-1 連線設定")
@@ -992,12 +993,12 @@ def test_global_api_credentials_exist_only_on_page_zero() -> None:
     components = app.config["components"]
     labels = [component.get("props", {}).get("label") for component in components]
 
-    assert "0-0 使用者" in labels
-    assert {"0-1 管理題目集", "0-2 綁定題目集", "0-3 API Key 設定"} <= set(labels)
+    assert "0-0 登入" not in labels
+    assert {"0 系統設定", "API Key 設定", "題目集管理", "專案綁定題目集"} <= set(labels)
     assert labels.count("OpenAI API Key") == 1
     assert labels.count("OpenAI API Base URL") == 1
     assert not any("API Key" in str(label) for label in labels if label not in {
-        "0-3 API Key 設定", "OpenAI API Key",
+        "API Key 設定", "OpenAI API Key",
     })
     assert {"1-0 專案設定", "1-1 連線設定", "1-6 單一專案實驗",
             "2-0 實驗專案", "2-2 自動實驗測試"} <= set(labels)
@@ -1025,7 +1026,7 @@ def test_question_set_manager_imports_centrally_and_binding_is_project_scoped(tm
     assert saved_selector["value"] == [question_set_id]
     assert project_after["question_set_ids"] == [question_set_id]
     assert ui.bound_question_sets(project_after)[0]["name"] == "中央測試集"
-    # Simulate leaving 0-2 and reopening it: selections must be read from project.json.
+    # Simulate leaving 0 系統設定 and reopening it: selections must be read from project.json.
     restored_status, restored_selector = ui.project_question_set_bindings_for_ui(project["project_id"])
     assert restored_status.startswith("專案")
     assert restored_selector["value"] == [question_set_id]
@@ -1037,7 +1038,7 @@ def test_question_set_manager_imports_centrally_and_binding_is_project_scoped(tm
     assert refreshed_selector["value"] == [question_set_id]
 
     components = build_app().config["components"]
-    assert any(component.get("props", {}).get("value") == "刪除所選題目集" for component in components)
+    assert any(component.get("props", {}).get("value") == "刪除" for component in components)
 
 
 def test_central_question_set_delete_requires_confirmation_and_refreshes(tmp_path, monkeypatch) -> None:
@@ -1150,41 +1151,47 @@ def test_bound_question_sets_use_loaded_project_without_reloading(tmp_path, monk
     assert [item["name"] for item in sets] == ["綁定題集"]
 
 
-def test_user_selection_unlocks_roots_and_names_audited_projects(tmp_path, monkeypatch) -> None:
+def test_login_reveals_app_and_names_audited_projects(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     app = build_app()
     user_dropdown = next(
         component for component in app.config["components"]
-        if component.get("props", {}).get("label") == "目前使用者"
+        if component.get("props", {}).get("label") == "帳號"
     )
     assert user_dropdown["props"]["choices"] == [
-        ("請選擇使用者", ""),
+        ("請選擇帳號", ""),
         *((name, name) for name in ("57", "58", "59", "60", "61")),
     ]
     assert user_dropdown["props"]["value"] == ""
-    initial_tabs = {
-        component.get("props", {}).get("label"): component.get("props", {}).get("interactive")
-        for component in app.config["components"]
+    root_tabs = [
+        component for component in app.config["components"]
         if component.get("props", {}).get("label") in {
-            "0-1 管理題目集", "0-2 綁定題目集", "0-3 API Key 設定",
-            "1-0 專案設定", "2-0 實驗專案",
+            "0 系統設定", "1-0 專案設定", "2-0 實驗專案",
             "3-0 人工評測抽樣", "3-1 人工評測", "4-0 AI／人工評測結果",
         }
+    ]
+    assert len(root_tabs) == 6
+    assert all(tab["props"].get("interactive") is not False for tab in root_tabs)
+    rejected = ui.login_for_ui("")
+    assert rejected[0] == ""
+    assert rejected[2]["visible"] is True and rejected[3]["visible"] is False
+    assert "請先選擇帳號" in rejected[4]
+    login = ui.login_for_ui("61")
+    assert login[0] == "61"
+    assert "61" in login[1] and "登出" in login[1] and "user-menu" in login[1]
+    assert rejected[1] == ""
+    assert login[2]["visible"] is False and login[3]["visible"] is True
+    assert login[4] == ""
+    columns = {
+        component["props"].get("elem_id"): component["props"].get("visible")
+        for component in app.config["components"] if component.get("type") == "column"
     }
-    assert initial_tabs == {
-        "0-1 管理題目集": False,
-        "0-2 綁定題目集": False,
-        "0-3 API Key 設定": False,
-        "1-0 專案設定": False,
-        "2-0 實驗專案": False,
-        "3-0 人工評測抽樣": False,
-        "3-1 人工評測": False,
-        "4-0 AI／人工評測結果": False,
-    }
-    assert all(update["interactive"] is False for update in ui.user_access_tabs_for_ui(None))
-    selection = ui.select_user_for_ui("61")
-    assert "61" in selection[0]
-    assert all(update["interactive"] is True for update in selection[1:])
+    assert columns["login-view"] is True
+    button_values = [
+        component["props"].get("value") for component in app.config["components"]
+        if component.get("type") == "button"
+    ]
+    assert "登入" in button_values
 
     project_dependency = next(
         dependency for dependency in app.config["dependencies"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from copy import deepcopy
 import hashlib
+import html
 import json
 from datetime import datetime, timedelta
 import re
@@ -130,23 +131,41 @@ KNOWN_USERS = ("57", "58", "59", "60", "61")
 _HUMAN_REVIEW_LOCK = Lock()
 
 
-def current_user_banner_for_ui(user: str | None) -> str:
-    return f"### 👤 目前使用者：{user}" if user in KNOWN_USERS else "### 👤 目前使用者：尚未選擇"
+def user_menu_html_for_ui(user: str | None) -> str:
+    """Render the top-right account menu; logout reloads the page to clear session state."""
+    if user not in KNOWN_USERS:
+        return ""
+    name = html.escape(user)
+    return (
+        '<details class="user-menu">'
+        f'<summary class="user-menu-trigger" title="帳號選單"><span class="user-avatar">{name}</span>'
+        '<span class="user-menu-caret">▾</span></summary>'
+        '<div class="user-menu-panel">'
+        f'<div class="user-menu-header"><span class="user-avatar">{name}</span>'
+        f'<div><div class="user-menu-label">目前登入</div><div class="user-menu-name">{name}</div></div></div>'
+        '<button type="button" class="user-menu-item" onclick="window.location.reload()">登出</button>'
+        "</div></details>"
+    )
 
 
-def user_access_tabs_for_ui(user: str | None) -> tuple[dict[str, Any], ...]:
-    enabled = user in KNOWN_USERS
-    return tuple(gr.update(interactive=enabled) for _ in range(8))
-
-
-def select_user_for_ui(user: str | None) -> tuple[Any, ...]:
-    return current_user_banner_for_ui(user), *user_access_tabs_for_ui(user)
+def login_for_ui(user: str | None) -> tuple[Any, ...]:
+    """Return the logged-in user, account menu, and login/app view updates."""
+    if user not in KNOWN_USERS:
+        return (
+            "", user_menu_html_for_ui(None),
+            gr.update(visible=True), gr.update(visible=False),
+            "⚠️ 請先選擇帳號再按「登入」。",
+        )
+    return (
+        user, user_menu_html_for_ui(user),
+        gr.update(visible=False), gr.update(visible=True), "",
+    )
 
 
 def _user_prefixed_name(name: str, user: str | None) -> str:
     clean_name = str(name or "").strip()
     if user not in KNOWN_USERS:
-        raise ValueError("請先在 0-0 選擇使用者")
+        raise ValueError("請先登入")
     if not clean_name:
         raise ValueError("請輸入專案名稱")
     prefix = f"{user} | "
@@ -3542,7 +3561,7 @@ def run_experiment_groups_for_ui(
     if not project_id:
         return "❌ 請先建立或載入專案。", [], [], []
     if not questions:
-        return "❌ 請先在 0-2 為此專案綁定題目集，再回到 1-6 選擇。", [], [], []
+        return "❌ 請先在「0 系統設定」為此專案綁定題目集，再回到 1-6 選擇。", [], [], []
     if not groups:
         return "❌ 請至少加入一個實驗組。", [], [], []
     try:
@@ -3820,7 +3839,7 @@ def generate_experiment_answers_for_ui(
     if not project_id:
         return "❌ 請先建立或載入專案。", [], [], [], []
     if not questions:
-        return "❌ 請先在 0-2 為此專案綁定題目集，再回到 1-6 選擇。", [], [], [], []
+        return "❌ 請先在「0 系統設定」為此專案綁定題目集，再回到 1-6 選擇。", [], [], [], []
     if not groups:
         return "❌ 請至少加入一個實驗組。", [], [], [], []
     try:
@@ -4391,7 +4410,7 @@ def generate_experiment_project_answers_for_ui(
         return f"❌ 成員專案載入失敗：{exc}", [], [], [], [], current
     missing = [member for member in members if not question_map.get(member)]
     if missing:
-        return f"❌ 尚有 {len(missing)} 個成員專案沒有題目集，請至 0-2 綁定題目集。", [], [], [], [], current
+        return f"❌ 尚有 {len(missing)} 個成員專案沒有題目集，請至「0 系統設定」綁定題目集。", [], [], [], [], current
     for member_id in members:
         member = members_data[member_id]
         if not (member.get("graph_state") or {}).get("neo4j_imported"):
@@ -4616,7 +4635,7 @@ def run_experiment_project_for_ui(
         return f"❌ 成員專案載入失敗：{exc}", [], [], current
     missing = [member_id for member_id in members if not question_map.get(member_id)]
     if missing:
-        return f"❌ 尚有 {len(missing)} 個成員專案沒有題目集，請至 0-2 綁定題目集。", [], [], current
+        return f"❌ 尚有 {len(missing)} 個成員專案沒有題目集，請至「0 系統設定」綁定題目集。", [], [], current
     if not judge_model:
         return "❌ 請選擇全域評測模型。", [], [], current
     all_results: list[dict[str, Any]] = []
@@ -4785,7 +4804,7 @@ def remove_human_review_sample_for_ui(
 ) -> tuple[str, list[list[Any]], Any, str, Any, Any, Any]:
     try:
         if current_actor() not in KNOWN_USERS:
-            raise ValueError("請先在 0-0 選擇有效使用者")
+            raise ValueError("請先登入")
         if not confirmed:
             raise ValueError("請先勾選確認，避免誤刪人工評分資料")
         experiment_project_id, run_id = _parse_saved_run_key(run_key)
@@ -4814,7 +4833,7 @@ def create_human_review_sample_for_ui(
     try:
         actor = current_actor()
         if actor not in KNOWN_USERS:
-            raise ValueError("請先在 0-0 選擇有效使用者")
+            raise ValueError("請先登入")
         experiment_project_id, run_id = _parse_saved_run_key(run_key)
         requested_count = int(sample_count)
         if requested_count < 1 or float(sample_count) != requested_count:
@@ -5030,7 +5049,7 @@ def submit_human_review_for_ui(
     try:
         actor = current_actor()
         if actor not in KNOWN_USERS:
-            raise ValueError("請先在 0-0 選擇有效使用者")
+            raise ValueError("請先登入")
         if score is None or isinstance(score, bool) or int(score) not in (0, 1, 2) or float(score) != int(score):
             raise ValueError("答案判定必須選擇 0、1 或 2")
         parts = str(task_key or "").split("::", 2)
@@ -5942,961 +5961,1012 @@ def build_app() -> gr.Blocks:
     initial_embedding_credentials = resolve_model_credentials_for_ui(
         embedding_settings, embedding_profile["models"][0]
     )
-    with gr.Blocks(title="PDF GraphRAG 測試工具", fill_width=True) as app:
-        gr.Markdown(
-            "# PDF GraphRAG 測試工具\n"
-            "上傳使用手冊、調整建圖參數，並測試 Neo4j GraphRAG。"
-        )
+    close_user_menu_js = """<script>
+    document.addEventListener("click", (event) => {
+        document.querySelectorAll("details.user-menu[open]").forEach((menu) => {
+            if (!menu.contains(event.target)) menu.removeAttribute("open");
+        });
+    });
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+            document.querySelectorAll("details.user-menu[open]").forEach((menu) => menu.removeAttribute("open"));
+        }
+    });
+    </script>"""
+    with gr.Blocks(title="PDF GraphRAG 測試工具", fill_width=True, head=close_user_menu_js) as app:
         gr.HTML("""<style>
         .project-workspace-action {align-self:flex-end !important;}
         .project-workspace-action button {height:38px !important;min-height:38px !important;}
+        #login-view {min-height:80vh; justify-content:center; align-items:center;}
+        #login-card {flex:0 0 auto !important; width:100%; max-width:420px; padding:32px 28px;
+            border:1px solid var(--border-color-primary); border-radius:16px;
+            background:var(--background-fill-primary); box-shadow:var(--shadow-drop-lg);}
+        #login-card h1 {text-align:center; margin-bottom:4px;}
+        #login-card .login-subtitle p {text-align:center; color:var(--body-text-color-subdued);}
+        .app-header {align-items:flex-start !important;}
+        .compact-file .wrap {min-height:0 !important; padding:8px !important; flex-direction:row !important; gap:8px !important;}
+        .compact-file .wrap .icon-wrap {margin:0 !important; width:20px !important;}
+        #user-menu-slot {flex:0 0 auto !important; width:auto !important; min-width:0 !important; overflow:visible !important;}
+        .user-menu {position:relative;}
+        .user-menu summary {list-style:none;}
+        .user-menu summary::-webkit-details-marker {display:none;}
+        .user-menu-trigger {display:flex; align-items:center; gap:4px; cursor:pointer;
+            padding:4px 8px 4px 4px; border-radius:999px; user-select:none;}
+        .user-menu-trigger:hover {background:var(--background-fill-secondary);}
+        .user-avatar {display:inline-flex; align-items:center; justify-content:center;
+            width:36px; height:36px; border-radius:50%; flex:none;
+            background:var(--color-accent); color:#fff; font-weight:600; font-size:14px;}
+        .user-menu-caret {color:var(--body-text-color-subdued); font-size:12px;}
+        .user-menu-panel {position:absolute; right:0; top:calc(100% + 6px); z-index:1000;
+            min-width:200px; padding:8px; border-radius:12px;
+            border:1px solid var(--border-color-primary);
+            background:var(--background-fill-primary); box-shadow:var(--shadow-drop-lg);}
+        .user-menu-header {display:flex; align-items:center; gap:10px; padding:8px;
+            border-bottom:1px solid var(--border-color-primary); margin-bottom:6px;}
+        .user-menu-label {font-size:12px; color:var(--body-text-color-subdued);}
+        .user-menu-name {font-weight:600; color:var(--body-text-color);}
+        .user-menu-item {display:block !important; width:100% !important; text-align:left !important;
+            padding:8px 10px !important; border-radius:8px !important; background:none !important;
+            border:none !important; cursor:pointer; color:var(--body-text-color) !important; font-size:14px !important;}
+        .user-menu-item:hover {background:var(--background-fill-secondary) !important;}
         </style>""")
-        current_project_banner = gr.Markdown(_current_project_banner({}))
-        current_user_banner = gr.Markdown(current_user_banner_for_ui(None))
-        llm_service_state = gr.State(llm_settings)
-        experiment_llm_service_state = gr.State(experiment_llm_settings)
-        embedding_service_state = gr.State(embedding_settings)
-        project_state = gr.State({})
-        documents_state = gr.State([])
-        active_preview_state = gr.State({})
-        active_chunks_state = gr.State([])
-        chunk_state = gr.State([])
-        graph_state = gr.State({})
-        evaluation_state = gr.State({})
-        run_control_state = gr.State(RunControl())
-        neo4j_connected_state = gr.State(False)
-        workspace_mode_state = gr.State("")
-        single_workspace_mode = gr.State("single")
-        experiment_workspace_mode = gr.State("experiment")
-        experiment_project_state = gr.State({})
-        experiment_project_connection_state = gr.State({})
-        experiment_project_pending_answers_state = gr.State([])
-        experiment_project_results_state = gr.State([])
-        # Internal service states are shared by workflows; credentials are editable only on 0-3.
-        llm_provider = gr.State("OpenAI")
-        model_endpoint = gr.State(llm_profile["base_url"])
-        api_key = gr.State(llm_profile["api_key"])
-        model_test_button = gr.State(False)
-        model_list_button = gr.State(False)
-        llm_models_table = gr.State([])
-        model_connection_status = gr.State(llm_profile["status"])
-        embedding_provider = gr.State("OpenAI")
-        embedding_api_base = gr.State(embedding_profile["base_url"])
-        embedding_api_key = gr.State(embedding_profile["api_key"])
-        embedding_test_button = gr.State(False)
-        embedding_list_button = gr.State(False)
-        embedding_models_table = gr.State([])
-        embedding_connection_status = gr.State(embedding_profile["status"])
+        current_user_state = gr.State("")
 
-        with gr.Tab("0-0 使用者"):
-            gr.Markdown("請先選擇目前操作使用者，選擇後才能開啟專案與其他設定頁面。")
-            current_user_dropdown = gr.Dropdown(
-                choices=[("請選擇使用者", ""), *((name, name) for name in KNOWN_USERS)],
-                value="", label="目前使用者",
-                interactive=True,
-            )
+        with gr.Column(visible=True, elem_id="login-view") as login_view:
+            with gr.Column(elem_id="login-card"):
+                gr.Markdown("# PDF GraphRAG 測試工具")
+                gr.Markdown("請選擇帳號登入", elem_classes=["login-subtitle"])
+                login_user_dropdown = gr.Dropdown(
+                    choices=[("請選擇帳號", ""), *((name, name) for name in KNOWN_USERS)],
+                    value="", label="帳號",
+                    interactive=True,
+                )
+                login_button = gr.Button("登入", variant="primary")
+                login_status = gr.Markdown("")
 
-        with gr.Tab("0-1 管理題目集", interactive=False) as question_set_manager_tab:
-            gr.Markdown("此頁只負責將題目集匯入中央題庫；專案使用哪些題目集，請至 0-2 設定。")
-            with gr.Row():
-                central_question_file = gr.File(
-                    label="題目集（JSON／CSV）", file_types=[".json", ".csv"], type="filepath",
-                )
-                central_question_name = gr.Textbox(label="題目集名稱（可留空使用檔名）")
-                import_central_question_button = gr.Button("匯入中央題庫", variant="primary")
-            central_question_status = gr.Markdown("尚未載入中央題庫。")
-            with gr.Row():
-                central_question_selector = gr.Dropdown(
-                    choices=[], value=None, label="已匯入中央題目集", scale=5,
-                )
-                delete_central_question_set_button = gr.Button(
-                    "刪除所選題目集", variant="stop", scale=1,
-                )
-            with gr.Row():
-                central_question_delete_confirmation = gr.Markdown(visible=False)
-                confirm_delete_central_question_set_button = gr.Button(
-                    "確認刪除", variant="stop", visible=False,
-                )
-                cancel_delete_central_question_set_button = gr.Button(
-                    "取消", visible=False,
-                )
-            central_question_table = gr.Dataframe(
-                headers=["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"],
-                datatype=["number", "str", "str", "str", "str"], interactive=False, wrap=True,
-            )
-
-        with gr.Tab("0-2 綁定題目集", interactive=False) as question_set_binding_tab:
-            gr.Markdown("集中設定各專案可使用的中央題目集。1-6 與跨專案測試都會使用這裡保存的綁定。")
-            binding_project_selector = gr.Dropdown(
-                choices=project_choices, value=project_choices[0][1] if project_choices else None,
-                label="專案",
-            )
-            binding_question_set_selector = gr.CheckboxGroup(choices=[], value=[], label="已綁定題目集")
-            binding_question_set_status = gr.Markdown("請選擇專案。")
-            save_question_set_bindings_button = gr.Button("保存綁定", variant="primary")
-
-        with gr.Tab("0-3 API Key 設定", interactive=False) as api_settings_tab:
-            gr.Markdown("所有模型與 Embedding 呼叫共用同一組 OpenAI API 設定，並寫入本機 `.env`。")
-            with gr.Row():
-                global_api_endpoint = gr.Textbox(label="OpenAI API Base URL", value=llm_profile["base_url"])
-                global_api_key = gr.Textbox(label="OpenAI API Key", value=llm_profile["api_key"], type="password")
-            with gr.Row():
-                global_api_test_button = gr.Button("測試 OpenAI 連線", variant="primary")
-                reload_button = gr.Button("重新讀取 .env")
-            global_api_status = gr.Markdown("API 設定修改後會自動儲存。連線測試僅供診斷，不是後續操作的前置條件。")
-
-        with gr.Tab("1-0 專案設定", interactive=False) as project_tab:
-            gr.Markdown("### 專案工作區\n建立或載入專案後，可保存本頁面所有連線、模型、參數、Chunk、文件、建圖狀態與問答紀錄。")
-            with gr.Row():
-                project_selector = gr.Dropdown(
-                    choices=project_choices,
-                    value=project_choices[0][1] if project_choices else None,
-                    label="現有專案", interactive=True,
-                )
-                load_project_button = gr.Button(
-                    "載入專案", variant="primary", elem_classes="project-workspace-action",
-                )
-                delete_project_button = gr.Button(
-                    "刪除專案", variant="stop", elem_classes="project-workspace-action",
-                )
-            with gr.Row():
-                project_delete_confirmation_status = gr.Markdown(visible=False)
-                confirm_delete_project_button = gr.Button(
-                    "確認刪除", variant="stop", visible=False,
-                )
-                cancel_delete_project_button = gr.Button("取消", visible=False)
-            with gr.Row():
-                new_project_name = gr.Textbox(label="新專案名稱", placeholder="例如：ALCX17 使用手冊")
-                create_project_button = gr.Button(
-                    "建立新專案", variant="primary", elem_classes="project-workspace-action",
-                )
-                delete_project_completed = gr.State(False)
-            with gr.Row():
-                export_project_button = gr.Button("匯出專案封裝")
-                export_project_file = gr.File(label="下載專案封裝", interactive=False)
-                import_project_file = gr.File(label="選擇專案封裝 ZIP", type="filepath", file_types=[".zip"])
-                import_project_button = gr.Button("匯入專案封裝", variant="secondary")
-            project_status = gr.Markdown("尚未選擇專案；載入後，設定與處理結果都會自動保存。")
-            gr.Markdown("⚠️ 專案設定保存在本機 `data/projects/`，其中 Neo4j Password 為明文；模型 API Key 僅保存在 `.env`。")
-
-        with gr.Tab("1-1 連線設定", interactive=False) as connection_tab:
-            with gr.Row():
-                with gr.Column():
-                    gr.Markdown("### Neo4j")
-                    neo4j_uri = gr.Textbox(label="URI", value=env["NEO4J_URI"])
-                    neo4j_database = gr.Textbox(label="專案專屬 Neo4j Database（匯入圖譜時自動建立）", value="", interactive=False)
-                    neo4j_username = gr.Textbox(label="Username", value=env["NEO4J_USERNAME"])
-                    neo4j_password = gr.Textbox(label="Password", value=env["NEO4J_PASSWORD"], type="password")
-                    neo4j_test_button = gr.Button("測試 Neo4j 連線", variant="primary")
-                    neo4j_connection_status = gr.Markdown()
-            gr.Markdown("Neo4j 連線設定保存在此頁。模型與 Embedding API 請至 0-3 API Key 設定管理。")
-            env_status = gr.Markdown("Neo4j 設定欄位修改後會自動儲存。")
-
-        with gr.Tab("1-2 PDF 與參數", interactive=False) as pdf_tab:
-            with gr.Row():
-                with gr.Column(scale=1):
-                    pdf_file = gr.File(
-                        label="PDF 使用手冊（可一次選取多個檔案）",
-                        file_types=[".pdf"], file_count="multiple", type="filepath",
-                    )
-                    chunk_size = gr.Slider(100, 10000, value=1500, step=100, label="Chunk size（字元）")
-                    chunk_overlap = gr.Slider(0, 2000, value=200, step=50, label="Chunk overlap（字元）")
-                    preview_button = gr.Button("解析並加入專案", variant="primary")
-                    gr.Markdown("##### 已加入本專案的 PDF")
-                    documents_table = gr.Dataframe(
-                        headers=["選取", "文件", "頁碼範圍", "Chunk 數"],
-                        datatype=["bool", "str", "str", "number"],
-                        interactive=True, static_columns=[1, 2, 3],
-                        row_count=(0, "fixed"), col_count=(4, "fixed"),
-                        wrap=True,
-                    )
-                    remove_document_selector = gr.Dropdown(
-                        label="選擇要移除的 PDF（可多選）", choices=[],
-                        multiselect=True, interactive=True, visible=False,
-                    )
-                    remove_document_button = gr.Button("移除選定的 PDF", variant="stop")
-                with gr.Column(scale=3):
-                    preview_status = gr.Markdown("尚未解析 PDF。可重複上傳多份 PDF，逐一加入同一個專案。")
-                    with gr.Row():
-                        previous_button = gr.Button("上一份文件", scale=1)
-                        next_button = gr.Button("下一份文件", scale=1)
-                    page_status = gr.Markdown("請先解析 PDF。")
-                    chunk_table = gr.Dataframe(
-                        headers=["編號", "文件", "頁碼", "字元數", "內容"],
-                        datatype=["number", "str", "str", "number", "str"],
-                        interactive=False,
-                        wrap=True,
-                        max_height=750,
-                        column_widths=[80, 160, 120, 100, 900],
-                    )
-
-        with gr.Tab("1-3 建圖", interactive=False) as graph_tab:
-            gr.Markdown("### 規劃並抽取知識圖譜")
-            with gr.Row():
-                pause_button = gr.Button("⏸ 暫停")
-                stop_button = gr.Button("⏹ 停止", variant="stop")
-            run_control_status = gr.Markdown(
-                "「暫停」「停止」在下方「規劃 Schema」或「抽取實體與關係」"
-                "執行中都可使用：暫停只會停止送出新批次（已送出的批次仍會跑完）；"
-                "停止會盡快中止整個流程。"
-            )
-            with gr.Group():
-                gr.Markdown("#### ①（可選）規劃 Schema")
+        with gr.Column(visible=False) as app_view:
+            with gr.Row(elem_classes=["app-header"]):
                 gr.Markdown(
-                    "選擇 LLM，從上一頁產生的 chunks 規劃實體與關係類型。"
+                    "# PDF GraphRAG 測試工具\n"
+                    "上傳使用手冊、調整建圖參數，並測試 Neo4j GraphRAG。"
                 )
+                user_menu = gr.HTML(user_menu_html_for_ui(None), padding=False, min_height=0, elem_id="user-menu-slot")
+            current_project_banner = gr.Markdown(_current_project_banner({}))
+            llm_service_state = gr.State(llm_settings)
+            experiment_llm_service_state = gr.State(experiment_llm_settings)
+            embedding_service_state = gr.State(embedding_settings)
+            project_state = gr.State({})
+            documents_state = gr.State([])
+            active_preview_state = gr.State({})
+            active_chunks_state = gr.State([])
+            chunk_state = gr.State([])
+            graph_state = gr.State({})
+            evaluation_state = gr.State({})
+            run_control_state = gr.State(RunControl())
+            neo4j_connected_state = gr.State(False)
+            workspace_mode_state = gr.State("")
+            single_workspace_mode = gr.State("single")
+            experiment_workspace_mode = gr.State("experiment")
+            experiment_project_state = gr.State({})
+            experiment_project_connection_state = gr.State({})
+            experiment_project_pending_answers_state = gr.State([])
+            experiment_project_results_state = gr.State([])
+            # Internal service states are shared by workflows; credentials are editable only on 0 系統設定.
+            llm_provider = gr.State("OpenAI")
+            model_endpoint = gr.State(llm_profile["base_url"])
+            api_key = gr.State(llm_profile["api_key"])
+            model_test_button = gr.State(False)
+            model_list_button = gr.State(False)
+            llm_models_table = gr.State([])
+            model_connection_status = gr.State(llm_profile["status"])
+            embedding_provider = gr.State("OpenAI")
+            embedding_api_base = gr.State(embedding_profile["base_url"])
+            embedding_api_key = gr.State(embedding_profile["api_key"])
+            embedding_test_button = gr.State(False)
+            embedding_list_button = gr.State(False)
+            embedding_models_table = gr.State([])
+            embedding_connection_status = gr.State(embedding_profile["status"])
+
+            with gr.Tab("0 系統設定") as system_settings_tab:
+                with gr.Accordion("API Key 設定", open=True):
+                    gr.Markdown("所有模型與 Embedding 呼叫共用同一組 OpenAI API 設定，並寫入本機 `.env`。")
+                    with gr.Row():
+                        global_api_endpoint = gr.Textbox(label="OpenAI API Base URL", value=llm_profile["base_url"])
+                        global_api_key = gr.Textbox(label="OpenAI API Key", value=llm_profile["api_key"], type="password")
+                    with gr.Row():
+                        global_api_test_button = gr.Button("測試 OpenAI 連線", variant="primary")
+                        reload_button = gr.Button("重新讀取 .env")
+                    global_api_status = gr.Markdown("API 設定修改後會自動儲存。連線測試僅供診斷，不是後續操作的前置條件。")
+                with gr.Accordion("題目集管理", open=True):
+                    with gr.Row(equal_height=True):
+                        central_question_file = gr.File(
+                            label="題目集（JSON／CSV）", file_types=[".json", ".csv"], type="filepath",
+                            height=100, scale=3, elem_classes=["compact-file"],
+                        )
+                        central_question_name = gr.Textbox(
+                            label="題目集名稱", placeholder="可留空使用檔名", scale=2,
+                        )
+                    import_central_question_button = gr.Button("匯入", variant="primary")
+                    central_question_selector = gr.Dropdown(
+                        choices=[], value=None, label="已匯入題目集",
+                    )
+                    delete_central_question_set_button = gr.Button("刪除", variant="stop")
+                    central_question_status = gr.Markdown("尚未載入中央題庫。")
+                    with gr.Row():
+                        central_question_delete_confirmation = gr.Markdown(visible=False)
+                        confirm_delete_central_question_set_button = gr.Button(
+                            "確認刪除", variant="stop", visible=False,
+                        )
+                        cancel_delete_central_question_set_button = gr.Button(
+                            "取消", visible=False,
+                        )
+                    central_question_table = gr.Dataframe(
+                        headers=["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"],
+                        datatype=["number", "str", "str", "str", "str"], interactive=False, wrap=True,
+                        max_height=360,
+                    )
+                with gr.Accordion("專案綁定題目集", open=True):
+                    gr.Markdown("設定各專案可使用的中央題目集。1-6 與跨專案測試都會使用這裡保存的綁定。")
+                    binding_project_selector = gr.Dropdown(
+                        choices=project_choices, value=project_choices[0][1] if project_choices else None,
+                        label="專案",
+                    )
+                    binding_question_set_selector = gr.CheckboxGroup(choices=[], value=[], label="已綁定題目集")
+                    binding_question_set_status = gr.Markdown("請選擇專案。")
+                    save_question_set_bindings_button = gr.Button("保存綁定", variant="primary")
+
+            with gr.Tab("1-0 專案設定") as project_tab:
+                gr.Markdown("### 專案工作區\n建立或載入專案後，可保存本頁面所有連線、模型、參數、Chunk、文件、建圖狀態與問答紀錄。")
                 with gr.Row():
-                    graph_llm_model = gr.Dropdown(
+                    project_selector = gr.Dropdown(
+                        choices=project_choices,
+                        value=project_choices[0][1] if project_choices else None,
+                        label="現有專案", interactive=True,
+                    )
+                    load_project_button = gr.Button(
+                        "載入專案", variant="primary", elem_classes="project-workspace-action",
+                    )
+                    delete_project_button = gr.Button(
+                        "刪除專案", variant="stop", elem_classes="project-workspace-action",
+                    )
+                with gr.Row():
+                    project_delete_confirmation_status = gr.Markdown(visible=False)
+                    confirm_delete_project_button = gr.Button(
+                        "確認刪除", variant="stop", visible=False,
+                    )
+                    cancel_delete_project_button = gr.Button("取消", visible=False)
+                with gr.Row():
+                    new_project_name = gr.Textbox(label="新專案名稱", placeholder="例如：ALCX17 使用手冊")
+                    create_project_button = gr.Button(
+                        "建立新專案", variant="primary", elem_classes="project-workspace-action",
+                    )
+                    delete_project_completed = gr.State(False)
+                with gr.Row():
+                    export_project_button = gr.Button("匯出專案封裝")
+                    export_project_file = gr.File(label="下載專案封裝", interactive=False)
+                    import_project_file = gr.File(label="選擇專案封裝 ZIP", type="filepath", file_types=[".zip"])
+                    import_project_button = gr.Button("匯入專案封裝", variant="secondary")
+                project_status = gr.Markdown("尚未選擇專案；載入後，設定與處理結果都會自動保存。")
+                gr.Markdown("⚠️ 專案設定保存在本機 `data/projects/`，其中 Neo4j Password 為明文；模型 API Key 僅保存在 `.env`。")
+
+            with gr.Tab("1-1 連線設定", interactive=False) as connection_tab:
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### Neo4j")
+                        neo4j_uri = gr.Textbox(label="URI", value=env["NEO4J_URI"])
+                        neo4j_database = gr.Textbox(label="專案專屬 Neo4j Database（匯入圖譜時自動建立）", value="", interactive=False)
+                        neo4j_username = gr.Textbox(label="Username", value=env["NEO4J_USERNAME"])
+                        neo4j_password = gr.Textbox(label="Password", value=env["NEO4J_PASSWORD"], type="password")
+                        neo4j_test_button = gr.Button("測試 Neo4j 連線", variant="primary")
+                        neo4j_connection_status = gr.Markdown()
+                gr.Markdown("Neo4j 連線設定保存在此頁。模型與 Embedding API 請至「0 系統設定」管理。")
+                env_status = gr.Markdown("Neo4j 設定欄位修改後會自動儲存。")
+
+            with gr.Tab("1-2 PDF 與參數", interactive=False) as pdf_tab:
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        pdf_file = gr.File(
+                            label="PDF 使用手冊（可一次選取多個檔案）",
+                            file_types=[".pdf"], file_count="multiple", type="filepath",
+                        )
+                        chunk_size = gr.Slider(100, 10000, value=1500, step=100, label="Chunk size（字元）")
+                        chunk_overlap = gr.Slider(0, 2000, value=200, step=50, label="Chunk overlap（字元）")
+                        preview_button = gr.Button("解析並加入專案", variant="primary")
+                        gr.Markdown("##### 已加入本專案的 PDF")
+                        documents_table = gr.Dataframe(
+                            headers=["選取", "文件", "頁碼範圍", "Chunk 數"],
+                            datatype=["bool", "str", "str", "number"],
+                            interactive=True, static_columns=[1, 2, 3],
+                            row_count=(0, "fixed"), col_count=(4, "fixed"),
+                            wrap=True,
+                        )
+                        remove_document_selector = gr.Dropdown(
+                            label="選擇要移除的 PDF（可多選）", choices=[],
+                            multiselect=True, interactive=True, visible=False,
+                        )
+                        remove_document_button = gr.Button("移除選定的 PDF", variant="stop")
+                    with gr.Column(scale=3):
+                        preview_status = gr.Markdown("尚未解析 PDF。可重複上傳多份 PDF，逐一加入同一個專案。")
+                        with gr.Row():
+                            previous_button = gr.Button("上一份文件", scale=1)
+                            next_button = gr.Button("下一份文件", scale=1)
+                        page_status = gr.Markdown("請先解析 PDF。")
+                        chunk_table = gr.Dataframe(
+                            headers=["編號", "文件", "頁碼", "字元數", "內容"],
+                            datatype=["number", "str", "str", "number", "str"],
+                            interactive=False,
+                            wrap=True,
+                            max_height=750,
+                            column_widths=[80, 160, 120, 100, 900],
+                        )
+
+            with gr.Tab("1-3 建圖", interactive=False) as graph_tab:
+                gr.Markdown("### 規劃並抽取知識圖譜")
+                with gr.Row():
+                    pause_button = gr.Button("⏸ 暫停")
+                    stop_button = gr.Button("⏹ 停止", variant="stop")
+                run_control_status = gr.Markdown(
+                    "「暫停」「停止」在下方「規劃 Schema」或「抽取實體與關係」"
+                    "執行中都可使用：暫停只會停止送出新批次（已送出的批次仍會跑完）；"
+                    "停止會盡快中止整個流程。"
+                )
+                with gr.Group():
+                    gr.Markdown("#### ①（可選）規劃 Schema")
+                    gr.Markdown(
+                        "選擇 LLM，從上一頁產生的 chunks 規劃實體與關係類型。"
+                    )
+                    with gr.Row():
+                        graph_llm_model = gr.Dropdown(
+                            choices=llm_choices,
+                            value=preferred_llm,
+                            allow_custom_value=False,
+                            label="Schema 規劃 LLM",
+                        )
+                        graph_reasoning_effort = gr.Dropdown(
+                            choices=list(GPT_6_LUNA_REASONING_EFFORTS),
+                            value=DEFAULT_REASONING_EFFORT, label="推理強度",
+                            visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
+                        )
+                        graph_temperature = gr.Slider(
+                            0, 2, value=0, step=0.1, label="Temperature",
+                            info="選用 GPT-6 Luna 且推理強度非 none 時，API 請求會略過此參數。",
+                        )
+                    with gr.Row():
+                        schema_granularity = gr.Radio(
+                            ["粗略", "平衡", "詳細"],
+                            value="平衡",
+                            label="Schema 粒度",
+                        )
+                        max_concurrent_requests = gr.Number(
+                            value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
+                            label="最大並行請求數",
+                        )
+                    schema_documents = gr.Dataframe(
+                        headers=["使用", "PDF"],
+                        datatype=["bool", "str"],
+                        type="array",
+                        value=[],
+                        interactive=True,
+                        static_columns=[1],
+                        row_count=(0, "fixed"),
+                        col_count=(2, "fixed"),
+                        max_height=300,
+                        wrap=True,
+                        label="用於規劃 Schema 的 PDF",
+                    )
+                    gr.Markdown("預設全選；每份勾選的 PDF 都會讀取整份文件。")
+                    plan_schema_button = gr.Button(
+                        "分析文件並規劃 Schema（可選）", variant="primary"
+                    )
+                    plan_status = gr.Markdown("請先在 PDF 頁面解析並產生 chunks。")
+                    gr.HTML(
+                        """
+                        <style>
+                        .schema-scroll-editor .cm-content {
+                            font-size: 17px;
+                            line-height: 1.6;
+                        }
+                        </style>
+                        """,
+                        padding=False,
+                    )
+                    schema_editor = gr.Code(
+                        label="實體與關係 Schema（可編輯 JSON）",
+                        language="json",
+                        interactive=True,
+                        lines=18,
+                        max_lines=18,
+                        wrap_lines=False,
+                        elem_classes="schema-scroll-editor",
+                    )
+
+                with gr.Group():
+                    gr.Markdown("#### ② 抽取實體與關係")
+                    gr.Markdown(
+                        "若已規劃 Schema，可確認上方 JSON 後抽取；若跳過規劃並留白，"
+                        "系統會直接從文件抽取實體與關係。檢查結果後，再手動匯入 Neo4j。"
+                    )
+                    extraction_llm_model = gr.Dropdown(
                         choices=llm_choices,
                         value=preferred_llm,
                         allow_custom_value=False,
-                        label="Schema 規劃 LLM",
+                        label="知識圖譜抽取 LLM",
                     )
-                    graph_reasoning_effort = gr.Dropdown(
+                    extraction_reasoning_effort = gr.Dropdown(
                         choices=list(GPT_6_LUNA_REASONING_EFFORTS),
                         value=DEFAULT_REASONING_EFFORT, label="推理強度",
                         visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
                     )
-                    graph_temperature = gr.Slider(
-                        0, 2, value=0, step=0.1, label="Temperature",
-                        info="選用 GPT-6 Luna 且推理強度非 none 時，API 請求會略過此參數。",
-                    )
-                with gr.Row():
-                    schema_granularity = gr.Radio(
-                        ["粗略", "平衡", "詳細"],
-                        value="平衡",
-                        label="Schema 粒度",
-                    )
-                    max_concurrent_requests = gr.Number(
-                        value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
+                    extraction_max_concurrent_requests = gr.Number(
+                        value=DEFAULT_MAX_CONCURRENT_REQUESTS,
+                        minimum=1,
+                        precision=0,
                         label="最大並行請求數",
                     )
-                schema_documents = gr.Dataframe(
-                    headers=["使用", "PDF"],
-                    datatype=["bool", "str"],
-                    type="array",
-                    value=[],
-                    interactive=True,
-                    static_columns=[1],
-                    row_count=(0, "fixed"),
-                    col_count=(2, "fixed"),
-                    max_height=300,
-                    wrap=True,
-                    label="用於規劃 Schema 的 PDF",
+                    generate_graph_button = gr.Button(
+                        "抽取實體與關係", variant="primary"
+                    )
+                    build_status = gr.Markdown("尚未執行抽取。")
+                    gr.Markdown("##### 抽取結果")
+                    load_graph_details_button = gr.Button("載入已保存的實體與關係", variant="secondary")
+                    load_graph_details_status = gr.Markdown(
+                        "若結果表格為空，按此按鈕載入專案中已保存的圖譜明細。"
+                    )
+                    entity_table = gr.Dataframe(
+                        headers=["實體", "類型", "說明", "來源 Chunks", "來源頁碼", "來源文件"],
+                        interactive=False,
+                        wrap=True,
+                    )
+                    relationship_table = gr.Dataframe(
+                        headers=["來源實體", "關係", "目標實體", "說明", "來源 Chunks", "來源頁碼", "來源文件"],
+                        interactive=False,
+                        wrap=True,
+                    )
+
+                with gr.Group():
+                    gr.Markdown("#### ③ Embedding 並匯入 Neo4j")
+                    gr.Markdown(
+                        "確認上方抽取結果後，選擇 Embedding 模型與最大並行請求數，再匯入 Neo4j。"
+                    )
+                    graph_embedding_model = gr.Dropdown(
+                        choices=embedding_choices,
+                        value=embedding_profile["models"][0] if embedding_profile["models"][0] in embedding_allowed else None,
+                        allow_custom_value=False,
+                        label="Embedding 模型",
+                    )
+                    embedding_max_concurrency = gr.Slider(
+                        minimum=1,
+                        maximum=32,
+                        value=EMBEDDING_MAX_CONCURRENCY,
+                        step=1,
+                        label="最大並行 Embedding 請求數",
+                        info="同時送出的 Embedding 批次數；每批最多 64 筆。Neo4j 寫入仍依序進行。",
+                    )
+                    gr.Markdown(
+                        "⚠️ 每次匯入都會先清空本工具在目前 Neo4j Database 中建立的圖譜，再寫入本次結果。"
+                    )
+                    import_graph_button = gr.Button(
+                        "Embedding 並匯入 Neo4j", variant="primary"
+                    )
+                    import_status = gr.Markdown("尚未執行 Embedding 與匯入。")
+
+            with gr.Tab("1-4 問答測試", interactive=False) as qa_tab:
+                gr.Markdown(
+                    "直接使用連線設定中的 Neo4j；預設查詢最近更新的建圖結果。"
+                    "可選擇使用 LLM Reranker 重排候選，或啟用證據擴展。"
+                    "Agentic Search 以 LLM 選擇圖譜候選路徑；Agentic Search 2 可多輪提出受限唯讀 Cypher，"
+                    "程式會限定專案 run_id、圖譜標籤、每輪筆數、輪數與執行時間。"
                 )
-                gr.Markdown("預設全選；每份勾選的 PDF 都會讀取整份文件。")
-                plan_schema_button = gr.Button(
-                    "分析文件並規劃 Schema（可選）", variant="primary"
+                answer_model = gr.Dropdown(
+                    choices=llm_choices,
+                    value=preferred_llm,
+                    allow_custom_value=False,
+                    label="問答 LLM",
                 )
-                plan_status = gr.Markdown("請先在 PDF 頁面解析並產生 chunks。")
+                answer_reasoning_effort = gr.Dropdown(
+                    choices=list(GPT_6_LUNA_REASONING_EFFORTS),
+                    value=DEFAULT_REASONING_EFFORT, label="推理強度",
+                    visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
+                )
+                question = gr.Textbox(label="問題", placeholder="例如：設備出現 E01 時該如何處理？")
+                with gr.Row():
+                    retrieval_mode = gr.Radio(strategy_choices(), value="混合檢索", label="檢索模式")
+                    top_k = gr.Slider(1, 50, value=8, step=1, label="Top K")
+                    use_reranker = gr.Dropdown(
+                        choices=list(RERANKER_MODES), value="停用", label="Reranker 模式",
+                        allow_custom_value=False,
+                    )
+                    expand_evidence = gr.Dropdown(
+                        choices=list(EVIDENCE_EXPANSION_MODES), value="停用", label="證據擴展模式",
+                        info="在策略檢索後，透過圖譜關係擴展候選證據。", allow_custom_value=False,
+                    )
+                default_qa_retrieval = RetrievalConfig.from_dict(_default_retrieval_config())
+                retrieval_strategy_params_state = gr.State(
+                    _visible_params_for_strategy(default_qa_retrieval)
+                )
+                retrieval_strategy_parameter_controls = _create_experiment_strategy_parameter_controls(
+                    initial_strategy_id=default_qa_retrieval.strategy_id,
+                )
+                ask_button = gr.Button("送出問題", variant="primary")
+                answer_status = gr.Markdown()
                 gr.HTML(
                     """
                     <style>
-                    .schema-scroll-editor .cm-content {
-                        font-size: 17px;
-                        line-height: 1.6;
+                    .answer-panel {
+                        border: 2px solid var(--border-color-primary);
+                        border-radius: 12px;
+                        padding: 18px 22px;
+                        background: var(--background-fill-secondary);
+                    }
+                    .answer-content,
+                    .answer-content textarea {
+                        font-size: 20px !important;
+                        line-height: 1.75 !important;
                     }
                     </style>
                     """,
                     padding=False,
                 )
-                schema_editor = gr.Code(
-                    label="實體與關係 Schema（可編輯 JSON）",
-                    language="json",
-                    interactive=True,
-                    lines=18,
-                    max_lines=18,
-                    wrap_lines=False,
-                    elem_classes="schema-scroll-editor",
-                )
-
-            with gr.Group():
-                gr.Markdown("#### ② 抽取實體與關係")
-                gr.Markdown(
-                    "若已規劃 Schema，可確認上方 JSON 後抽取；若跳過規劃並留白，"
-                    "系統會直接從文件抽取實體與關係。檢查結果後，再手動匯入 Neo4j。"
-                )
-                extraction_llm_model = gr.Dropdown(
-                    choices=llm_choices,
-                    value=preferred_llm,
-                    allow_custom_value=False,
-                    label="知識圖譜抽取 LLM",
-                )
-                extraction_reasoning_effort = gr.Dropdown(
-                    choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                    value=DEFAULT_REASONING_EFFORT, label="推理強度",
-                    visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
-                )
-                extraction_max_concurrent_requests = gr.Number(
-                    value=DEFAULT_MAX_CONCURRENT_REQUESTS,
-                    minimum=1,
-                    precision=0,
-                    label="最大並行請求數",
-                )
-                generate_graph_button = gr.Button(
-                    "抽取實體與關係", variant="primary"
-                )
-                build_status = gr.Markdown("尚未執行抽取。")
-                gr.Markdown("##### 抽取結果")
-                load_graph_details_button = gr.Button("載入已保存的實體與關係", variant="secondary")
-                load_graph_details_status = gr.Markdown(
-                    "若結果表格為空，按此按鈕載入專案中已保存的圖譜明細。"
-                )
-                entity_table = gr.Dataframe(
-                    headers=["實體", "類型", "說明", "來源 Chunks", "來源頁碼", "來源文件"],
-                    interactive=False,
-                    wrap=True,
-                )
-                relationship_table = gr.Dataframe(
-                    headers=["來源實體", "關係", "目標實體", "說明", "來源 Chunks", "來源頁碼", "來源文件"],
+                with gr.Group(elem_classes="answer-panel"):
+                    gr.Markdown("### 回答")
+                    answer = gr.Textbox(
+                        show_label=False, lines=8, max_lines=24, interactive=False,
+                        elem_classes="answer-content",
+                    )
+                gr.Markdown("### 檢索來源")
+                answer_sources = gr.Dataframe(
+                    headers=[
+                        "類型", "證據", "Retriever", "檢索分數",
+                        "來源頁碼", "來源 Chunks", "來源文件",
+                    ],
                     interactive=False,
                     wrap=True,
                 )
 
-            with gr.Group():
-                gr.Markdown("#### ③ Embedding 並匯入 Neo4j")
+            with gr.Tab("1-5 自動問答測試", interactive=False) as evaluation_tab:
                 gr.Markdown(
-                    "確認上方抽取結果後，選擇 Embedding 模型與最大並行請求數，再匯入 Neo4j。"
+                    "### 從 PDF 自動建立問答測試集\n"
+                    "每份 PDF 建立指定數量的題目與標準答案；先生成測試回答，再獨立進行模型評測。"
+                    "勾選允許並行時，不同 PDF 可同時生題，但同一份 PDF 同時只會送出一個請求；未勾選時全部依序處理。"
                 )
-                graph_embedding_model = gr.Dropdown(
-                    choices=embedding_choices,
-                    value=embedding_profile["models"][0] if embedding_profile["models"][0] in embedding_allowed else None,
-                    allow_custom_value=False,
-                    label="Embedding 模型",
+                with gr.Row():
+                    evaluation_import_file = gr.File(
+                        label="匯入題目（JSON／CSV）", file_types=[".json", ".csv"], type="filepath"
+                    )
+                    import_evaluation_button = gr.Button("匯入題目")
+                    export_evaluation_button = gr.Button("匯出題目")
+                    evaluation_export_file = gr.File(label="題目 JSON", interactive=False)
+                with gr.Group():
+                    gr.Markdown("#### 生題設定")
+                    with gr.Row():
+                        evaluation_generation_model = gr.Dropdown(
+                            choices=llm_choices,
+                            value=preferred_llm,
+                            allow_custom_value=False,
+                            label="生題模型",
+                        )
+                        evaluation_generation_effort = gr.Dropdown(
+                            choices=list(GPT_6_LUNA_REASONING_EFFORTS),
+                            value=DEFAULT_REASONING_EFFORT, label="推理強度",
+                            visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
+                        )
+                        evaluation_question_count = gr.Number(value=10, minimum=1, maximum=100, precision=0, label="每份 PDF 題目數 N")
+                        evaluation_allow_parallel_generation = gr.Checkbox(
+                            value=False, label="允許並行"
+                        )
+                    generate_evaluation_button = gr.Button("從 PDF 建立題目與答案", variant="primary")
+                gr.HTML(
+                    """<style>
+                    .evaluation-metrics-box {
+                        border: 2px solid var(--border-color-primary) !important;
+                        border-radius: 12px !important;
+                        padding: 16px 22px !important;
+                        margin: 18px 0 12px !important;
+                        background: var(--background-fill-secondary) !important;
+                    }
+                    .evaluation-metrics {font-size: 24px !important; line-height: 1.7 !important;}
+                    .evaluation-table table {font-size: 18px !important;}
+                    .evaluation-table td, .evaluation-table th {padding: 10px !important;}
+                    .evaluation-results-table table,
+                    .evaluation-results-table td,
+                    .evaluation-results-table th {font-size: 14px !important;}
+                    .evaluation-judge-button button {
+                        background: #f59e0b !important;
+                        border-color: #f59e0b !important;
+                        color: #1f2937 !important;
+                    }
+                    .evaluation-judge-button button:hover {
+                        background: #d97706 !important;
+                        border-color: #d97706 !important;
+                    }
+                    </style>""",
+                    padding=False,
                 )
-                embedding_max_concurrency = gr.Slider(
-                    minimum=1,
-                    maximum=32,
-                    value=EMBEDDING_MAX_CONCURRENCY,
-                    step=1,
-                    label="最大並行 Embedding 請求數",
-                    info="同時送出的 Embedding 批次數；每批最多 64 筆。Neo4j 寫入仍依序進行。",
+                gr.Markdown("#### 測試題目")
+                evaluation_questions_table = gr.Dataframe(
+                    headers=["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"],
+                    datatype=["number", "str", "str", "str", "str"],
+                    type="array", interactive=True, wrap=True,
+                    elem_classes="evaluation-table",
                 )
+                with gr.Group():
+                    gr.Markdown("#### 回答模型設定")
+                    with gr.Row():
+                        evaluation_test_model = gr.Dropdown(
+                            choices=llm_choices, value=preferred_llm,
+                            allow_custom_value=False, label="回答模型",
+                        )
+                        evaluation_test_effort = gr.Dropdown(
+                            choices=list(GPT_6_LUNA_REASONING_EFFORTS),
+                            value=DEFAULT_REASONING_EFFORT, label="推理強度",
+                            visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
+                        )
+                        evaluation_retrieval_mode = gr.Dropdown(
+                            strategy_choices(), value="混合檢索", label="檢索策略",
+                            allow_custom_value=False,
+                        )
+                        evaluation_top_k = gr.Number(
+                            value=8, minimum=1, maximum=50, precision=0, label="Top K",
+                        )
+                        evaluation_use_reranker = gr.Dropdown(
+                            choices=list(RERANKER_MODES), value="停用", label="Reranker",
+                            allow_custom_value=False,
+                        )
+                        evaluation_expand_evidence = gr.Dropdown(
+                            choices=list(EVIDENCE_EXPANSION_MODES), value="停用", label="證據擴展",
+                            info="在策略檢索後，透過圖譜關係擴展候選證據。",
+                            allow_custom_value=False,
+                        )
+                    evaluation_strategy_params_state = gr.State(
+                        _visible_params_for_strategy(
+                            RetrievalConfig.from_dict(_default_retrieval_config())
+                        )
+                    )
+                    evaluation_strategy_parameter_controls = _create_experiment_strategy_parameter_controls(
+                        initial_strategy_id="hybrid",
+                    )
+                    with gr.Row():
+                        evaluation_test_max_concurrent_requests = gr.Number(
+                            value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="最大並行請求數",
+                        )
+                    generate_evaluation_answers_button = gr.Button("檢索並生成回答", variant="primary")
+                with gr.Group(elem_classes="evaluation-metrics-box"):
+                    evaluation_answers_status = gr.Markdown(
+                        "尚未生成測試回答；請先按「檢索並生成回答」。",
+                        elem_classes="evaluation-metrics",
+                    )
+                with gr.Group():
+                    gr.Markdown("#### 評測模型設定")
+                    with gr.Row():
+                        evaluation_judge_model = gr.Dropdown(
+                            choices=evaluation_judge_choices, value=DEFAULT_EVALUATION_MODEL,
+                            allow_custom_value=False, label="評測模型",
+                        )
+                        evaluation_judge_effort = gr.Dropdown(
+                            choices=list(GPT_6_LUNA_REASONING_EFFORTS),
+                            value=DEFAULT_JUDGE_REASONING_EFFORT, label="推理強度",
+                            visible=True,
+                        )
+                        evaluation_judge_max_concurrent_requests = gr.Number(
+                            value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="最大並行請求數",
+                        )
+                    evaluation_verify_judgment = gr.Checkbox(
+                        value=False, label="二階段驗證：複核第一輪判定與理由",
+                        info="再呼叫一次評測模型；依第二輪複核結果作為最終判定。",
+                    )
+                    run_evaluation_button = gr.Button(
+                        "進行評測", variant="primary", interactive=False,
+                        elem_classes="evaluation-judge-button",
+                    )
+                gr.Markdown("#### 測試結果")
+                evaluation_manual_edit_enabled = gr.Checkbox(
+                    value=False, label="啟用答案結果人工修改",
+                    info="勾選後可直接在表格的答案判定欄輸入 0、1 或 2。",
+                )
+                evaluation_results_table = gr.Dataframe(
+                    headers=["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
+                    datatype=["number", "str", "str", "str", "str", "number", "bool", "str"],
+                    type="array", interactive=True, static_columns=list(range(8)), wrap=True,
+                    elem_classes=["evaluation-table", "evaluation-results-table"],
+                )
+                with gr.Group(elem_classes="evaluation-metrics-box"):
+                    evaluation_status = gr.Markdown(
+                        "請先載入專案並解析 PDF。", elem_classes="evaluation-metrics"
+                    )
+            with gr.Tab("1-6 單一專案實驗", interactive=False) as experiment_tab:
                 gr.Markdown(
-                    "⚠️ 每次匯入都會先清空本工具在目前 Neo4j Database 中建立的圖譜，再寫入本次結果。"
+                    "使用「0 系統設定」綁定至目前專案的題目集；建立多個不同回答／檢索設定的實驗組，"
+                    "先生成各組回答，再獨立評測並比較答案正確率、Evidence Hit Rate、"
+                    "Evidence Precision 與 Document Hit Rate。"
                 )
-                import_graph_button = gr.Button(
-                    "Embedding 並匯入 Neo4j", variant="primary"
+                experiment_questions_state = gr.State([])
+                with gr.Group():
+                    gr.Markdown("#### 使用已綁定題目集")
+                    experiment_bound_question_sets = gr.CheckboxGroup(
+                        choices=[], value=[], label="選擇此專案已綁定的題目集",
+                    )
+                experiment_groups_state = gr.State([])
+                experiment_results_state = gr.State([])
+                experiment_pending_answers_state = gr.State([])
+                experiment_run_control_state = gr.State(RunControl())
+                experiment_answer_model = gr.Dropdown(
+                    choices=llm_choices, value=preferred_llm, allow_custom_value=False,
+                    visible=False, label="實驗預設模型",
                 )
-                import_status = gr.Markdown("尚未執行 Embedding 與匯入。")
-
-        with gr.Tab("1-4 問答測試", interactive=False) as qa_tab:
-            gr.Markdown(
-                "直接使用連線設定中的 Neo4j；預設查詢最近更新的建圖結果。"
-                "可選擇使用 LLM Reranker 重排候選，或啟用證據擴展。"
-                "Agentic Search 以 LLM 選擇圖譜候選路徑；Agentic Search 2 可多輪提出受限唯讀 Cypher，"
-                "程式會限定專案 run_id、圖譜標籤、每輪筆數、輪數與執行時間。"
-            )
-            answer_model = gr.Dropdown(
-                choices=llm_choices,
-                value=preferred_llm,
-                allow_custom_value=False,
-                label="問答 LLM",
-            )
-            answer_reasoning_effort = gr.Dropdown(
-                choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                value=DEFAULT_REASONING_EFFORT, label="推理強度",
-                visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
-            )
-            question = gr.Textbox(label="問題", placeholder="例如：設備出現 E01 時該如何處理？")
-            with gr.Row():
-                retrieval_mode = gr.Radio(strategy_choices(), value="混合檢索", label="檢索模式")
-                top_k = gr.Slider(1, 50, value=8, step=1, label="Top K")
-                use_reranker = gr.Dropdown(
-                    choices=list(RERANKER_MODES), value="停用", label="Reranker 模式",
-                    allow_custom_value=False,
-                )
-                expand_evidence = gr.Dropdown(
-                    choices=list(EVIDENCE_EXPANSION_MODES), value="停用", label="證據擴展模式",
-                    info="在策略檢索後，透過圖譜關係擴展候選證據。", allow_custom_value=False,
-                )
-            default_qa_retrieval = RetrievalConfig.from_dict(_default_retrieval_config())
-            retrieval_strategy_params_state = gr.State(
-                _visible_params_for_strategy(default_qa_retrieval)
-            )
-            retrieval_strategy_parameter_controls = _create_experiment_strategy_parameter_controls(
-                initial_strategy_id=default_qa_retrieval.strategy_id,
-            )
-            ask_button = gr.Button("送出問題", variant="primary")
-            answer_status = gr.Markdown()
-            gr.HTML(
-                """
-                <style>
-                .answer-panel {
-                    border: 2px solid var(--border-color-primary);
-                    border-radius: 12px;
-                    padding: 18px 22px;
-                    background: var(--background-fill-secondary);
-                }
-                .answer-content,
-                .answer-content textarea {
-                    font-size: 20px !important;
-                    line-height: 1.75 !important;
-                }
-                </style>
-                """,
-                padding=False,
-            )
-            with gr.Group(elem_classes="answer-panel"):
-                gr.Markdown("### 回答")
-                answer = gr.Textbox(
-                    show_label=False, lines=8, max_lines=24, interactive=False,
-                    elem_classes="answer-content",
-                )
-            gr.Markdown("### 檢索來源")
-            answer_sources = gr.Dataframe(
-                headers=[
-                    "類型", "證據", "Retriever", "檢索分數",
-                    "來源頁碼", "來源 Chunks", "來源文件",
-                ],
-                interactive=False,
-                wrap=True,
-            )
-
-        with gr.Tab("1-5 自動問答測試", interactive=False) as evaluation_tab:
-            gr.Markdown(
-                "### 從 PDF 自動建立問答測試集\n"
-                "每份 PDF 建立指定數量的題目與標準答案；先生成測試回答，再獨立進行模型評測。"
-                "勾選允許並行時，不同 PDF 可同時生題，但同一份 PDF 同時只會送出一個請求；未勾選時全部依序處理。"
-            )
-            with gr.Row():
-                evaluation_import_file = gr.File(
-                    label="匯入題目（JSON／CSV）", file_types=[".json", ".csv"], type="filepath"
-                )
-                import_evaluation_button = gr.Button("匯入題目")
-                export_evaluation_button = gr.Button("匯出題目")
-                evaluation_export_file = gr.File(label="題目 JSON", interactive=False)
-            with gr.Group():
-                gr.Markdown("#### 生題設定")
+                experiment_question_status = gr.Markdown("尚未載入專案題目集。")
+                gr.Markdown("#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）")
+                experiment_group_rows: list[list[Any]] = []
+                for row_index in range(EXPERIMENT_GROUP_LIMIT):
+                    with gr.Row():
+                        group_name = gr.Textbox(label="實驗組名稱", placeholder=f"實驗組 {row_index + 1}", visible=False, scale=2)
+                        group_model = gr.Dropdown(
+                            choices=llm_choices, value=None, allow_custom_value=False,
+                            label="回答模型", visible=False, scale=2,
+                        )
+                        group_answer_effort = gr.Dropdown(
+                            choices=list(GPT_6_LUNA_REASONING_EFFORTS),
+                            value=DEFAULT_REASONING_EFFORT, label="回答推理強度",
+                            visible=False, scale=1,
+                        )
+                        group_retrieval = gr.Dropdown(
+                            choices=strategy_choices(), value="混合檢索",
+                            label="檢索策略", visible=False, scale=2,
+                        )
+                        group_top_k = gr.Number(value=8, minimum=1, maximum=50, precision=0, label="Top K", visible=False, scale=1)
+                        group_reranker = gr.Dropdown(
+                            choices=list(RERANKER_MODES), value="停用", label="Reranker",
+                            visible=False, scale=2,
+                        )
+                        group_expansion = gr.Dropdown(
+                            choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
+                            label="證據擴展", visible=False, scale=2,
+                        )
+                        group_strategy_params = gr.State({})
+                        group_strategy_parameter_controls = _create_experiment_strategy_parameter_controls()
+                        delete_group_button = gr.Button("移除", size="sm", visible=False, scale=1)
+                    experiment_group_rows.append([
+                        group_name, group_model, group_answer_effort,
+                        group_retrieval, group_top_k,
+                        group_reranker, group_expansion, group_strategy_params,
+                        *group_strategy_parameter_controls,
+                        delete_group_button,
+                    ])
+                experiment_group_fields = [component for row in experiment_group_rows for component in row[:EXPERIMENT_GROUP_FIELDS]]
+                experiment_group_all_components = [
+                    component for row in experiment_group_rows
+                    for component in [*row[:EXPERIMENT_GROUP_FIELDS], *row[EXPERIMENT_GROUP_FIELDS:-1], row[-1]]
+                ]
+                add_experiment_group_button = gr.Button("新增實驗組")
+                experiment_group_status = gr.Markdown()
                 with gr.Row():
-                    evaluation_generation_model = gr.Dropdown(
-                        choices=llm_choices,
-                        value=preferred_llm,
-                        allow_custom_value=False,
-                        label="生題模型",
-                    )
-                    evaluation_generation_effort = gr.Dropdown(
-                        choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                        value=DEFAULT_REASONING_EFFORT, label="推理強度",
-                        visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
-                    )
-                    evaluation_question_count = gr.Number(value=10, minimum=1, maximum=100, precision=0, label="每份 PDF 題目數 N")
-                    evaluation_allow_parallel_generation = gr.Checkbox(
-                        value=False, label="允許並行"
-                    )
-                generate_evaluation_button = gr.Button("從 PDF 建立題目與答案", variant="primary")
-            gr.HTML(
-                """<style>
-                .evaluation-metrics-box {
-                    border: 2px solid var(--border-color-primary) !important;
-                    border-radius: 12px !important;
-                    padding: 16px 22px !important;
-                    margin: 18px 0 12px !important;
-                    background: var(--background-fill-secondary) !important;
-                }
-                .evaluation-metrics {font-size: 24px !important; line-height: 1.7 !important;}
-                .evaluation-table table {font-size: 18px !important;}
-                .evaluation-table td, .evaluation-table th {padding: 10px !important;}
-                .evaluation-results-table table,
-                .evaluation-results-table td,
-                .evaluation-results-table th {font-size: 14px !important;}
-                .evaluation-judge-button button {
-                    background: #f59e0b !important;
-                    border-color: #f59e0b !important;
-                    color: #1f2937 !important;
-                }
-                .evaluation-judge-button button:hover {
-                    background: #d97706 !important;
-                    border-color: #d97706 !important;
-                }
-                </style>""",
-                padding=False,
-            )
-            gr.Markdown("#### 測試題目")
-            evaluation_questions_table = gr.Dataframe(
-                headers=["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"],
-                datatype=["number", "str", "str", "str", "str"],
-                type="array", interactive=True, wrap=True,
-                elem_classes="evaluation-table",
-            )
-            with gr.Group():
-                gr.Markdown("#### 回答模型設定")
-                with gr.Row():
-                    evaluation_test_model = gr.Dropdown(
-                        choices=llm_choices, value=preferred_llm,
-                        allow_custom_value=False, label="回答模型",
-                    )
-                    evaluation_test_effort = gr.Dropdown(
-                        choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                        value=DEFAULT_REASONING_EFFORT, label="推理強度",
-                        visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
-                    )
-                    evaluation_retrieval_mode = gr.Dropdown(
-                        strategy_choices(), value="混合檢索", label="檢索策略",
-                        allow_custom_value=False,
-                    )
-                    evaluation_top_k = gr.Number(
-                        value=8, minimum=1, maximum=50, precision=0, label="Top K",
-                    )
-                    evaluation_use_reranker = gr.Dropdown(
-                        choices=list(RERANKER_MODES), value="停用", label="Reranker",
-                        allow_custom_value=False,
-                    )
-                    evaluation_expand_evidence = gr.Dropdown(
-                        choices=list(EVIDENCE_EXPANSION_MODES), value="停用", label="證據擴展",
-                        info="在策略檢索後，透過圖譜關係擴展候選證據。",
-                        allow_custom_value=False,
-                    )
-                evaluation_strategy_params_state = gr.State(
-                    _visible_params_for_strategy(
-                        RetrievalConfig.from_dict(_default_retrieval_config())
-                    )
-                )
-                evaluation_strategy_parameter_controls = _create_experiment_strategy_parameter_controls(
-                    initial_strategy_id="hybrid",
-                )
-                with gr.Row():
-                    evaluation_test_max_concurrent_requests = gr.Number(
-                        value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="最大並行請求數",
-                    )
-                generate_evaluation_answers_button = gr.Button("檢索並生成回答", variant="primary")
-            with gr.Group(elem_classes="evaluation-metrics-box"):
-                evaluation_answers_status = gr.Markdown(
-                    "尚未生成測試回答；請先按「檢索並生成回答」。",
-                    elem_classes="evaluation-metrics",
-                )
-            with gr.Group():
-                gr.Markdown("#### 評測模型設定")
-                with gr.Row():
-                    evaluation_judge_model = gr.Dropdown(
-                        choices=evaluation_judge_choices, value=DEFAULT_EVALUATION_MODEL,
-                        allow_custom_value=False, label="評測模型",
-                    )
-                    evaluation_judge_effort = gr.Dropdown(
-                        choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                        value=DEFAULT_JUDGE_REASONING_EFFORT, label="推理強度",
-                        visible=True,
-                    )
-                    evaluation_judge_max_concurrent_requests = gr.Number(
-                        value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="最大並行請求數",
-                    )
-                evaluation_verify_judgment = gr.Checkbox(
-                    value=False, label="二階段驗證：複核第一輪判定與理由",
-                    info="再呼叫一次評測模型；依第二輪複核結果作為最終判定。",
-                )
-                run_evaluation_button = gr.Button(
-                    "進行評測", variant="primary", interactive=False,
-                    elem_classes="evaluation-judge-button",
-                )
-            gr.Markdown("#### 測試結果")
-            evaluation_manual_edit_enabled = gr.Checkbox(
-                value=False, label="啟用答案結果人工修改",
-                info="勾選後可直接在表格的答案判定欄輸入 0、1 或 2。",
-            )
-            evaluation_results_table = gr.Dataframe(
-                headers=["編號", "問題", "標準答案", "來源 PDF", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
-                datatype=["number", "str", "str", "str", "str", "number", "bool", "str"],
-                type="array", interactive=True, static_columns=list(range(8)), wrap=True,
-                elem_classes=["evaluation-table", "evaluation-results-table"],
-            )
-            with gr.Group(elem_classes="evaluation-metrics-box"):
-                evaluation_status = gr.Markdown(
-                    "請先載入專案並解析 PDF。", elem_classes="evaluation-metrics"
-                )
-        with gr.Tab("1-6 單一專案實驗", interactive=False) as experiment_tab:
-            gr.Markdown(
-                "使用 0-2 綁定至目前專案的題目集；建立多個不同回答／檢索設定的實驗組，"
-                "先生成各組回答，再獨立評測並比較答案正確率、Evidence Hit Rate、"
-                "Evidence Precision 與 Document Hit Rate。"
-            )
-            experiment_questions_state = gr.State([])
-            with gr.Group():
-                gr.Markdown("#### 使用已綁定題目集")
-                experiment_bound_question_sets = gr.CheckboxGroup(
-                    choices=[], value=[], label="選擇此專案已綁定的題目集",
-                )
-            experiment_groups_state = gr.State([])
-            experiment_results_state = gr.State([])
-            experiment_pending_answers_state = gr.State([])
-            experiment_run_control_state = gr.State(RunControl())
-            experiment_answer_model = gr.Dropdown(
-                choices=llm_choices, value=preferred_llm, allow_custom_value=False,
-                visible=False, label="實驗預設模型",
-            )
-            experiment_question_status = gr.Markdown("尚未載入專案題目集。")
-            gr.Markdown("#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）")
-            experiment_group_rows: list[list[Any]] = []
-            for row_index in range(EXPERIMENT_GROUP_LIMIT):
-                with gr.Row():
-                    group_name = gr.Textbox(label="實驗組名稱", placeholder=f"實驗組 {row_index + 1}", visible=False, scale=2)
-                    group_model = gr.Dropdown(
-                        choices=llm_choices, value=None, allow_custom_value=False,
-                        label="回答模型", visible=False, scale=2,
-                    )
-                    group_answer_effort = gr.Dropdown(
-                        choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                        value=DEFAULT_REASONING_EFFORT, label="回答推理強度",
-                        visible=False, scale=1,
-                    )
-                    group_retrieval = gr.Dropdown(
-                        choices=strategy_choices(), value="混合檢索",
-                        label="檢索策略", visible=False, scale=2,
-                    )
-                    group_top_k = gr.Number(value=8, minimum=1, maximum=50, precision=0, label="Top K", visible=False, scale=1)
-                    group_reranker = gr.Dropdown(
-                        choices=list(RERANKER_MODES), value="停用", label="Reranker",
-                        visible=False, scale=2,
-                    )
-                    group_expansion = gr.Dropdown(
-                        choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
-                        label="證據擴展", visible=False, scale=2,
-                    )
-                    group_strategy_params = gr.State({})
-                    group_strategy_parameter_controls = _create_experiment_strategy_parameter_controls()
-                    delete_group_button = gr.Button("移除", size="sm", visible=False, scale=1)
-                experiment_group_rows.append([
-                    group_name, group_model, group_answer_effort,
-                    group_retrieval, group_top_k,
-                    group_reranker, group_expansion, group_strategy_params,
-                    *group_strategy_parameter_controls,
-                    delete_group_button,
-                ])
-            experiment_group_fields = [component for row in experiment_group_rows for component in row[:EXPERIMENT_GROUP_FIELDS]]
-            experiment_group_all_components = [
-                component for row in experiment_group_rows
-                for component in [*row[:EXPERIMENT_GROUP_FIELDS], *row[EXPERIMENT_GROUP_FIELDS:-1], row[-1]]
-            ]
-            add_experiment_group_button = gr.Button("新增實驗組")
-            experiment_group_status = gr.Markdown()
-            with gr.Row():
-                experiment_max_concurrent_requests = gr.Number(
-                    value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
-                    label="最大並行請求數",
-                )
-            generate_experiments_answers_button = gr.Button("檢索並生成回答", variant="primary")
-            with gr.Group(elem_classes="evaluation-metrics-box"):
-                experiment_answer_progress = gr.HTML(value="", visible=False, padding=False)
-                experiment_answer_progress_timer = gr.Timer(value=0.4, active=False)
-                experiment_answers_status = gr.Markdown(
-                    "尚未生成實驗回答；請先按「檢索並生成回答」。",
-                    elem_classes="evaluation-metrics",
-                )
-            with gr.Group():
-                gr.Markdown("#### 評測模型設定")
-                with gr.Row():
-                    experiment_judge_model = gr.Dropdown(
-                        choices=evaluation_judge_choices, value=DEFAULT_EVALUATION_MODEL, allow_custom_value=False,
-                        label="全域評測模型", scale=2,
-                    )
-                    experiment_judge_effort = gr.Dropdown(
-                        choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                        value=DEFAULT_JUDGE_REASONING_EFFORT, label="評測推理強度",
-                        visible=True, scale=1,
-                    )
-                    experiment_judge_max_concurrent_requests = gr.Number(
+                    experiment_max_concurrent_requests = gr.Number(
                         value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
                         label="最大並行請求數",
                     )
-                experiment_verify_judgment = gr.Checkbox(
+                generate_experiments_answers_button = gr.Button("檢索並生成回答", variant="primary")
+                with gr.Group(elem_classes="evaluation-metrics-box"):
+                    experiment_answer_progress = gr.HTML(value="", visible=False, padding=False)
+                    experiment_answer_progress_timer = gr.Timer(value=0.4, active=False)
+                    experiment_answers_status = gr.Markdown(
+                        "尚未生成實驗回答；請先按「檢索並生成回答」。",
+                        elem_classes="evaluation-metrics",
+                    )
+                with gr.Group():
+                    gr.Markdown("#### 評測模型設定")
+                    with gr.Row():
+                        experiment_judge_model = gr.Dropdown(
+                            choices=evaluation_judge_choices, value=DEFAULT_EVALUATION_MODEL, allow_custom_value=False,
+                            label="全域評測模型", scale=2,
+                        )
+                        experiment_judge_effort = gr.Dropdown(
+                            choices=list(GPT_6_LUNA_REASONING_EFFORTS),
+                            value=DEFAULT_JUDGE_REASONING_EFFORT, label="評測推理強度",
+                            visible=True, scale=1,
+                        )
+                        experiment_judge_max_concurrent_requests = gr.Number(
+                            value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
+                            label="最大並行請求數",
+                        )
+                    experiment_verify_judgment = gr.Checkbox(
+                        value=False, label="二階段驗證：複核第一輪判定與理由",
+                        info="再呼叫一次評測模型；依第二輪複核結果作為最終判定。",
+                    )
+                    evaluate_experiments_button = gr.Button(
+                        "進行評測", variant="primary", interactive=False,
+                        elem_classes="evaluation-judge-button",
+                    )
+                gr.HTML(
+                    """<style>
+                    .evaluation-judge-button button {background:#f59e0b !important;border-color:#f59e0b !important;color:#1f2937 !important;}
+                    .evaluation-judge-button button:hover {background:#d97706 !important;border-color:#d97706 !important;}
+                    </style>""",
+                    padding=False,
+                )
+                experiment_status = gr.Markdown()
+                gr.Markdown("#### 實驗組總覽（跨題目集合併）")
+                experiment_group_overall_summary_table = gr.Dataframe(
+                    headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "題目集數"],
+                    interactive=False, wrap=True,
+                )
+                gr.Markdown("#### 實驗組摘要（依題目集）")
+                experiment_summary_table = gr.Dataframe(
+                    headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
+                    interactive=False, wrap=True,
+                )
+                gr.Markdown("#### 逐題結果")
+                experiment_manual_edit_enabled = gr.Checkbox(
+                    value=False, label="啟用答案結果人工修改",
+                    info="勾選後可直接在逐題結果表格的答案判定欄輸入 0、1 或 2。",
+                )
+                experiment_details_table = gr.Dataframe(
+                    headers=[
+                        "實驗組", "題號", "來源文件", "題目集", "題目", "正確答案",
+                        "實際答案", "答案判定（0錯誤／1部分正確／2全對）",
+                        "複核後判定有變更", "評判理由",
+                    ],
+                    datatype=["str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
+                    type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 8, 9],
+                    column_widths=[90, 60, 140, 160, 420, 380, 300, 150, 220, 120],
+                    wrap=True, elem_classes=["evaluation-table", "evaluation-results-table"],
+                )
+                with gr.Row():
+                    export_experiment_results_button = gr.Button("匯出實驗結果 JSON")
+                    experiment_export_file = gr.File(label="完整逐題結果 JSON", interactive=False)
+                    experiment_compact_export_file = gr.File(label="簡潔指標結果 JSON", interactive=False)
+                experiment_export_status = gr.Markdown()
+
+            with gr.Tab("2-0 實驗專案") as experiment_project_tab:
+                gr.Markdown("建立實驗專案，並加入多個已完成建圖的 1 系列專案。各成員專案的 Neo4j Database 仍彼此獨立。")
+                with gr.Row():
+                    available_experiment_projects = experiment_project_choices_for_ui()
+                    experiment_project_selector = gr.Dropdown(
+                        choices=available_experiment_projects,
+                        value=(available_experiment_projects[0][1]
+                               if available_experiment_projects else None),
+                        label="現有實驗專案",
+                    )
+                    load_experiment_project_button = gr.Button(
+                        "載入實驗專案", elem_classes="project-workspace-action",
+                    )
+                    delete_experiment_project_button = gr.Button(
+                        "刪除實驗專案", variant="stop", elem_classes="project-workspace-action",
+                    )
+                with gr.Row():
+                    experiment_project_delete_confirmation_status = gr.Markdown(visible=False)
+                    confirm_delete_experiment_project_button = gr.Button(
+                        "確認刪除", variant="stop", visible=False,
+                    )
+                    cancel_delete_experiment_project_button = gr.Button("取消", visible=False)
+                with gr.Row():
+                    new_experiment_project_name = gr.Textbox(label="新實驗專案名稱")
+                    create_experiment_project_button = gr.Button(
+                        "建立實驗專案", variant="primary", elem_classes="project-workspace-action",
+                    )
+                experiment_project_status = gr.Markdown("建立或載入實驗專案。")
+                experiment_project_members = gr.Dropdown(
+                    choices=_built_project_choices(), value=[], multiselect=True,
+                    label="加入已建圖的 1 系列專案",
+                    info="只列出已完成 Neo4j 圖譜匯入的專案。",
+                )
+                save_experiment_members_button = gr.Button("保存成員專案")
+                experiment_project_members_table = gr.Dataframe(
+                    headers=[
+                        "專案", "專案 ID", "建立者", "文件數", "Chunk 數", "問題集題數",
+                        "Chunk Size", "Overlap", "Schema 粒度", "Neo4j Database",
+                    ],
+                    datatype=["str", "str", "str", "number", "number", "number", "number", "number", "str", "str"],
+                    interactive=False, wrap=True,
+                )
+
+            with gr.Tab("2-1 成員專案連線測試", interactive=False) as experiment_connection_tab:
+                gr.Markdown("使用 1-1 的 Neo4j URI／帳密，逐一測試實驗專案內各成員專案自己的 Database；回答與 Embedding 模型共用「0 系統設定」的 OpenAI 設定。")
+                test_experiment_connections_button = gr.Button("測試所有成員專案連線", variant="primary")
+                experiment_connection_status = gr.Markdown("請先在 2-0 載入實驗專案。")
+                experiment_connection_table = gr.Dataframe(
+                    headers=["專案", "專案 ID", "Neo4j Database", "連線結果"],
+                    datatype=["str", "str", "str", "str"], interactive=False, wrap=True,
+                )
+                gr.Markdown("回答模型服務共用「0 系統設定」的 OpenAI 設定。")
+
+            with gr.Tab("2-2 自動實驗測試", interactive=False) as experiment_project_test_tab:
+                gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，使用各專案在「0 系統設定」綁定的題目集及自己的 Neo4j Database 執行。")
+                gr.Markdown("#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）")
+                experiment_project_group_rows: list[list[Any]] = []
+                for row_index in range(EXPERIMENT_GROUP_LIMIT):
+                    with gr.Row():
+                        group_name = gr.Textbox(
+                            label="實驗組名稱",
+                            placeholder=f"實驗組 {row_index + 1}", visible=False, scale=2,
+                        )
+                        group_model = gr.Dropdown(
+                            choices=experiment_llm_choices, value=None, allow_custom_value=False,
+                            label="回答模型", visible=False, scale=2,
+                        )
+                        group_answer_effort = gr.Dropdown(
+                            choices=list(GPT_6_LUNA_REASONING_EFFORTS),
+                            value=DEFAULT_REASONING_EFFORT, label="回答推理強度",
+                            visible=False, scale=1,
+                        )
+                        group_retrieval = gr.Dropdown(
+                            choices=strategy_choices(), value="混合檢索",
+                            label="檢索策略", visible=False, scale=2,
+                        )
+                        group_top_k = gr.Number(
+                            value=8, minimum=1, maximum=50, precision=0, label="Top K",
+                            visible=False, scale=1,
+                        )
+                        group_reranker = gr.Dropdown(
+                            choices=list(RERANKER_MODES), value="停用", label="Reranker",
+                            visible=False, scale=2,
+                        )
+                        group_expansion = gr.Dropdown(
+                            choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
+                            label="證據擴展", visible=False, scale=2,
+                        )
+                        group_strategy_params = gr.State({})
+                        group_strategy_parameter_controls = _create_experiment_strategy_parameter_controls()
+                        delete_group_button = gr.Button("移除", size="sm", visible=False, scale=1)
+                    experiment_project_group_rows.append([
+                        group_name, group_model, group_answer_effort,
+                        group_retrieval, group_top_k, group_reranker,
+                        group_expansion, group_strategy_params,
+                        *group_strategy_parameter_controls, delete_group_button,
+                    ])
+                experiment_project_group_fields = [
+                    component for row in experiment_project_group_rows
+                    for component in row[:EXPERIMENT_GROUP_FIELDS]
+                ]
+                experiment_project_group_all_components = [
+                    component for row in experiment_project_group_rows
+                    for component in [*row[:EXPERIMENT_GROUP_FIELDS], *row[EXPERIMENT_GROUP_FIELDS:-1], row[-1]]
+                ]
+                add_experiment_project_group_button = gr.Button("新增實驗組")
+                experiment_project_groups_status = gr.Markdown("實驗組設定會自動儲存。")
+                with gr.Row():
+                    experiment_project_max_concurrency = gr.Number(
+                        value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
+                        label="最大並行請求數",
+                    )
+                gr.Markdown("若遇到 OpenAI TPM 429，可先將並行數調低至 1–3；系統會退避並錯開重試。")
+                run_experiment_project_button = gr.Button("檢索並生成回答", variant="primary")
+                experiment_project_answer_progress = gr.HTML(value="", visible=False, padding=False)
+                experiment_project_answers_status = gr.Markdown("尚未生成實驗回答；請先按「檢索並生成回答」。")
+                gr.Markdown("#### 評測模型設定")
+                with gr.Row():
+                    experiment_project_global_judge_model = gr.Dropdown(
+                        choices=experiment_llm_choices, value=experiment_default_llm,
+                        label="全域評測模型", scale=2,
+                    )
+                    experiment_project_judge_effort = gr.Dropdown(
+                        choices=list(GPT_6_LUNA_REASONING_EFFORTS), value=DEFAULT_JUDGE_REASONING_EFFORT,
+                        label="評測推理強度", visible=preferred_llm == GPT_6_LUNA_MODEL,
+                    )
+                    experiment_project_judge_concurrency = gr.Number(
+                        value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="評測最大並行請求數",
+                    )
+                experiment_project_verify_judgment = gr.Checkbox(
                     value=False, label="二階段驗證：複核第一輪判定與理由",
                     info="再呼叫一次評測模型；依第二輪複核結果作為最終判定。",
                 )
-                evaluate_experiments_button = gr.Button(
-                    "進行評測", variant="primary", interactive=False,
+                evaluate_experiment_project_button = gr.Button(
+                    "開始評測", variant="primary", interactive=False,
                     elem_classes="evaluation-judge-button",
                 )
-            gr.HTML(
-                """<style>
-                .evaluation-judge-button button {background:#f59e0b !important;border-color:#f59e0b !important;color:#1f2937 !important;}
-                .evaluation-judge-button button:hover {background:#d97706 !important;border-color:#d97706 !important;}
-                </style>""",
-                padding=False,
-            )
-            experiment_status = gr.Markdown()
-            gr.Markdown("#### 實驗組總覽（跨題目集合併）")
-            experiment_group_overall_summary_table = gr.Dataframe(
-                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "題目集數"],
-                interactive=False, wrap=True,
-            )
-            gr.Markdown("#### 實驗組摘要（依題目集）")
-            experiment_summary_table = gr.Dataframe(
-                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
-                interactive=False, wrap=True,
-            )
-            gr.Markdown("#### 逐題結果")
-            experiment_manual_edit_enabled = gr.Checkbox(
-                value=False, label="啟用答案結果人工修改",
-                info="勾選後可直接在逐題結果表格的答案判定欄輸入 0、1 或 2。",
-            )
-            experiment_details_table = gr.Dataframe(
-                headers=[
-                    "實驗組", "題號", "來源文件", "題目集", "題目", "正確答案",
-                    "實際答案", "答案判定（0錯誤／1部分正確／2全對）",
-                    "複核後判定有變更", "評判理由",
-                ],
-                datatype=["str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 8, 9],
-                column_widths=[90, 60, 140, 160, 420, 380, 300, 150, 220, 120],
-                wrap=True, elem_classes=["evaluation-table", "evaluation-results-table"],
-            )
-            with gr.Row():
-                export_experiment_results_button = gr.Button("匯出實驗結果 JSON")
-                experiment_export_file = gr.File(label="完整逐題結果 JSON", interactive=False)
-                experiment_compact_export_file = gr.File(label="簡潔指標結果 JSON", interactive=False)
-            experiment_export_status = gr.Markdown()
+                gr.HTML(
+                    "<style>.evaluation-judge-button button {background:#f59e0b !important;border-color:#f59e0b !important;color:#1f2937 !important;}</style>",
+                    padding=False,
+                )
+                experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並至「0 系統設定」為成員專案綁定題目集。")
+                gr.Markdown("#### 實驗組總覽（跨成員專案與題目集合併）")
+                experiment_project_group_summary_table = gr.Dataframe(
+                    headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案數", "題目集數"],
+                    interactive=False, wrap=True,
+                )
+                gr.Markdown("#### 各成員專案／題目集統計")
+                experiment_project_summary_table = gr.Dataframe(
+                    headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
+                    interactive=False, wrap=True,
+                )
+                experiment_project_details_table = gr.Dataframe(
+                    headers=["實驗組", "成員專案", "題號", "來源文件", "題目集", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
+                    datatype=["str", "str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
+                    type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 9, 10],
+                    column_widths=[90, 120, 60, 140, 160, 380, 360, 300, 150, 220, 120],
+                    wrap=True,
+                )
+                experiment_project_manual_edit = gr.Checkbox(
+                    value=False, label="啟用答案結果人工修改",
+                    info="勾選後可直接在逐題結果表格的答案判定欄輸入 0、1 或 2。",
+                )
+                save_experiment_run_button = gr.Button(
+                    "保存實驗結果", variant="primary", interactive=False,
+                )
+                save_experiment_run_status = gr.Markdown(
+                    "AI 評測完成後保存執行快照，3-0 才會列入人工抽樣。"
+                )
 
-        with gr.Tab("2-0 實驗專案", interactive=False) as experiment_project_tab:
-            gr.Markdown("建立實驗專案，並加入多個已完成建圖的 1 系列專案。各成員專案的 Neo4j Database 仍彼此獨立。")
-            with gr.Row():
-                available_experiment_projects = experiment_project_choices_for_ui()
-                experiment_project_selector = gr.Dropdown(
-                    choices=available_experiment_projects,
-                    value=(available_experiment_projects[0][1]
-                           if available_experiment_projects else None),
-                    label="現有實驗專案",
+            with gr.Tab("3-0 人工評測抽樣") as human_review_sampling_tab:
+                gr.Markdown("選取 2-2 已保存的實驗執行結果，系統會依實驗組、成員專案與題目集分層抽樣，並平均分派給所有使用者。")
+                human_review_queue_status = gr.Markdown("載入待人工評測的已保存實驗結果。")
+                human_review_queue_table = gr.Dataframe(
+                    headers=["實驗專案", "執行編號", "保存時間", "AI 題次", "人工進度", "狀態"],
+                    interactive=False, wrap=True,
                 )
-                load_experiment_project_button = gr.Button(
-                    "載入實驗專案", elem_classes="project-workspace-action",
-                )
-                delete_experiment_project_button = gr.Button(
-                    "刪除實驗專案", variant="stop", elem_classes="project-workspace-action",
-                )
-            with gr.Row():
-                experiment_project_delete_confirmation_status = gr.Markdown(visible=False)
-                confirm_delete_experiment_project_button = gr.Button(
-                    "確認刪除", variant="stop", visible=False,
-                )
-                cancel_delete_experiment_project_button = gr.Button("取消", visible=False)
-            with gr.Row():
-                new_experiment_project_name = gr.Textbox(label="新實驗專案名稱")
-                create_experiment_project_button = gr.Button(
-                    "建立實驗專案", variant="primary", elem_classes="project-workspace-action",
-                )
-            experiment_project_status = gr.Markdown("建立或載入實驗專案。")
-            experiment_project_members = gr.Dropdown(
-                choices=_built_project_choices(), value=[], multiselect=True,
-                label="加入已建圖的 1 系列專案",
-                info="只列出已完成 Neo4j 圖譜匯入的專案。",
-            )
-            save_experiment_members_button = gr.Button("保存成員專案")
-            experiment_project_members_table = gr.Dataframe(
-                headers=[
-                    "專案", "專案 ID", "建立者", "文件數", "Chunk 數", "問題集題數",
-                    "Chunk Size", "Overlap", "Schema 粒度", "Neo4j Database",
-                ],
-                datatype=["str", "str", "str", "number", "number", "number", "number", "number", "str", "str"],
-                interactive=False, wrap=True,
-            )
-
-        with gr.Tab("2-1 成員專案連線測試", interactive=False) as experiment_connection_tab:
-            gr.Markdown("使用 1-1 的 Neo4j URI／帳密，逐一測試實驗專案內各成員專案自己的 Database；回答與 Embedding 模型共用 0-3 的 OpenAI 設定。")
-            test_experiment_connections_button = gr.Button("測試所有成員專案連線", variant="primary")
-            experiment_connection_status = gr.Markdown("請先在 2-0 載入實驗專案。")
-            experiment_connection_table = gr.Dataframe(
-                headers=["專案", "專案 ID", "Neo4j Database", "連線結果"],
-                datatype=["str", "str", "str", "str"], interactive=False, wrap=True,
-            )
-            gr.Markdown("回答模型服務共用 0-3 的 OpenAI 設定。")
-
-        with gr.Tab("2-2 自動實驗測試", interactive=False) as experiment_project_test_tab:
-            gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，使用各專案在 0-2 綁定的題目集及自己的 Neo4j Database 執行。")
-            gr.Markdown("#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）")
-            experiment_project_group_rows: list[list[Any]] = []
-            for row_index in range(EXPERIMENT_GROUP_LIMIT):
                 with gr.Row():
-                    group_name = gr.Textbox(
-                        label="實驗組名稱",
-                        placeholder=f"實驗組 {row_index + 1}", visible=False, scale=2,
+                    human_review_run_selector = gr.Dropdown(
+                        choices=[], value=None, label="選擇已保存實驗結果",
                     )
-                    group_model = gr.Dropdown(
-                        choices=experiment_llm_choices, value=None, allow_custom_value=False,
-                        label="回答模型", visible=False, scale=2,
+                    human_review_sampling_mode = gr.Radio(
+                        choices=[
+                            ("每份題目集固定抽樣", "fixed_per_stratum"),
+                            ("依題目數比例分配總抽樣數", "proportional_total"),
+                        ],
+                        value="fixed_per_stratum", label="抽樣方式",
                     )
-                    group_answer_effort = gr.Dropdown(
-                        choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                        value=DEFAULT_REASONING_EFFORT, label="回答推理強度",
-                        visible=False, scale=1,
+                    human_review_sample_count = gr.Number(
+                        value=3, minimum=1, precision=0,
+                        label="抽樣數（固定模式＝每份題目集的題數；比例模式＝整次評測的總題數）",
                     )
-                    group_retrieval = gr.Dropdown(
-                        choices=strategy_choices(), value="混合檢索",
-                        label="檢索策略", visible=False, scale=2,
+                    create_human_review_button = gr.Button(
+                        "抽樣並平均分派", variant="primary",
                     )
-                    group_top_k = gr.Number(
-                        value=8, minimum=1, maximum=50, precision=0, label="Top K",
-                        visible=False, scale=1,
+                human_review_sampling_status = gr.Markdown()
+                gr.Markdown("移除只會清除所選執行的抽樣任務與人工評分，不會刪除原 AI 實驗結果。")
+                with gr.Row():
+                    human_review_remove_selector = gr.Dropdown(
+                        choices=[], value=None, label="選擇要移除抽樣資料的實驗執行",
                     )
-                    group_reranker = gr.Dropdown(
-                        choices=list(RERANKER_MODES), value="停用", label="Reranker",
-                        visible=False, scale=2,
+                    human_review_remove_confirm = gr.Checkbox(
+                        value=False, label="我確認移除此執行的抽樣與所有人工評分",
                     )
-                    group_expansion = gr.Dropdown(
-                        choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
-                        label="證據擴展", visible=False, scale=2,
+                    human_review_remove_button = gr.Button(
+                        "移除抽樣資料", variant="stop", interactive=False,
                     )
-                    group_strategy_params = gr.State({})
-                    group_strategy_parameter_controls = _create_experiment_strategy_parameter_controls()
-                    delete_group_button = gr.Button("移除", size="sm", visible=False, scale=1)
-                experiment_project_group_rows.append([
-                    group_name, group_model, group_answer_effort,
-                    group_retrieval, group_top_k, group_reranker,
-                    group_expansion, group_strategy_params,
-                    *group_strategy_parameter_controls, delete_group_button,
-                ])
-            experiment_project_group_fields = [
-                component for row in experiment_project_group_rows
-                for component in row[:EXPERIMENT_GROUP_FIELDS]
-            ]
-            experiment_project_group_all_components = [
-                component for row in experiment_project_group_rows
-                for component in [*row[:EXPERIMENT_GROUP_FIELDS], *row[EXPERIMENT_GROUP_FIELDS:-1], row[-1]]
-            ]
-            add_experiment_project_group_button = gr.Button("新增實驗組")
-            experiment_project_groups_status = gr.Markdown("實驗組設定會自動儲存。")
-            with gr.Row():
-                experiment_project_max_concurrency = gr.Number(
-                    value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
-                    label="最大並行請求數",
-                )
-            gr.Markdown("若遇到 OpenAI TPM 429，可先將並行數調低至 1–3；系統會退避並錯開重試。")
-            run_experiment_project_button = gr.Button("檢索並生成回答", variant="primary")
-            experiment_project_answer_progress = gr.HTML(value="", visible=False, padding=False)
-            experiment_project_answers_status = gr.Markdown("尚未生成實驗回答；請先按「檢索並生成回答」。")
-            gr.Markdown("#### 評測模型設定")
-            with gr.Row():
-                experiment_project_global_judge_model = gr.Dropdown(
-                    choices=experiment_llm_choices, value=experiment_default_llm,
-                    label="全域評測模型", scale=2,
-                )
-                experiment_project_judge_effort = gr.Dropdown(
-                    choices=list(GPT_6_LUNA_REASONING_EFFORTS), value=DEFAULT_JUDGE_REASONING_EFFORT,
-                    label="評測推理強度", visible=preferred_llm == GPT_6_LUNA_MODEL,
-                )
-                experiment_project_judge_concurrency = gr.Number(
-                    value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="評測最大並行請求數",
-                )
-            experiment_project_verify_judgment = gr.Checkbox(
-                value=False, label="二階段驗證：複核第一輪判定與理由",
-                info="再呼叫一次評測模型；依第二輪複核結果作為最終判定。",
-            )
-            evaluate_experiment_project_button = gr.Button(
-                "開始評測", variant="primary", interactive=False,
-                elem_classes="evaluation-judge-button",
-            )
-            gr.HTML(
-                "<style>.evaluation-judge-button button {background:#f59e0b !important;border-color:#f59e0b !important;color:#1f2937 !important;}</style>",
-                padding=False,
-            )
-            experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並至 0-2 為成員專案綁定題目集。")
-            gr.Markdown("#### 實驗組總覽（跨成員專案與題目集合併）")
-            experiment_project_group_summary_table = gr.Dataframe(
-                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案數", "題目集數"],
-                interactive=False, wrap=True,
-            )
-            gr.Markdown("#### 各成員專案／題目集統計")
-            experiment_project_summary_table = gr.Dataframe(
-                headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
-                interactive=False, wrap=True,
-            )
-            experiment_project_details_table = gr.Dataframe(
-                headers=["實驗組", "成員專案", "題號", "來源文件", "題目集", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
-                datatype=["str", "str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
-                type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 9, 10],
-                column_widths=[90, 120, 60, 140, 160, 380, 360, 300, 150, 220, 120],
-                wrap=True,
-            )
-            experiment_project_manual_edit = gr.Checkbox(
-                value=False, label="啟用答案結果人工修改",
-                info="勾選後可直接在逐題結果表格的答案判定欄輸入 0、1 或 2。",
-            )
-            save_experiment_run_button = gr.Button(
-                "保存實驗結果", variant="primary", interactive=False,
-            )
-            save_experiment_run_status = gr.Markdown(
-                "AI 評測完成後保存執行快照，3-0 才會列入人工抽樣。"
-            )
 
-        with gr.Tab("3-0 人工評測抽樣", interactive=False) as human_review_sampling_tab:
-            gr.Markdown("選取 2-2 已保存的實驗執行結果，系統會依實驗組、成員專案與題目集分層抽樣，並平均分派給所有使用者。")
-            human_review_queue_status = gr.Markdown("載入待人工評測的已保存實驗結果。")
-            human_review_queue_table = gr.Dataframe(
-                headers=["實驗專案", "執行編號", "保存時間", "AI 題次", "人工進度", "狀態"],
-                interactive=False, wrap=True,
-            )
-            with gr.Row():
-                human_review_run_selector = gr.Dropdown(
-                    choices=[], value=None, label="選擇已保存實驗結果",
+            with gr.Tab("3-1 人工評測") as human_review_tasks_tab:
+                human_review_tasks_status = gr.Markdown("載入目前使用者分派到的題目。")
+                human_review_batch_selector = gr.Dropdown(
+                    choices=[], value=None, label="選擇一次已保存的實驗執行",
                 )
-                human_review_sampling_mode = gr.Radio(
-                    choices=[
-                        ("每份題目集固定抽樣", "fixed_per_stratum"),
-                        ("依題目數比例分配總抽樣數", "proportional_total"),
-                    ],
-                    value="fixed_per_stratum", label="抽樣方式",
+                human_review_task_selector = gr.Dropdown(
+                    choices=[], value=None, label="人工評測題目",
                 )
-                human_review_sample_count = gr.Number(
-                    value=3, minimum=1, precision=0,
-                    label="抽樣數（固定模式＝每份題目集的題數；比例模式＝整次評測的總題數）",
+                human_review_help_mode = gr.State(False)
+                with gr.Row():
+                    human_review_help_button = gr.Button("載入其他人的待評題目", interactive=False)
+                    human_review_stop_help_button = gr.Button("返回我的分派", interactive=False)
+                human_review_task_context = gr.Dataframe(
+                    headers=["實驗組", "成員專案", "題目集", "題號", "題目", "正確答案", "模型回答", "來源文件", "原分派評測人"],
+                    interactive=False, wrap=True,
                 )
-                create_human_review_button = gr.Button(
-                    "抽樣並平均分派", variant="primary",
+                human_review_score = gr.Radio(
+                    choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
+                    value=None, label="人工判定",
                 )
-            human_review_sampling_status = gr.Markdown()
-            gr.Markdown("移除只會清除所選執行的抽樣任務與人工評分，不會刪除原 AI 實驗結果。")
-            with gr.Row():
-                human_review_remove_selector = gr.Dropdown(
-                    choices=[], value=None, label="選擇要移除抽樣資料的實驗執行",
+                human_review_note = gr.Textbox(
+                    label="人工評判理由／註記（選填）", lines=3,
                 )
-                human_review_remove_confirm = gr.Checkbox(
-                    value=False, label="我確認移除此執行的抽樣與所有人工評分",
-                )
-                human_review_remove_button = gr.Button(
-                    "移除抽樣資料", variant="stop", interactive=False,
-                )
+                submit_human_review_button = gr.Button("提交人工評分", variant="primary")
+                human_review_submission_status = gr.Markdown()
 
-        with gr.Tab("3-1 人工評測", interactive=False) as human_review_tasks_tab:
-            human_review_tasks_status = gr.Markdown("載入目前使用者分派到的題目。")
-            human_review_batch_selector = gr.Dropdown(
-                choices=[], value=None, label="選擇一次已保存的實驗執行",
-            )
-            human_review_task_selector = gr.Dropdown(
-                choices=[], value=None, label="人工評測題目",
-            )
-            human_review_help_mode = gr.State(False)
-            with gr.Row():
-                human_review_help_button = gr.Button("載入其他人的待評題目", interactive=False)
-                human_review_stop_help_button = gr.Button("返回我的分派", interactive=False)
-            human_review_task_context = gr.Dataframe(
-                headers=["實驗組", "成員專案", "題目集", "題號", "題目", "正確答案", "模型回答", "來源文件", "原分派評測人"],
-                interactive=False, wrap=True,
-            )
-            human_review_score = gr.Radio(
-                choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
-                value=None, label="人工判定",
-            )
-            human_review_note = gr.Textbox(
-                label="人工評判理由／註記（選填）", lines=3,
-            )
-            submit_human_review_button = gr.Button("提交人工評分", variant="primary")
-            human_review_submission_status = gr.Markdown()
-
-        with gr.Tab("4-0 AI／人工評測結果", interactive=False) as human_review_results_tab:
-            gr.Markdown("只顯示抽樣題目全部完成人工評分的已保存執行結果。AI 判定使用保存當下的原始分數；檢索指標則依該次執行中各實驗組的全部題目計算，不限人工抽樣題。")
-            human_review_results_run_selector = gr.Dropdown(
-                choices=[], value=None, label="已完成人工評測的實驗執行",
-            )
-            human_review_results_status = gr.Markdown("選擇已完成的人工評測執行結果。")
-            human_review_retrieval_summary_table = gr.Dataframe(
-                headers=["實驗組", "總測試題數", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate"],
-                interactive=False, wrap=True,
-            )
-            human_review_summary_table = gr.Dataframe(
-                headers=["實驗組", "成員專案", "題目集", "樣本數", "AI 平均分（0–2）", "人工平均分（0–2）", "AI 得分率", "人工得分率", "判定一致率", "平均分差"],
-                interactive=False, wrap=True,
-            )
-            human_review_results_table = gr.Dataframe(
-                headers=["實驗組", "成員專案", "題目集", "題號", "題目", "正確答案", "模型回答", "AI 判定", "人工判定", "一致性", "AI 理由", "人工註記", "原分派評測人", "實際評測人"],
-                interactive=False, wrap=True,
-            )
+            with gr.Tab("4-0 AI／人工評測結果") as human_review_results_tab:
+                gr.Markdown("只顯示抽樣題目全部完成人工評分的已保存執行結果。AI 判定使用保存當下的原始分數；檢索指標則依該次執行中各實驗組的全部題目計算，不限人工抽樣題。")
+                human_review_results_run_selector = gr.Dropdown(
+                    choices=[], value=None, label="已完成人工評測的實驗執行",
+                )
+                human_review_results_status = gr.Markdown("選擇已完成的人工評測執行結果。")
+                human_review_retrieval_summary_table = gr.Dataframe(
+                    headers=["實驗組", "總測試題數", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate"],
+                    interactive=False, wrap=True,
+                )
+                human_review_summary_table = gr.Dataframe(
+                    headers=["實驗組", "成員專案", "題目集", "樣本數", "AI 平均分（0–2）", "人工平均分（0–2）", "AI 得分率", "人工得分率", "判定一致率", "平均分差"],
+                    interactive=False, wrap=True,
+                )
+                human_review_results_table = gr.Dataframe(
+                    headers=["實驗組", "成員專案", "題目集", "題號", "題目", "正確答案", "模型回答", "AI 判定", "人工判定", "一致性", "AI 理由", "人工註記", "原分派評測人", "實際評測人"],
+                    interactive=False, wrap=True,
+                )
 
         schema_model_endpoint = gr.State(initial_llm_credentials[0][0])
         schema_model_key = gr.State(initial_llm_credentials[0][1])
@@ -6942,7 +7012,7 @@ def build_app() -> gr.Blocks:
             outputs=[evaluation_answers_status, run_evaluation_button],
             show_progress="hidden",
         )
-        question_set_manager_tab.select(
+        system_settings_tab.select(
             load_central_question_sets_for_ui, inputs=central_question_selector,
             outputs=[central_question_status, central_question_selector, central_question_table],
             show_progress="hidden",
@@ -6983,7 +7053,7 @@ def build_app() -> gr.Blocks:
                      central_question_selector],
             show_progress="hidden",
         )
-        refresh_binding_projects_event = question_set_binding_tab.select(
+        system_settings_tab.select(
             refresh_binding_project_choices_for_ui, inputs=binding_project_selector,
             outputs=[binding_project_selector, binding_question_set_status, binding_question_set_selector],
             show_progress="hidden",
@@ -7762,13 +7832,18 @@ def build_app() -> gr.Blocks:
                 save_project_for_ui, inputs=project_setting_inputs,
                 outputs=[project_state, project_status], show_progress="hidden",
             )
-        current_user_dropdown.change(
-            select_user_for_ui,
-            inputs=current_user_dropdown,
-            outputs=[current_user_banner, question_set_manager_tab, question_set_binding_tab,
-                     api_settings_tab, project_tab, experiment_project_tab,
-                     human_review_sampling_tab, human_review_tasks_tab,
-                     human_review_results_tab],
+        login_button.click(
+            login_for_ui,
+            inputs=login_user_dropdown,
+            outputs=[current_user_state, user_menu, login_view, app_view, login_status],
+            show_progress="hidden",
+        ).then(
+            load_central_question_sets_for_ui, inputs=central_question_selector,
+            outputs=[central_question_status, central_question_selector, central_question_table],
+            show_progress="hidden",
+        ).then(
+            refresh_binding_project_choices_for_ui, inputs=binding_project_selector,
+            outputs=[binding_project_selector, binding_question_set_status, binding_question_set_selector],
             show_progress="hidden",
         )
         project_tab.select(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
@@ -8234,5 +8309,5 @@ def build_app() -> gr.Blocks:
             ],
             outputs=[answer_status, answer, answer_sources],
         )
-    bind_gradio_callbacks_to_actor(app, current_user_dropdown)
+    bind_gradio_callbacks_to_actor(app, current_user_state)
     return app
