@@ -1311,7 +1311,7 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
         "build", "embed", "answer", 1200, 100, 0.2,
         "詳細", 2, "extract", 2,
         "混合檢索", 6, '{"entity_types": []}',
-        ui.DEFAULT_REASONING_EFFORT, ui.DEFAULT_REASONING_EFFORT,
+        ui.DEFAULT_REASONING_EFFORT,
         ui.DEFAULT_REASONING_EFFORT, '{"effective_search_ratio": 6}',
         "per_document",
     ]
@@ -1322,10 +1322,9 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert loaded[0]["project_id"] == created["project_id"]
     assert loaded[11:13] == (1200, 100)
     assert loaded[22][0].text == "內容"
-    assert loaded[37] == {"effective_search_ratio": 6}
-    assert loaded[38] == "per_document"
+    assert loaded[36] == {"effective_search_ratio": 6}
+    assert loaded[37] == "per_document"
     parameter_entries = ui._strategy_parameter_entries()
-    assert loaded[-len(parameter_entries) - 1] == {"effective_search_ratio": 6}
     hybrid_ratio = next(
         update for (strategy_id, name, _spec), update
         in zip(parameter_entries, loaded[-len(parameter_entries):])
@@ -2641,6 +2640,16 @@ def test_model_selection_dynamically_toggles_reasoning_effort_control() -> None:
     )
     assert effort_ids.intersection(dependency["outputs"])
     assert (model["id"], "change") in dependency["targets"]
+    assert any(
+        c.get("props", {}).get("label") == "推理強度"
+        for c in components
+    )
+    assert not any(
+        c.get("type") == "dropdown"
+        and c.get("props", {}).get("choices") == list(ui.GPT_6_LUNA_REASONING_EFFORTS)
+        and not c.get("props", {}).get("label")
+        for c in components
+    )
 
 
 def test_experiment_group_reasoning_controls_follow_each_selected_model() -> None:

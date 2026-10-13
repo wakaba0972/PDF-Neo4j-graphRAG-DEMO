@@ -1126,7 +1126,6 @@ def save_project_for_ui(
     max_concurrent_requests: int, extraction_llm_model: str,
     extraction_max_concurrent_requests: int,
     retrieval_mode: str, top_k: int, schema_text: str,
-    graph_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     extraction_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     answer_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     retrieval_strategy_params_json: Any = None,
@@ -1151,7 +1150,6 @@ def save_project_for_ui(
         ).to_dict(),
         "schema_text": schema_text or "",
         "graph_partition_mode": graph_partition_mode or "merged",
-        "graph_reasoning_effort": graph_reasoning_effort or DEFAULT_REASONING_EFFORT,
         "extraction_reasoning_effort": extraction_reasoning_effort or DEFAULT_REASONING_EFFORT,
         "answer_reasoning_effort": answer_reasoning_effort or DEFAULT_REASONING_EFFORT,
     }
@@ -1244,11 +1242,6 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         _document_rows(documents), _document_choices(documents),
         _chunk_rows(active_chunks), document_status,
         [], [], graph_status, import_status,
-        gr.update(
-            value=get("graph_reasoning_effort", DEFAULT_REASONING_EFFORT),
-            visible=str(get("graph_llm_model", DEFAULT_LLM_MODEL) or "").casefold() == GPT_6_LUNA_MODEL,
-            choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-        ),
         gr.update(
             value=get("extraction_reasoning_effort", DEFAULT_REASONING_EFFORT),
             visible=str(get("extraction_llm_model", DEFAULT_LLM_MODEL) or "").casefold() == GPT_6_LUNA_MODEL,
@@ -6273,10 +6266,6 @@ def build_app() -> gr.Blocks:
             graph_llm_model = gr.Dropdown(
                 choices=llm_choices, value=preferred_llm, visible=False,
             )
-            graph_reasoning_effort = gr.Dropdown(
-                choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                value=DEFAULT_REASONING_EFFORT, visible=False,
-            )
             schema_granularity = gr.Radio(
                 ["粗略", "平衡", "詳細"], value="平衡", visible=False,
             )
@@ -7822,7 +7811,7 @@ def build_app() -> gr.Blocks:
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor, graph_reasoning_effort,
+            top_k, schema_editor,
             extraction_reasoning_effort, answer_reasoning_effort,
             retrieval_strategy_params_state,
             graph_partition_mode,
@@ -7842,14 +7831,12 @@ def build_app() -> gr.Blocks:
             documents_table, remove_document_selector,
             chunk_table, page_status,
             entity_table, relationship_table, build_status, import_status,
-            graph_reasoning_effort, extraction_reasoning_effort,
+            extraction_reasoning_effort,
             answer_reasoning_effort, retrieval_strategy_params_state,
             graph_partition_mode,
             *retrieval_strategy_parameter_controls,
         ]
-        for effort_control in [
-            graph_reasoning_effort, extraction_reasoning_effort, answer_reasoning_effort,
-        ]:
+        for effort_control in [extraction_reasoning_effort, answer_reasoning_effort]:
             effort_control.input(
                 save_project_for_ui, inputs=project_setting_inputs,
                 outputs=[project_state, project_status], show_progress="hidden",
@@ -8146,7 +8133,6 @@ def build_app() -> gr.Blocks:
                 show_progress="hidden",
             )
         for model_field, effort_field in [
-            (graph_llm_model, graph_reasoning_effort),
             (extraction_llm_model, extraction_reasoning_effort),
             (answer_model, answer_reasoning_effort),
             (evaluation_generation_model, evaluation_generation_effort),
