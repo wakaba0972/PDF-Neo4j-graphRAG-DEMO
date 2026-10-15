@@ -607,28 +607,11 @@ def workflow_tabs_for_ui(
     return tuple(_tab_update(enabled) for _ in range(5))
 
 
-def _section_update(enabled: bool) -> dict[str, Any]:
-    return gr.update(visible=enabled)
-
-
-def experiment_run_section_for_ui(
-    workspace_mode: str,
-    project: dict[str, Any] | None,
-    connection_statuses: dict[str, bool] | None,
-) -> tuple[dict[str, Any], ...]:
-    members = (project or {}).get("members", [])
-    statuses = connection_statuses or {}
-    enabled = (
-        bool(members) and all(statuses.get(member_id) is True for member_id in members)
-    )
-    return (_section_update(enabled),)
-
-
 def activate_workspace_for_ui(
     workspace_mode: str, project: dict[str, Any] | None,
     current_workspace_mode: str = "",
     current_connection_statuses: dict[str, bool] | None = None,
-) -> tuple[str, dict[str, bool], dict[str, Any]]:
+) -> tuple[str, dict[str, bool]]:
     """Switch workspace modes and retain checks only when the experiment is unchanged."""
     active_mode = workspace_mode if project else ""
     members = (project or {}).get("members", [])
@@ -640,15 +623,14 @@ def activate_workspace_for_ui(
     )
     if not retain_statuses:
         statuses = {}
-    sections = experiment_run_section_for_ui(active_mode, project, statuses)
-    return active_mode, statuses, *sections
+    return active_mode, statuses
 
 
 def reset_experiment_project_connection_for_ui(
     project: dict[str, Any] | None,
-) -> tuple[dict[str, bool], dict[str, Any], str]:
+) -> tuple[dict[str, bool], str]:
     status = "成員已變更，請重新測試成員專案連線。" if (project or {}).get("members") else "請先加入成員專案。"
-    return {}, _section_update(False), status
+    return {}, status
 
 
 def lock_project_tabs_for_ui(project_id: str) -> tuple[dict[str, Any], ...]:
@@ -4673,6 +4655,7 @@ def generate_experiment_project_answers_for_ui(
     project: dict[str, Any] | None, max_concurrent_requests: int | float,
     llm_state: dict[str, Any], embedding_api_base: str, embedding_api_key: str,
     neo4j_uri: str, neo4j_username: str, neo4j_password: str,
+    connection_statuses: dict[str, bool] | None = None,
     progress=gr.Progress(),
 ) -> tuple[str, list[dict[str, Any]], list[list[Any]], list[list[Any]], list[list[Any]], dict[str, Any]]:
     """Generate all member-project answers, but defer judging and showing rows."""
@@ -4689,6 +4672,9 @@ def generate_experiment_project_answers_for_ui(
     groups = current.get("groups") or []
     if not members or not groups:
         return "❌ 請先加入成員專案並設定實驗組。", [], [], [], [], current
+    statuses = connection_statuses or {}
+    if not all(statuses.get(member_id) is True for member_id in members):
+        return "❌ 請先測試並通過所有成員專案的 Neo4j 連線。", [], [], [], [], current
     try:
         members_data, question_map = _load_experiment_member_question_sets(current)
     except (OSError, ValueError) as exc:
@@ -7060,7 +7046,7 @@ def build_app() -> gr.Blocks:
                         info="只列出已完成 Neo4j 圖譜匯入的專案。",
                     )
                     save_experiment_members_button = gr.Button("保存成員專案")
-                    with gr.Column(visible=False) as experiment_project_members_table_column:
+                with gr.Column():
                         experiment_project_members_table = gr.Dataframe(
                             headers=[
                                 "專案", "專案 ID", "建立者", "文件數", "Chunk 數", "問題集題數",
@@ -7069,12 +7055,14 @@ def build_app() -> gr.Blocks:
                             datatype=["str", "str", "str", "number", "str", "number", "number", "number", "number", "str", "str", "str"],
                             interactive=False, wrap=True,
                         )
-                with gr.Accordion("③ 成員專案連線測試", open=True, visible=False) as experiment_connection_accordion:
-                    gr.Markdown("使用 1-0「Neo4j 連線設定」的 URI／帳密，逐一連到各成員專案自己的 Database；結果填入上方成員表的「連線結果」欄，全部通過後才會顯示下方的實驗組、評測與結果區塊。回答與 Embedding 模型共用「0 系統設定」的 OpenAI 設定。")
+                with gr.Accordion("③ 成員專案連線測試", open=True):
+                    gr.Markdown("使用 1-0「Neo4j 連線設定」的 URI／帳密，逐一連到各成員專案自己的 Database；結果填入上方成員表的「連線結果」欄。開始生成回答前，所有成員專案都必須連線成功。回答與 Embedding 模型共用「0 系統設定」的 OpenAI 設定。")
                     test_experiment_connections_button = gr.Button("測試所有成員專案連線", variant="primary")
                     experiment_connection_status = gr.Markdown("請先載入實驗專案。")
-                # Running experiments stays hidden until every member connection passes.
-                with gr.Column(visible=False, elem_id="experiment-run-section") as experiment_project_run_column:
+                # Layout containers cannot be callback outputs, so keep controls rendered
+                # and enforce the connection gate in the generation callback.
+                with gr.Column(elem_id="experiment-run-section"):
+                    gr.Markdown("請先通過上方所有成員專案的 Neo4j 連線測試，再執行生成回答。")
                     gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，使用各專案在「0 系統設定」綁定的題目集及自己的 Neo4j Database 執行。")
                     with gr.Accordion("④ 實驗組與生成回答", open=True):
                         with gr.Row(equal_height=True):
@@ -7328,7 +7316,6 @@ def build_app() -> gr.Blocks:
         protected_tabs = [
             pdf_tab, graph_tab, qa_tab, evaluation_tab, experiment_tab,
         ]
-        experiment_run_sections = [experiment_project_run_column]
         access_inputs = [project_selector, neo4j_connected_state, llm_service_state,
                          embedding_service_state, workspace_mode_state, project_state]
 
@@ -7744,8 +7731,7 @@ def build_app() -> gr.Blocks:
             activate_workspace_for_ui,
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
-            outputs=[workspace_mode_state, experiment_project_connection_state,
-                     *experiment_run_sections],
+            outputs=[workspace_mode_state, experiment_project_connection_state],
         ).then(
             experiment_project_banner_for_ui,
             inputs=experiment_project_state, outputs=current_project_banner,
@@ -7767,8 +7753,7 @@ def build_app() -> gr.Blocks:
             activate_workspace_for_ui,
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
-            outputs=[workspace_mode_state, experiment_project_connection_state,
-                     *experiment_run_sections],
+            outputs=[workspace_mode_state, experiment_project_connection_state],
         ).then(
             experiment_member_rows_for_ui,
             inputs=[experiment_project_state, experiment_project_connection_state],
@@ -7786,8 +7771,7 @@ def build_app() -> gr.Blocks:
             activate_workspace_for_ui,
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
-            outputs=[workspace_mode_state, experiment_project_connection_state,
-                     *experiment_run_sections], show_progress="hidden",
+            outputs=[workspace_mode_state, experiment_project_connection_state], show_progress="hidden",
         ).then(
             experiment_member_rows_for_ui,
             inputs=[experiment_project_state, experiment_project_connection_state],
@@ -7805,8 +7789,7 @@ def build_app() -> gr.Blocks:
             activate_workspace_for_ui,
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
-            outputs=[workspace_mode_state, experiment_project_connection_state,
-                     *experiment_run_sections],
+            outputs=[workspace_mode_state, experiment_project_connection_state],
         ).then(
             experiment_member_rows_for_ui,
             inputs=[experiment_project_state, experiment_project_connection_state],
@@ -7839,8 +7822,7 @@ def build_app() -> gr.Blocks:
             activate_workspace_for_ui,
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
-            outputs=[workspace_mode_state, experiment_project_connection_state,
-                     *experiment_run_sections],
+            outputs=[workspace_mode_state, experiment_project_connection_state],
         ).then(
             experiment_member_rows_for_ui,
             inputs=[experiment_project_state, experiment_project_connection_state],
@@ -7859,23 +7841,12 @@ def build_app() -> gr.Blocks:
         ).then(
             reset_experiment_project_connection_for_ui,
             inputs=[experiment_project_state],
-            outputs=[experiment_project_connection_state,
-                     *experiment_run_sections, experiment_connection_status],
-        )
-        experiment_project_members_table.change(
-            experiment_member_sections_visibility_for_ui,
-            inputs=experiment_project_members_table,
-            outputs=[experiment_project_members_table_column, experiment_connection_accordion],
-            show_progress="hidden",
+            outputs=[experiment_project_connection_state, experiment_connection_status],
         )
         test_experiment_connections_button.click(
             test_experiment_project_connections_for_ui,
             inputs=[experiment_project_selector, neo4j_uri, neo4j_username, neo4j_password],
             outputs=[experiment_project_members_table, experiment_project_connection_state, experiment_connection_status],
-        ).then(
-            experiment_run_section_for_ui,
-            inputs=[workspace_mode_state, experiment_project_state, experiment_project_connection_state],
-            outputs=experiment_run_sections,
         )
         # Each experiment load also refreshes the run sections (groups, judge settings, results).
         for experiment_load_event in [
@@ -7990,6 +7961,7 @@ def build_app() -> gr.Blocks:
                 experiment_project_state, experiment_project_max_concurrency,
                 experiment_llm_service_state, selected_embedding_endpoint, selected_embedding_key,
                 neo4j_uri, neo4j_username, neo4j_password,
+                experiment_project_connection_state,
             ],
             outputs=[
                 experiment_project_answers_status, experiment_project_pending_answers_state,
@@ -8366,8 +8338,7 @@ def build_app() -> gr.Blocks:
                 activate_workspace_for_ui,
                 inputs=[single_workspace_mode, project_state,
                         workspace_mode_state, experiment_project_connection_state],
-                outputs=[workspace_mode_state, experiment_project_connection_state,
-                         *experiment_run_sections], show_progress="hidden",
+                outputs=[workspace_mode_state, experiment_project_connection_state], show_progress="hidden",
             ).then(
                 workflow_tabs_for_ui, inputs=access_inputs, outputs=protected_tabs,
                 show_progress="hidden",
@@ -8424,11 +8395,6 @@ def build_app() -> gr.Blocks:
             invalidation.then(
                 workflow_tabs_for_ui, inputs=access_inputs, outputs=protected_tabs,
                 show_progress="hidden",
-            ).then(
-                experiment_run_section_for_ui,
-                inputs=[workspace_mode_state, experiment_project_state,
-                        experiment_project_connection_state],
-                outputs=experiment_run_sections, show_progress="hidden",
             ).then(
                 experiment_member_rows_for_ui,
                 inputs=[experiment_project_state, experiment_project_connection_state],

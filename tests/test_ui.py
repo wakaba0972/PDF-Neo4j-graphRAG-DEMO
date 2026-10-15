@@ -600,8 +600,9 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     assert len(tabs) == 5
     assert len(experiment_tabs) == 1
     assert experiment_tabs[0]["props"]["interactive"] is not False
-    # 實驗組、評測與結果區塊在成員連線全部通過前隱藏。
-    assert run_section["props"]["visible"] is False
+    # Layout containers are not valid Gradio callback outputs; keep the section
+    # rendered and enforce connection checks before generation instead.
+    assert run_section["props"].get("visible", True) is True
     assert not any(
         "歷史紀錄" in str(component.get("props", {}).get("label", ""))
         for component in app.config["components"]
@@ -616,25 +617,14 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", True, llm, embedding, "single"))
     assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("project", False, llm, embedding, "experiment"))
     experiment = {"experiment_project_id": "exp-1", "members": ["p1", "p2"]}
-    assert [update["visible"] for update in ui.experiment_run_section_for_ui("experiment", experiment, {})] == [False]
-    assert [update["visible"] for update in ui.experiment_run_section_for_ui("experiment", experiment, {"p1": True, "p2": False})] == [False]
-    assert [update["visible"] for update in ui.experiment_run_section_for_ui("experiment", experiment, {"p1": True, "p2": True})] == [True]
-    # Once every member has a successful connection result, visibility should
-    # not depend on the separate workspace-mode state being synchronized.
-    assert ui.experiment_run_section_for_ui(
-        "single", experiment, {"p1": True, "p2": True},
-    )[0]["visible"] is True
-    mode, statuses, run_update = ui.activate_workspace_for_ui("experiment", {"name": "試驗"})
+    mode, statuses = ui.activate_workspace_for_ui("experiment", {"name": "試驗"})
     assert mode == "experiment" and statuses == {}
-    assert run_update["visible"] is False
-    mode, statuses, run_update = ui.activate_workspace_for_ui(
+    mode, statuses = ui.activate_workspace_for_ui(
         "experiment", experiment, "experiment", {"p1": True, "p2": True},
     )
     assert mode == "experiment" and statuses == {"p1": True, "p2": True}
-    assert run_update["visible"] is True
-    statuses, run_update, status = ui.reset_experiment_project_connection_for_ui(experiment)
+    statuses, status = ui.reset_experiment_project_connection_for_ui(experiment)
     assert statuses == {}
-    assert run_update["visible"] is False
     assert "重新測試" in status
     page_labels = {
         component.get("props", {}).get("label") for component in app.config["components"]
@@ -651,12 +641,10 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     ]
     assert len(gate_dependencies) >= 5
     assert all(len(dependency["outputs"]) == 5 for dependency in gate_dependencies)
-    experiment_gate_dependencies = [
-        dependency for dependency in app.config["dependencies"]
-        if str(dependency.get("api_name", "")).startswith("experiment_run_section_for_ui")
-    ]
-    assert len(experiment_gate_dependencies) >= 2
-    assert all(len(dependency["outputs"]) == 1 for dependency in experiment_gate_dependencies)
+    assert not any(
+        run_section["id"] in dependency["outputs"]
+        for dependency in app.config["dependencies"]
+    )
 
 
 
@@ -4764,8 +4752,13 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     })
     monkeypatch.setattr(ui, "resolve_model_credentials_for_ui", lambda *_: ("endpoint", "key"))
     monkeypatch.setattr(ui, "answer_question_for_ui", lambda *args, **kwargs: ("✅ 完成", "A", []))
+    blocked_status, *_ = ui.generate_experiment_project_answers_for_ui(
+        experiment, 2, {}, "embed", "key", "bolt", "user", "password", {},
+    )
+    assert "請先測試並通過所有成員專案" in blocked_status
     generated_status, pending, group_summaries, summaries, details, saved = ui.generate_experiment_project_answers_for_ui(
         experiment, 2, {}, "embed", "key", "bolt", "user", "password",
+        {member["project_id"]: True},
     )
     assert generated_status.startswith("✅ 已處理 1 個實驗題次；成功 1、失敗 0")
     assert len(pending) == 1 and pending[0]["actual_answer"] == "A"
