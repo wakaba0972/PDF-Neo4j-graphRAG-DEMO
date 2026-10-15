@@ -148,18 +148,20 @@ def user_menu_html_for_ui(user: str | None) -> str:
     )
 
 
-def login_for_ui(user: str | None) -> tuple[Any, ...]:
-    """Return the logged-in user, account menu, and login/app view updates."""
+def login_for_ui(user: str | None) -> tuple[str, str, str]:
+    """Return the logged-in user, account menu, and login status.
+
+    The login/app views are switched in the browser (see LOGGED_IN_JS), not with
+    visible updates: Gradio 5.50 ignores later Tab interactive updates for tabs
+    first rendered inside a hidden container, which would keep 1-1～1-5 locked.
+    """
     if user not in KNOWN_USERS:
-        return (
-            "", user_menu_html_for_ui(None),
-            gr.update(visible=True), gr.update(visible=False),
-            "⚠️ 請先選擇帳號再按「登入」。",
-        )
-    return (
-        user, user_menu_html_for_ui(user),
-        gr.update(visible=False), gr.update(visible=True), "",
-    )
+        return "", user_menu_html_for_ui(None), "⚠️ 請先選擇帳號再按「登入」。"
+    return user, user_menu_html_for_ui(user), ""
+
+
+# Reveals the tool once login_for_ui accepted a user; CSS hides #app-view until then.
+LOGGED_IN_JS = "(user) => { if (user) document.body.classList.add('logged-in'); }"
 
 
 def _user_prefixed_name(name: str, user: str | None) -> str:
@@ -588,14 +590,9 @@ def persist_global_api_settings_for_ui(
     )
     return (*llm, *embedding, experiment, status)
 
-# TEMP(UI 修理): 修 UI 期間暫時打開所有會上鎖的頁籤（1-1～1-5）與 2-0 的實驗執行區塊，
-# 原本的解鎖條件仍保留在各函式中。修完後改回 False 即可還原，見交接紀錄。
-TEMP_UNLOCK_ALL_TABS = True
-
-
 
 def _tab_update(enabled: bool) -> dict[str, Any]:
-    return gr.update(interactive=enabled or TEMP_UNLOCK_ALL_TABS)
+    return gr.update(interactive=enabled)
 
 
 def workflow_tabs_for_ui(
@@ -613,7 +610,7 @@ def workflow_tabs_for_ui(
 
 
 def _section_update(enabled: bool) -> dict[str, Any]:
-    return gr.update(visible=enabled or TEMP_UNLOCK_ALL_TABS)
+    return gr.update(visible=enabled)
 
 
 def experiment_run_section_for_ui(
@@ -6286,6 +6283,8 @@ def build_app() -> gr.Blocks:
         .project-stacked-actions .project-workspace-action {align-self:stretch !important;
             flex:1 1 0 !important; height:auto !important; min-height:0 !important;}
         #login-view {min-height:80vh; justify-content:center; align-items:center;}
+        body:not(.logged-in) #app-view {display:none !important;}
+        body.logged-in #login-view {display:none !important;}
         #login-card {flex:0 0 auto !important; width:100%; max-width:420px; padding:32px 28px;
             border:1px solid var(--border-color-primary); border-radius:16px;
             background:var(--background-fill-primary); box-shadow:var(--shadow-drop-lg);}
@@ -6342,7 +6341,7 @@ def build_app() -> gr.Blocks:
         </style>""")
         current_user_state = gr.State("")
 
-        with gr.Column(visible=True, elem_id="login-view") as login_view:
+        with gr.Column(elem_id="login-view"):
             with gr.Column(elem_id="login-card"):
                 gr.Markdown("# PDF GraphRAG 測試工具")
                 gr.Markdown("請選擇帳號登入", elem_classes=["login-subtitle"])
@@ -6354,7 +6353,7 @@ def build_app() -> gr.Blocks:
                 login_button = gr.Button("登入", variant="primary")
                 login_status = gr.Markdown("")
 
-        with gr.Column(visible=False) as app_view:
+        with gr.Column(elem_id="app-view"):
             with gr.Row(elem_classes=["app-header"]):
                 gr.Markdown(
                     "# PDF GraphRAG 測試工具\n"
@@ -6513,7 +6512,7 @@ def build_app() -> gr.Blocks:
                     gr.Markdown("Neo4j 連線設定隨專案保存，欄位修改後會自動儲存。模型與 Embedding API 請至「0 系統設定」管理。")
                     env_status = gr.Markdown()
 
-            with gr.Tab("1-1 PDF 與參數", interactive=TEMP_UNLOCK_ALL_TABS) as pdf_tab:
+            with gr.Tab("1-1 PDF 與參數", interactive=False) as pdf_tab:
                 with gr.Row():
                     with gr.Column(scale=1):
                         pdf_file = gr.File(
@@ -6551,7 +6550,7 @@ def build_app() -> gr.Blocks:
                             column_widths=[80, 160, 120, 100, 900],
                         )
 
-            with gr.Tab("1-2 建圖", interactive=TEMP_UNLOCK_ALL_TABS) as graph_tab:
+            with gr.Tab("1-2 建圖", interactive=False) as graph_tab:
                 gr.Markdown("### 從文件文本抽取知識圖譜")
                 with gr.Row():
                     pause_button = gr.Button("⏸ 暫停")
@@ -6683,7 +6682,7 @@ def build_app() -> gr.Blocks:
                     )
                     import_status = gr.Markdown("尚未執行 Embedding 與匯入。")
 
-            with gr.Tab("1-3 問答測試", interactive=TEMP_UNLOCK_ALL_TABS) as qa_tab:
+            with gr.Tab("1-3 問答測試", interactive=False) as qa_tab:
                 gr.Markdown(
                     "直接使用連線設定中的 Neo4j；預設查詢最近更新的建圖結果。"
                     "可選擇使用 LLM Reranker 重排候選，或啟用證據擴展。"
@@ -6769,7 +6768,7 @@ def build_app() -> gr.Blocks:
                         wrap=True,
                     )
 
-            with gr.Tab("1-4 從 PDF 生題", interactive=TEMP_UNLOCK_ALL_TABS) as evaluation_tab:
+            with gr.Tab("1-4 從 PDF 生題", interactive=False) as evaluation_tab:
                 gr.Markdown(
                     "### 從 PDF 建立題目集\n"
                     "每份 PDF 建立指定數量的題目與標準答案，確認後存成中央題目集；回答與評測請到「1-5 單一專案實驗」。"
@@ -6941,7 +6940,7 @@ def build_app() -> gr.Blocks:
                         type="array", interactive=True, static_columns=list(range(8)), wrap=True,
                         elem_classes=["evaluation-table", "evaluation-results-table"],
                     )
-            with gr.Tab("1-5 單一專案實驗", interactive=TEMP_UNLOCK_ALL_TABS) as experiment_tab:
+            with gr.Tab("1-5 單一專案實驗", interactive=False) as experiment_tab:
                 gr.Markdown(
                     "使用「0 系統設定」或 1-4 存成並綁定到目前專案的題目集；建立一個或多個不同回答／檢索設定的實驗組，"
                     "先生成各組回答，再獨立評測並比較答案正確率、Evidence Hit Rate、"
@@ -7160,7 +7159,7 @@ def build_app() -> gr.Blocks:
                     test_experiment_connections_button = gr.Button("測試所有成員專案連線", variant="primary")
                     experiment_connection_status = gr.Markdown("請先載入實驗專案。")
                 # Running experiments stays hidden until every member connection passes.
-                with gr.Column(visible=TEMP_UNLOCK_ALL_TABS, elem_id="experiment-run-section") as experiment_project_run_column:
+                with gr.Column(visible=False, elem_id="experiment-run-section") as experiment_project_run_column:
                     gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，使用各專案在「0 系統設定」綁定的題目集及自己的 Neo4j Database 執行。")
                     with gr.Accordion("④ 實驗組與生成回答", open=True):
                         with gr.Row(equal_height=True):
@@ -8332,8 +8331,11 @@ def build_app() -> gr.Blocks:
         login_button.click(
             login_for_ui,
             inputs=login_user_dropdown,
-            outputs=[current_user_state, user_menu, login_view, app_view, login_status],
+            outputs=[current_user_state, user_menu, login_status],
             show_progress="hidden",
+        ).then(
+            # gr.State never reaches the browser; the dropdown only offers KNOWN_USERS or "".
+            None, inputs=login_user_dropdown, js=LOGGED_IN_JS,
         ).then(
             load_central_question_sets_for_ui, inputs=central_question_selector,
             outputs=[central_question_status, central_question_selector, central_question_table],

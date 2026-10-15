@@ -589,33 +589,7 @@ def test_evaluation_results_table_uses_smaller_font_class() -> None:
     assert "font-size: 14px !important" in html_styles
 
 
-def test_temp_unlock_opens_every_gated_tab() -> None:
-    # TEMP(UI 修理): 還原時連同此測試一起移除。
-    app = build_app()
-    gated_labels = {
-        "1-1 PDF 與參數", "1-2 建圖", "1-3 問答測試",
-        "1-4 從 PDF 生題", "1-5 單一專案實驗",
-    }
-    gated_tabs = [
-        component for component in app.config["components"]
-        if component.get("props", {}).get("label") in gated_labels
-    ]
-    assert len(gated_tabs) == len(gated_labels)
-    assert all(tab["props"].get("interactive", True) is not False for tab in gated_tabs)
-    run_section = next(
-        component for component in app.config["components"]
-        if component.get("props", {}).get("elem_id") == "experiment-run-section"
-    )
-    assert run_section["props"]["visible"] is True
-    llm = settings.load_service_settings("llm")
-    embedding = settings.load_service_settings("embedding")
-    assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("", False, llm, embedding, "experiment"))
-    assert all(update["visible"] is True for update in ui.experiment_run_section_for_ui("single", None, {}))
-    assert all(update["interactive"] is True for update in ui.lock_project_tabs_for_ui(""))
-
-
 def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate(monkeypatch) -> None:
-    monkeypatch.setattr(ui, "TEMP_UNLOCK_ALL_TABS", False)
     app = build_app()
     protected_labels = {
         "1-1 PDF 與參數", "1-2 建圖",
@@ -698,7 +672,6 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
 
 
 def test_workflow_gate_requires_project_but_not_connection_tests(monkeypatch) -> None:
-    monkeypatch.setattr(ui, "TEMP_UNLOCK_ALL_TABS", False)
     llm = settings.load_service_settings("llm")
     embedding = settings.load_service_settings("embedding")
     assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("", False, llm, embedding))
@@ -718,7 +691,6 @@ def test_openai_models_are_selectable_without_current_connection_test(tmp_path, 
 
 def test_delete_project_refreshes_list_after_server_delete(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(ui, "TEMP_UNLOCK_ALL_TABS", False)
     project = ui.create_project("刪除測試")
 
     deleted = ui.delete_project_for_ui(project["project_id"])
@@ -1327,19 +1299,22 @@ def test_login_reveals_app_and_names_audited_projects(tmp_path, monkeypatch) -> 
     assert all(tab["props"].get("interactive") is not False for tab in root_tabs)
     rejected = ui.login_for_ui("")
     assert rejected[0] == ""
-    assert rejected[2]["visible"] is True and rejected[3]["visible"] is False
-    assert "請先選擇帳號" in rejected[4]
+    assert "請先選擇帳號" in rejected[2]
     login = ui.login_for_ui("61")
     assert login[0] == "61"
     assert "61" in login[1] and "登出" in login[1] and "user-menu" in login[1]
     assert rejected[1] == ""
-    assert login[2]["visible"] is False and login[3]["visible"] is True
-    assert login[4] == ""
+    assert login[2] == ""
     columns = {
         component["props"].get("elem_id"): component["props"].get("visible")
         for component in app.config["components"] if component.get("type") == "column"
     }
-    assert columns["login-view"] is True
+    # Both views render visible; CSS keyed on body.logged-in decides which one shows,
+    # so tabs inside #app-view are never mounted hidden (Gradio then ignores tab locks).
+    assert columns["login-view"] is True and columns["app-view"] is not False
+    assert any(
+        dependency.get("js") == ui.LOGGED_IN_JS for dependency in app.config["dependencies"]
+    )
     button_values = [
         component["props"].get("value") for component in app.config["components"]
         if component.get("type") == "button"
