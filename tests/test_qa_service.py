@@ -35,6 +35,12 @@ def test_answer_graph_question_omits_max_tokens(monkeypatch) -> None:
     user_prompt = captured["payload"]["messages"][1]["content"]
     assert system_prompt.startswith("You are a vehicle-document knowledge-graph QA assistant.")
     assert "answer primarily in the language of the retrieved evidence" in system_prompt
+    assert "You may reason across multiple pieces of evidence" in system_prompt
+    assert "every conclusion must be supported by the supplied evidence" in system_prompt
+    assert "cite the source document name and the page number" in system_prompt
+    assert "(Source: <document name>, p. <page number>)" in system_prompt
+    assert "never guess, infer, or invent citation details" in system_prompt
+    assert "state that the page number is unavailable" in system_prompt
     assert "Use plain text, not Markdown" in system_prompt
     assert "leave a blank line before each numbered item" in system_prompt
     assert "Question: 問題" in user_prompt
