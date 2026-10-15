@@ -588,7 +588,7 @@ def persist_global_api_settings_for_ui(
     return (*llm, *embedding, experiment, status)
 
 
-# TEMP(UI 修理): 修 UI 期間暫時打開所有會上鎖的頁籤（1-1～1-5、2-2），
+# TEMP(UI 修理): 修 UI 期間暫時打開所有會上鎖的頁籤（1-1～1-5）與 2-0 的實驗執行區塊，
 # 原本的解鎖條件仍保留在各函式中。修完後改回 False 即可還原，見交接紀錄。
 TEMP_UNLOCK_ALL_TABS = True
 
@@ -611,7 +611,11 @@ def workflow_tabs_for_ui(
     return tuple(_tab_update(enabled) for _ in range(5))
 
 
-def experiment_workflow_tabs_for_ui(
+def _section_update(enabled: bool) -> dict[str, Any]:
+    return gr.update(visible=enabled or TEMP_UNLOCK_ALL_TABS)
+
+
+def experiment_run_section_for_ui(
     workspace_mode: str,
     project: dict[str, Any] | None,
     connection_statuses: dict[str, bool] | None,
@@ -622,7 +626,7 @@ def experiment_workflow_tabs_for_ui(
         workspace_mode == "experiment" and bool(members)
         and all(statuses.get(member_id) is True for member_id in members)
     )
-    return (_tab_update(enabled),)
+    return (_section_update(enabled),)
 
 
 def activate_workspace_for_ui(
@@ -641,15 +645,15 @@ def activate_workspace_for_ui(
     )
     if not retain_statuses:
         statuses = {}
-    tabs = experiment_workflow_tabs_for_ui(active_mode, project, statuses)
-    return active_mode, statuses, *tabs
+    sections = experiment_run_section_for_ui(active_mode, project, statuses)
+    return active_mode, statuses, *sections
 
 
 def reset_experiment_project_connection_for_ui(
     project: dict[str, Any] | None,
 ) -> tuple[dict[str, bool], dict[str, Any], str]:
     status = "成員已變更，請重新測試成員專案連線。" if (project or {}).get("members") else "請先加入成員專案。"
-    return {}, _tab_update(False), status
+    return {}, _section_update(False), status
 
 
 def lock_project_tabs_for_ui(project_id: str) -> tuple[dict[str, Any], ...]:
@@ -2142,6 +2146,12 @@ def experiment_member_rows_for_ui(
     return rows
 
 
+def experiment_member_sections_visibility_for_ui(rows: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Show the 2-0 member table and connection test only once the experiment has members."""
+    has_members = _table_has_rows(rows)
+    return gr.update(visible=has_members), gr.update(visible=has_members)
+
+
 def _missing_experiment_member_row(project_id: str, connection_result: str = EXPERIMENT_MEMBER_UNTESTED) -> list[Any]:
     return ["（原專案不存在）", project_id, "未知", 0, 0, 0, "", "", "None", "", connection_result]
 
@@ -2742,7 +2752,7 @@ def load_experiment_for_ui(
 
 
 def _experiment_results_visibility(results: list[dict[str, Any]] | None) -> dict[str, Any]:
-    """Show 1-5 results only once an evaluation has produced scored results."""
+    """Show 1-5/2-0 results only once an evaluation has produced scored results."""
     return gr.update(visible=bool(results))
 
 
@@ -3415,7 +3425,7 @@ def generate_evaluation_for_ui(
 def save_generated_question_set_for_ui(
     project_id: str | None, rows: Any, name: str | None, bind_to_project: bool = True,
 ) -> str:
-    """Store the 1-4 generated questions as a central question set for 1-5／2-2."""
+    """Store the 1-4 generated questions as a central question set for 1-5／2-0."""
     if not project_id:
         return "❌ 請先建立或載入專案。"
     try:
@@ -4851,7 +4861,7 @@ def save_experiment_project_run_for_ui(
             current = load_experiment_project(project["experiment_project_id"])
             results = current.get("results") or []
             if not results:
-                raise ValueError("尚無 AI 評測結果，請先完成 2-2 實驗評測")
+                raise ValueError("尚無 AI 評測結果，請先完成 2-0 實驗評測")
             normalized_results = []
             for result in results:
                 if not isinstance(result, dict) or not ("score" in result or "passed" in result):
@@ -5148,11 +5158,30 @@ def human_review_tasks_for_current_user_for_ui(
             gr.update(interactive=bool(helping)))
 
 
+def _human_review_task_html(result: dict[str, Any], task: dict[str, Any], index: int) -> str:
+    """Render the 3-1 task as a vertical card so long question and answer text stay readable."""
+    meta = [
+        ("實驗組", result.get("group_name", "")), ("成員專案", result.get("source_project_name", "")),
+        ("題目集", result.get("question_set_name", "")), ("題號", result.get("number", index + 1)),
+        ("來源文件", result.get("document", "")), ("原分派評測人", task.get("assigned_to", "")),
+    ]
+    meta_html = "".join(
+        f'<span><b>{label}</b> {html.escape(str(value))}</span>' for label, value in meta
+        if str(value).strip()
+    )
+    blocks = "".join(
+        f'<div class="review-card-block"><div class="review-card-label">{label}</div>'
+        f'<div class="review-card-text">{html.escape(str(result.get(key, "") or ""))}</div></div>'
+        for label, key in (("題目", "question"), ("正確答案", "expected_answer"), ("模型回答", "actual_answer"))
+    )
+    return f'<div class="review-card"><div class="review-card-meta">{meta_html}</div>{blocks}</div>'
+
+
 def human_review_task_details_for_ui(
     task_key: str | None, helping: bool = False,
-) -> tuple[str, list[list[Any]], Any, Any]:
+) -> tuple[str, str, Any, Any]:
     if not task_key:
-        return "請選擇待評題目。", [], gr.update(value=None), gr.update(value="")
+        return "請選擇待評題目。", "", gr.update(value=None), gr.update(value="")
     try:
         parts = str(task_key).split("::", 2)
         if len(parts) != 3:
@@ -5186,14 +5215,7 @@ def human_review_task_details_for_ui(
         results = run.get("results") or []
         if not 0 <= index < len(results):
             raise ValueError("評測任務對應的實驗結果不存在")
-        result = results[index]
-        row = [[
-            result.get("group_name", ""), result.get("source_project_name", ""),
-            result.get("question_set_name", ""), result.get("number", index + 1),
-            result.get("question", ""), result.get("expected_answer", ""),
-            result.get("actual_answer", ""), result.get("document", ""),
-            task.get("assigned_to", ""),
-        ]]
+        row = _human_review_task_html(results[index], task, index)
         if task.get("score") in (0, 1, 2):
             return (
                 f"此題已於 {task.get('submitted_at', '')} 評分；原分派：{task.get('assigned_to', '')}；實際評測：{task.get('submitted_by', task.get('assigned_to', ''))}。",
@@ -5202,13 +5224,13 @@ def human_review_task_details_for_ui(
             )
         return "請獨立判斷模型回答的正確程度；AI 判定與理由暫不顯示。", row, gr.update(value=None, interactive=True), gr.update(value="", interactive=True)
     except (OSError, TypeError, ValueError) as exc:
-        return f"❌ 載入評測任務失敗：{exc}", [], gr.update(value=None), gr.update(value="")
+        return f"❌ 載入評測任務失敗：{exc}", "", gr.update(value=None), gr.update(value="")
 
 
 def submit_human_review_for_ui(
     task_key: str | None, score: int | float | None, note: str | None,
     helping: bool = False,
-) -> tuple[str, Any, str, list[list[Any]], Any, Any, Any, Any]:
+) -> tuple[str, Any, str, str, Any, Any, Any, Any]:
     try:
         actor = current_actor()
         if actor not in KNOWN_USERS:
@@ -5255,8 +5277,8 @@ def submit_human_review_for_ui(
     selected_run = "::".join((parts[0], parts[1])) if len(parts) == 3 else None
     selector, user_status, help_update, stop_update = human_review_tasks_for_current_user_for_ui(selected_run, helping)
     first_key = selector.get("value")
-    details_status, rows, next_score, next_note = human_review_task_details_for_ui(first_key, helping)
-    return status + " " + user_status, selector, details_status, rows, next_score, next_note, help_update, stop_update
+    details_status, card, next_score, next_note = human_review_task_details_for_ui(first_key, helping)
+    return status + " " + user_status, selector, details_status, card, next_score, next_note, help_update, stop_update
 
 
 def completed_human_review_runs_for_ui() -> tuple[Any, str]:
@@ -5269,6 +5291,11 @@ def completed_human_review_runs_for_ui() -> tuple[Any, str]:
         choices.append((label, _saved_run_key(project["experiment_project_id"], run["run_id"])))
     choices.sort(key=lambda item: item[0])
     return gr.update(choices=choices, value=choices[0][1] if choices else None), f"目前有 {len(choices)} 筆已完成人工評測的實驗執行結果。"
+
+
+def human_review_results_visibility(details: Any) -> dict[str, Any]:
+    """Show 4-0 result sections only once a completed run has paired AI／human rows."""
+    return gr.update(visible=_table_has_rows(details))
 
 
 def human_review_results_for_ui(
@@ -6174,6 +6201,13 @@ def build_app() -> gr.Blocks:
         .experiment-group-row:has(*) ~ .experiment-group-row:has(*) {border-top:1px solid var(--border-color-primary);}
         .experiment-group-row:has(*) > :not(.experiment-group-remove) {flex:1 1 0 !important; min-width:0 !important;}
         .experiment-group-remove {flex:0 0 72px !important;}
+        .review-card {display:flex; flex-direction:column; gap:12px;}
+        .review-card-meta {display:flex; flex-wrap:wrap; gap:6px 16px; font-size:13px; color:var(--body-text-color-subdued);}
+        .review-card-meta b {color:var(--body-text-color); font-weight:600; margin-right:2px;}
+        .review-card-block {border:1px solid var(--border-color-primary); border-radius:10px;
+            padding:10px 14px; background:var(--background-fill-secondary);}
+        .review-card-label {font-size:13px; font-weight:600; color:var(--body-text-color-subdued); margin-bottom:4px;}
+        .review-card-text {white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.6;}
         .package-export-button {background:#2563eb !important; border-color:#2563eb !important; color:#fff !important;}
         .package-export-button:hover {background:#1d4ed8 !important; border-color:#1d4ed8 !important;}
         #user-menu-slot {flex:0 0 auto !important; width:auto !important; min-width:0 !important; overflow:visible !important;}
@@ -6258,7 +6292,7 @@ def build_app() -> gr.Blocks:
             embedding_models_table = gr.State([])
             embedding_connection_status = gr.State(embedding_profile["status"])
 
-            with gr.Tab("0 系統設定") as system_settings_tab:
+            with gr.Tab("0-0 系統設定") as system_settings_tab:
                 with gr.Accordion("API Key 設定", open=True):
                     gr.Markdown("所有模型與 Embedding 呼叫共用同一組 OpenAI API 設定，並寫入本機 `.env`。")
                     with gr.Row():
@@ -6710,7 +6744,7 @@ def build_app() -> gr.Blocks:
                             headers=["題號", "題目", "正確答案", "題目來源（文件與頁碼）", "答案來源（文件與頁碼）"],
                             datatype=["number", "str", "str", "str", "str"],
                             type="array", interactive=True, wrap=True,
-                            # Default Gradio sizing, matching the 2-2 result tables.
+                            # Default Gradio sizing, matching the 2-0 result tables.
                             column_widths=[60, 380, 360, 200, 200],
                         )
                     with gr.Accordion("③ 存成中央題目集", open=True):
@@ -6981,8 +7015,8 @@ def build_app() -> gr.Blocks:
                             elem_classes=["compact-file", "package-file"],
                         )
 
-            with gr.Tab("2-0 實驗專案") as experiment_project_tab:
-                with gr.Accordion("實驗專案工作區", open=True):
+            with gr.Tab("2-0 跨專案實驗") as experiment_project_tab:
+                with gr.Accordion("① 實驗專案工作區", open=True):
                     gr.Markdown("建立或載入實驗專案；實驗組設定、執行結果都保存在該實驗專案。")
                     available_experiment_projects = experiment_project_choices_for_ui()
                     with gr.Row(equal_height=True):
@@ -7016,7 +7050,7 @@ def build_app() -> gr.Blocks:
                                 "取消", elem_classes="project-workspace-action",
                             )
                     experiment_project_status = gr.Markdown("建立或載入實驗專案。")
-                with gr.Accordion("成員專案", open=True):
+                with gr.Accordion("② 成員專案", open=True):
                     gr.Markdown("加入在 1-0 建立、並已在 1-2 完成建圖（匯入 Neo4j）的專案；各成員專案的 Neo4j Database 仍彼此獨立。")
                     experiment_project_members = gr.Dropdown(
                         choices=_built_project_choices(), value=[], multiselect=True,
@@ -7024,218 +7058,256 @@ def build_app() -> gr.Blocks:
                         info="只列出已完成 Neo4j 圖譜匯入的專案。",
                     )
                     save_experiment_members_button = gr.Button("保存成員專案")
-                    experiment_project_members_table = gr.Dataframe(
-                        headers=[
-                            "專案", "專案 ID", "建立者", "文件數", "Chunk 數", "問題集題數",
-                            "Chunk Size", "Overlap", "Schema 粒度", "Neo4j Database", "連線結果",
-                        ],
-                        datatype=["str", "str", "str", "number", "number", "number", "number", "number", "str", "str", "str"],
-                        interactive=False, wrap=True,
-                    )
-                with gr.Accordion("成員專案連線測試", open=True):
-                    gr.Markdown("使用 1-0「Neo4j 連線設定」的 URI／帳密，逐一連到各成員專案自己的 Database；結果填入上方成員表的「連線結果」欄，全部通過後才能進入 2-2。回答與 Embedding 模型共用「0 系統設定」的 OpenAI 設定。")
+                    with gr.Column(visible=False) as experiment_project_members_table_column:
+                        experiment_project_members_table = gr.Dataframe(
+                            headers=[
+                                "專案", "專案 ID", "建立者", "文件數", "Chunk 數", "問題集題數",
+                                "Chunk Size", "Overlap", "Schema 粒度", "Neo4j Database", "連線結果",
+                            ],
+                            datatype=["str", "str", "str", "number", "number", "number", "number", "number", "str", "str", "str"],
+                            interactive=False, wrap=True,
+                        )
+                with gr.Accordion("③ 成員專案連線測試", open=True, visible=False) as experiment_connection_accordion:
+                    gr.Markdown("使用 1-0「Neo4j 連線設定」的 URI／帳密，逐一連到各成員專案自己的 Database；結果填入上方成員表的「連線結果」欄，全部通過後才會顯示下方的實驗組、評測與結果區塊。回答與 Embedding 模型共用「0 系統設定」的 OpenAI 設定。")
                     test_experiment_connections_button = gr.Button("測試所有成員專案連線", variant="primary")
                     experiment_connection_status = gr.Markdown("請先載入實驗專案。")
-
-            with gr.Tab("2-1 自動實驗測試", interactive=TEMP_UNLOCK_ALL_TABS) as experiment_project_test_tab:
-                gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，使用各專案在「0 系統設定」綁定的題目集及自己的 Neo4j Database 執行。")
-                gr.Markdown("#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）")
-                experiment_project_group_rows: list[list[Any]] = []
-                for row_index in range(EXPERIMENT_GROUP_LIMIT):
-                    with gr.Row():
-                        group_name = gr.Textbox(
-                            label="實驗組名稱",
-                            placeholder=f"實驗組 {row_index + 1}", visible=False, scale=2,
+                # Running experiments stays hidden until every member connection passes.
+                with gr.Column(visible=TEMP_UNLOCK_ALL_TABS, elem_id="experiment-run-section") as experiment_project_run_column:
+                    gr.Markdown("每個實驗組會套用至實驗專案內所有成員專案，使用各專案在「0 系統設定」綁定的題目集及自己的 Neo4j Database 執行。")
+                    with gr.Accordion("④ 實驗組與生成回答", open=True):
+                        with gr.Row(equal_height=True):
+                            gr.Markdown(
+                                "每一列是一個實驗組，直接編輯欄位即可，每次變更會自動儲存。只測一種設定時保留一組即可。",
+                            )
+                            add_experiment_project_group_button = gr.Button(
+                                "＋ 新增實驗組", scale=0, min_width=180, elem_classes="project-workspace-action",
+                            )
+                        experiment_project_group_rows: list[list[Any]] = []
+                        with gr.Column(elem_classes="experiment-group-table"):
+                            for row_index in range(EXPERIMENT_GROUP_LIMIT):
+                                # Groups render as one table: only the first row shows column labels.
+                                header = row_index == 0
+                                with gr.Row(elem_classes="experiment-group-row"):
+                                    group_name = gr.Textbox(
+                                        label="實驗組名稱", show_label=header, min_width=110,
+                                        placeholder=f"實驗組 {row_index + 1}", visible=False, scale=2,
+                                    )
+                                    group_model = gr.Dropdown(
+                                        choices=experiment_llm_choices, value=None, allow_custom_value=False,
+                                        label="回答模型", show_label=header, min_width=110, visible=False, scale=2,
+                                    )
+                                    group_answer_effort = gr.Dropdown(
+                                        choices=list(GPT_6_LUNA_REASONING_EFFORTS),
+                                        value=DEFAULT_REASONING_EFFORT, label="回答推理強度", show_label=header, min_width=110,
+                                        visible=False, scale=1,
+                                    )
+                                    group_retrieval = gr.Dropdown(
+                                        choices=strategy_choices(), value="混合檢索",
+                                        label="檢索策略", show_label=header, min_width=110, visible=False, scale=2,
+                                    )
+                                    group_top_k = gr.Number(
+                                        value=8, minimum=1, maximum=50, precision=0, label="Top K",
+                                        show_label=header, min_width=110, visible=False, scale=1,
+                                    )
+                                    group_reranker = gr.Dropdown(
+                                        choices=list(RERANKER_MODES), value="停用", label="Reranker", show_label=header, min_width=110,
+                                        visible=False, scale=2,
+                                    )
+                                    group_expansion = gr.Dropdown(
+                                        choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
+                                        label="證據擴展", show_label=header, min_width=110, visible=False, scale=2,
+                                    )
+                                    group_strategy_params = gr.State({})
+                                    group_strategy_parameter_controls = _create_experiment_strategy_parameter_controls(
+                                        numeric_inputs=True, show_label=header,
+                                    )
+                                    delete_group_button = gr.Button(
+                                        "移除", size="sm", visible=False, scale=0, min_width=72,
+                                        elem_classes="experiment-group-remove",
+                                    )
+                                experiment_project_group_rows.append([
+                                    group_name, group_model, group_answer_effort,
+                                    group_retrieval, group_top_k, group_reranker,
+                                    group_expansion, group_strategy_params,
+                                    *group_strategy_parameter_controls, delete_group_button,
+                                ])
+                        experiment_project_group_fields = [
+                            component for row in experiment_project_group_rows
+                            for component in row[:EXPERIMENT_GROUP_FIELDS]
+                        ]
+                        experiment_project_group_all_components = [
+                            component for row in experiment_project_group_rows
+                            for component in [*row[:EXPERIMENT_GROUP_FIELDS], *row[EXPERIMENT_GROUP_FIELDS:-1], row[-1]]
+                        ]
+                        experiment_project_groups_status = gr.Markdown("實驗組設定會自動儲存。")
+                        experiment_project_max_concurrency = gr.Number(
+                            value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
+                            label="最大並行請求數",
                         )
-                        group_model = gr.Dropdown(
-                            choices=experiment_llm_choices, value=None, allow_custom_value=False,
-                            label="回答模型", visible=False, scale=2,
+                        gr.Markdown("若遇到 OpenAI TPM 429，可先將並行數調低至 1–3；系統會退避並錯開重試。")
+                        run_experiment_project_button = gr.Button("檢索並生成回答", variant="primary")
+                        with gr.Group(elem_classes="evaluation-metrics-box"):
+                            experiment_project_answer_progress = gr.HTML(value="", visible=False, padding=False)
+                            experiment_project_answers_status = gr.Markdown(
+                                "尚未生成實驗回答；請先按「檢索並生成回答」。",
+                                elem_classes="evaluation-metrics",
+                            )
+                    with gr.Accordion("⑤ 評測", open=True):
+                        with gr.Row(equal_height=True):
+                            experiment_project_global_judge_model = gr.Dropdown(
+                                choices=experiment_llm_choices, value=experiment_default_llm,
+                                label="全域評測模型", scale=2,
+                            )
+                            experiment_project_judge_effort = gr.Dropdown(
+                                choices=list(GPT_6_LUNA_REASONING_EFFORTS), value=DEFAULT_JUDGE_REASONING_EFFORT,
+                                label="評測推理強度", visible=preferred_llm == GPT_6_LUNA_MODEL, scale=1,
+                            )
+                            experiment_project_judge_concurrency = gr.Number(
+                                value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
+                                label="評測最大並行請求數", scale=1,
+                            )
+                            experiment_project_verify_judgment = gr.Checkbox(
+                                value=False, label="二階段驗證：複核第一輪判定與理由",
+                                info="再呼叫一次評測模型；依第二輪複核結果作為最終判定。", scale=2,
+                            )
+                        evaluate_experiment_project_button = gr.Button(
+                            "開始評測", variant="primary", interactive=False,
+                            elem_classes="evaluation-judge-button",
                         )
-                        group_answer_effort = gr.Dropdown(
-                            choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                            value=DEFAULT_REASONING_EFFORT, label="回答推理強度",
-                            visible=False, scale=1,
+                        gr.HTML(
+                            "<style>.evaluation-judge-button button {background:#f59e0b !important;border-color:#f59e0b !important;color:#1f2937 !important;}</style>",
+                            padding=False,
                         )
-                        group_retrieval = gr.Dropdown(
-                            choices=strategy_choices(), value="混合檢索",
-                            label="檢索策略", visible=False, scale=2,
+                        experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並至「0 系統設定」為成員專案綁定題目集。")
+                    # Results stay hidden until an evaluation has produced scored results.
+                    with gr.Accordion("⑥ 實驗結果", open=True, visible=False) as experiment_project_results_accordion:
+                        gr.Markdown("#### 實驗組總覽（跨成員專案與題目集合併）")
+                        experiment_project_group_summary_table = gr.Dataframe(
+                            headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案數", "題目集數"],
+                            interactive=False, wrap=True,
                         )
-                        group_top_k = gr.Number(
-                            value=8, minimum=1, maximum=50, precision=0, label="Top K",
-                            visible=False, scale=1,
+                        gr.Markdown("#### 各成員專案／題目集統計")
+                        experiment_project_summary_table = gr.Dataframe(
+                            headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
+                            interactive=False, wrap=True,
                         )
-                        group_reranker = gr.Dropdown(
-                            choices=list(RERANKER_MODES), value="停用", label="Reranker",
-                            visible=False, scale=2,
+                        gr.Markdown("#### 逐題結果")
+                        experiment_project_manual_edit = gr.Checkbox(
+                            value=False, label="啟用答案結果人工修改",
+                            info="勾選後可直接在逐題結果表格的答案判定欄輸入 0、1 或 2。",
                         )
-                        group_expansion = gr.Dropdown(
-                            choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
-                            label="證據擴展", visible=False, scale=2,
+                        experiment_project_details_table = gr.Dataframe(
+                            headers=["實驗組", "成員專案", "題號", "來源文件", "題目集", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
+                            datatype=["str", "str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
+                            type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 9, 10],
+                            column_widths=[90, 120, 60, 140, 160, 380, 360, 300, 150, 220, 120],
+                            wrap=True,
                         )
-                        group_strategy_params = gr.State({})
-                        group_strategy_parameter_controls = _create_experiment_strategy_parameter_controls(numeric_inputs=True)
-                        delete_group_button = gr.Button("移除", size="sm", visible=False, scale=1)
-                    experiment_project_group_rows.append([
-                        group_name, group_model, group_answer_effort,
-                        group_retrieval, group_top_k, group_reranker,
-                        group_expansion, group_strategy_params,
-                        *group_strategy_parameter_controls, delete_group_button,
-                    ])
-                experiment_project_group_fields = [
-                    component for row in experiment_project_group_rows
-                    for component in row[:EXPERIMENT_GROUP_FIELDS]
-                ]
-                experiment_project_group_all_components = [
-                    component for row in experiment_project_group_rows
-                    for component in [*row[:EXPERIMENT_GROUP_FIELDS], *row[EXPERIMENT_GROUP_FIELDS:-1], row[-1]]
-                ]
-                add_experiment_project_group_button = gr.Button("新增實驗組")
-                experiment_project_groups_status = gr.Markdown("實驗組設定會自動儲存。")
-                with gr.Row():
-                    experiment_project_max_concurrency = gr.Number(
-                        value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
-                        label="最大並行請求數",
-                    )
-                gr.Markdown("若遇到 OpenAI TPM 429，可先將並行數調低至 1–3；系統會退避並錯開重試。")
-                run_experiment_project_button = gr.Button("檢索並生成回答", variant="primary")
-                experiment_project_answer_progress = gr.HTML(value="", visible=False, padding=False)
-                experiment_project_answers_status = gr.Markdown("尚未生成實驗回答；請先按「檢索並生成回答」。")
-                gr.Markdown("#### 評測模型設定")
-                with gr.Row():
-                    experiment_project_global_judge_model = gr.Dropdown(
-                        choices=experiment_llm_choices, value=experiment_default_llm,
-                        label="全域評測模型", scale=2,
-                    )
-                    experiment_project_judge_effort = gr.Dropdown(
-                        choices=list(GPT_6_LUNA_REASONING_EFFORTS), value=DEFAULT_JUDGE_REASONING_EFFORT,
-                        label="評測推理強度", visible=preferred_llm == GPT_6_LUNA_MODEL,
-                    )
-                    experiment_project_judge_concurrency = gr.Number(
-                        value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0, label="評測最大並行請求數",
-                    )
-                experiment_project_verify_judgment = gr.Checkbox(
-                    value=False, label="二階段驗證：複核第一輪判定與理由",
-                    info="再呼叫一次評測模型；依第二輪複核結果作為最終判定。",
-                )
-                evaluate_experiment_project_button = gr.Button(
-                    "開始評測", variant="primary", interactive=False,
-                    elem_classes="evaluation-judge-button",
-                )
-                gr.HTML(
-                    "<style>.evaluation-judge-button button {background:#f59e0b !important;border-color:#f59e0b !important;color:#1f2937 !important;}</style>",
-                    padding=False,
-                )
-                experiment_project_test_status = gr.Markdown("請在 2-0 加入專案，並至「0 系統設定」為成員專案綁定題目集。")
-                gr.Markdown("#### 實驗組總覽（跨成員專案與題目集合併）")
-                experiment_project_group_summary_table = gr.Dataframe(
-                    headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案數", "題目集數"],
-                    interactive=False, wrap=True,
-                )
-                gr.Markdown("#### 各成員專案／題目集統計")
-                experiment_project_summary_table = gr.Dataframe(
-                    headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
-                    interactive=False, wrap=True,
-                )
-                experiment_project_details_table = gr.Dataframe(
-                    headers=["實驗組", "成員專案", "題號", "來源文件", "題目集", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
-                    datatype=["str", "str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
-                    type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 9, 10],
-                    column_widths=[90, 120, 60, 140, 160, 380, 360, 300, 150, 220, 120],
-                    wrap=True,
-                )
-                experiment_project_manual_edit = gr.Checkbox(
-                    value=False, label="啟用答案結果人工修改",
-                    info="勾選後可直接在逐題結果表格的答案判定欄輸入 0、1 或 2。",
-                )
-                save_experiment_run_button = gr.Button(
-                    "保存實驗結果", variant="primary", interactive=False,
-                )
-                save_experiment_run_status = gr.Markdown(
-                    "AI 評測完成後保存執行快照，3-0 才會列入人工抽樣。"
-                )
+                        gr.Markdown("#### 保存實驗結果")
+                        save_experiment_run_button = gr.Button(
+                            "保存實驗結果", variant="primary", interactive=False,
+                        )
+                        save_experiment_run_status = gr.Markdown(
+                            "AI 評測完成後保存執行快照，3-0 才會列入人工抽樣。"
+                        )
 
             with gr.Tab("3-0 人工評測抽樣") as human_review_sampling_tab:
-                gr.Markdown("選取 2-2 已保存的實驗執行結果，系統會依實驗組、成員專案與題目集分層抽樣，並平均分派給所有使用者。")
-                human_review_queue_status = gr.Markdown("載入待人工評測的已保存實驗結果。")
-                human_review_queue_table = gr.Dataframe(
-                    headers=["實驗專案", "執行編號", "保存時間", "AI 題次", "人工進度", "狀態"],
-                    interactive=False, wrap=True,
-                )
-                with gr.Row():
-                    human_review_run_selector = gr.Dropdown(
-                        choices=[], value=None, label="選擇已保存實驗結果",
+                gr.Markdown("選取 2-0 已保存的實驗執行結果，系統會依實驗組、成員專案與題目集分層抽樣，並平均分派給所有使用者。")
+                with gr.Accordion("① 待評測的實驗結果", open=True):
+                    human_review_queue_status = gr.Markdown("載入待人工評測的已保存實驗結果。")
+                    human_review_queue_table = gr.Dataframe(
+                        headers=["實驗專案", "執行編號", "保存時間", "AI 題次", "人工進度", "狀態"],
+                        interactive=False, wrap=True,
                     )
-                    human_review_sampling_mode = gr.Radio(
-                        choices=[
-                            ("每份題目集固定抽樣", "fixed_per_stratum"),
-                            ("依題目數比例分配總抽樣數", "proportional_total"),
-                        ],
-                        value="fixed_per_stratum", label="抽樣方式",
-                    )
-                    human_review_sample_count = gr.Number(
-                        value=3, minimum=1, precision=0,
-                        label="抽樣數（固定模式＝每份題目集的題數；比例模式＝整次評測的總題數）",
-                    )
+                with gr.Accordion("② 抽樣並分派", open=True):
+                    with gr.Row(equal_height=True):
+                        human_review_run_selector = gr.Dropdown(
+                            choices=[], value=None, label="選擇已保存實驗結果", scale=3,
+                        )
+                        human_review_sampling_mode = gr.Radio(
+                            choices=[
+                                ("每份題目集固定抽樣", "fixed_per_stratum"),
+                                ("依題目數比例分配總抽樣數", "proportional_total"),
+                            ],
+                            value="fixed_per_stratum", label="抽樣方式", scale=4,
+                        )
+                        human_review_sample_count = gr.Number(
+                            value=3, minimum=1, precision=0, label="抽樣數", scale=3,
+                        )
+                    # Kept outside the row: an info line would make 抽樣數 taller than its neighbours.
+                    gr.Markdown("抽樣數：固定模式＝每份題目集的題數；比例模式＝整次評測的總題數。")
                     create_human_review_button = gr.Button(
                         "抽樣並平均分派", variant="primary",
                     )
-                human_review_sampling_status = gr.Markdown()
-                gr.Markdown("移除只會清除所選執行的抽樣任務與人工評分，不會刪除原 AI 實驗結果。")
-                with gr.Row():
-                    human_review_remove_selector = gr.Dropdown(
-                        choices=[], value=None, label="選擇要移除抽樣資料的實驗執行",
-                    )
-                    human_review_remove_confirm = gr.Checkbox(
-                        value=False, label="我確認移除此執行的抽樣與所有人工評分",
-                    )
+                    human_review_sampling_status = gr.Markdown()
+                # Destructive cleanup stays collapsed so it is not clicked by accident.
+                with gr.Accordion("③ 移除抽樣資料", open=False):
+                    gr.Markdown("移除只會清除所選執行的抽樣任務與人工評分，不會刪除原 AI 實驗結果。")
+                    with gr.Row(equal_height=True):
+                        human_review_remove_selector = gr.Dropdown(
+                            choices=[], value=None, label="選擇要移除抽樣資料的實驗執行", scale=2,
+                        )
+                        human_review_remove_confirm = gr.Checkbox(
+                            value=False, label="我確認移除此執行的抽樣與所有人工評分", scale=1,
+                        )
                     human_review_remove_button = gr.Button(
                         "移除抽樣資料", variant="stop", interactive=False,
                     )
 
             with gr.Tab("3-1 人工評測") as human_review_tasks_tab:
                 human_review_tasks_status = gr.Markdown("載入目前使用者分派到的題目。")
-                human_review_batch_selector = gr.Dropdown(
-                    choices=[], value=None, label="選擇一次已保存的實驗執行",
-                )
-                human_review_task_selector = gr.Dropdown(
-                    choices=[], value=None, label="人工評測題目",
-                )
-                human_review_help_mode = gr.State(False)
-                with gr.Row():
-                    human_review_help_button = gr.Button("載入其他人的待評題目", interactive=False)
-                    human_review_stop_help_button = gr.Button("返回我的分派", interactive=False)
-                human_review_task_context = gr.Dataframe(
-                    headers=["實驗組", "成員專案", "題目集", "題號", "題目", "正確答案", "模型回答", "來源文件", "原分派評測人"],
-                    interactive=False, wrap=True,
-                )
-                human_review_score = gr.Radio(
-                    choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
-                    value=None, label="人工判定",
-                )
-                human_review_note = gr.Textbox(
-                    label="人工評判理由／註記（選填）", lines=3,
-                )
-                submit_human_review_button = gr.Button("提交人工評分", variant="primary")
-                human_review_submission_status = gr.Markdown()
+                with gr.Accordion("① 選擇題目", open=True):
+                    with gr.Row(equal_height=True):
+                        human_review_batch_selector = gr.Dropdown(
+                            choices=[], value=None, label="選擇一次已保存的實驗執行",
+                        )
+                        human_review_task_selector = gr.Dropdown(
+                            choices=[], value=None, label="人工評測題目",
+                        )
+                    human_review_help_mode = gr.State(False)
+                    with gr.Row():
+                        human_review_help_button = gr.Button("載入其他人的待評題目", interactive=False)
+                        human_review_stop_help_button = gr.Button("返回我的分派", interactive=False)
+                with gr.Accordion("② 題目內容", open=True):
+                    human_review_task_context = gr.HTML(value="", padding=False)
+                with gr.Accordion("③ 評分", open=True):
+                    human_review_score = gr.Radio(
+                        choices=[("0｜錯誤", 0), ("1｜部分正確", 1), ("2｜全對", 2)],
+                        value=None, label="人工判定",
+                    )
+                    human_review_note = gr.Textbox(
+                        label="人工評判理由／註記（選填）", lines=3,
+                    )
+                    submit_human_review_button = gr.Button("提交人工評分", variant="primary")
+                    human_review_submission_status = gr.Markdown()
 
             with gr.Tab("4-0 AI／人工評測結果") as human_review_results_tab:
-                gr.Markdown("只顯示抽樣題目全部完成人工評分的已保存執行結果。AI 判定使用保存當下的原始分數；檢索指標則依該次執行中各實驗組的全部題目計算，不限人工抽樣題。")
-                human_review_results_run_selector = gr.Dropdown(
-                    choices=[], value=None, label="已完成人工評測的實驗執行",
-                )
-                human_review_results_status = gr.Markdown("選擇已完成的人工評測執行結果。")
-                human_review_retrieval_summary_table = gr.Dataframe(
-                    headers=["實驗組", "總測試題數", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate"],
-                    interactive=False, wrap=True,
-                )
-                human_review_summary_table = gr.Dataframe(
-                    headers=["實驗組", "成員專案", "題目集", "樣本數", "AI 平均分（0–2）", "人工平均分（0–2）", "AI 得分率", "人工得分率", "判定一致率", "平均分差"],
-                    interactive=False, wrap=True,
-                )
-                human_review_results_table = gr.Dataframe(
-                    headers=["實驗組", "成員專案", "題目集", "題號", "題目", "正確答案", "模型回答", "AI 判定", "人工判定", "一致性", "AI 理由", "人工註記", "原分派評測人", "實際評測人"],
-                    interactive=False, wrap=True,
-                )
+                gr.Markdown("只顯示抽樣題目全部完成人工評分的已保存執行結果。")
+                with gr.Accordion("① 選擇實驗執行", open=True):
+                    human_review_results_run_selector = gr.Dropdown(
+                        choices=[], value=None, label="已完成人工評測的實驗執行",
+                    )
+                    human_review_results_status = gr.Markdown("選擇已完成的人工評測執行結果。")
+                # Result sections stay hidden until a completed run has been loaded.
+                with gr.Column(visible=False) as human_review_results_section:
+                    with gr.Accordion("② 檢索指標", open=True):
+                        gr.Markdown("依該次執行中各實驗組的全部題目計算，不限人工抽樣題。")
+                        human_review_retrieval_summary_table = gr.Dataframe(
+                            headers=["實驗組", "總測試題數", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate"],
+                            interactive=False, wrap=True,
+                        )
+                    with gr.Accordion("③ AI／人工評分對照", open=True):
+                        gr.Markdown("依實驗組／成員專案／題目集統計抽樣題；AI 判定使用保存當下的原始分數。")
+                        human_review_summary_table = gr.Dataframe(
+                            headers=["實驗組", "成員專案", "題目集", "樣本數", "AI 平均分（0–2）", "人工平均分（0–2）", "AI 得分率", "人工得分率", "判定一致率", "平均分差"],
+                            interactive=False, wrap=True,
+                        )
+                    with gr.Accordion("④ 逐題對照", open=True):
+                        human_review_results_table = gr.Dataframe(
+                            headers=["實驗組", "成員專案", "題目集", "題號", "題目", "正確答案", "模型回答", "AI 判定", "人工判定", "一致性", "AI 理由", "人工註記", "原分派評測人", "實際評測人"],
+                            column_widths=[90, 120, 140, 60, 320, 300, 300, 80, 80, 80, 260, 200, 110, 110],
+                            interactive=False, wrap=True,
+                        )
 
         schema_model_endpoint = gr.State(initial_llm_credentials[0][0])
         schema_model_key = gr.State(initial_llm_credentials[0][1])
@@ -7254,7 +7326,7 @@ def build_app() -> gr.Blocks:
         protected_tabs = [
             pdf_tab, graph_tab, qa_tab, evaluation_tab, experiment_tab,
         ]
-        experiment_workflow_tabs = [experiment_project_test_tab]
+        experiment_run_sections = [experiment_project_run_column]
         access_inputs = [project_selector, neo4j_connected_state, llm_service_state,
                          embedding_service_state, workspace_mode_state, project_state]
 
@@ -7596,6 +7668,12 @@ def build_app() -> gr.Blocks:
             ],
             show_progress="minimal",
         )
+        experiment_project_results_state.change(
+            _experiment_results_visibility,
+            inputs=experiment_project_results_state,
+            outputs=experiment_project_results_accordion,
+            show_progress="hidden",
+        )
         experiment_results_state.change(
             _experiment_results_visibility,
             inputs=experiment_results_state,
@@ -7651,7 +7729,7 @@ def build_app() -> gr.Blocks:
             ],
             show_progress="hidden",
         )
-        confirm_delete_experiment_project_button.click(
+        experiment_project_delete_event = confirm_delete_experiment_project_button.click(
             delete_confirmed_experiment_project_for_ui,
             inputs=[experiment_project_selector],
             outputs=[
@@ -7665,7 +7743,7 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
             outputs=[workspace_mode_state, experiment_project_connection_state,
-                     *experiment_workflow_tabs],
+                     *experiment_run_sections],
         ).then(
             experiment_project_banner_for_ui,
             inputs=experiment_project_state, outputs=current_project_banner,
@@ -7680,7 +7758,7 @@ def build_app() -> gr.Blocks:
             ],
             show_progress="hidden",
         )
-        load_experiment_project_button.click(
+        experiment_project_load_event = load_experiment_project_button.click(
             load_experiment_project_for_ui,
             inputs=[experiment_project_selector], outputs=experiment_project_outputs,
         ).then(
@@ -7688,7 +7766,7 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
             outputs=[workspace_mode_state, experiment_project_connection_state,
-                     *experiment_workflow_tabs],
+                     *experiment_run_sections],
         ).then(
             experiment_member_rows_for_ui,
             inputs=[experiment_project_state, experiment_project_connection_state],
@@ -7698,7 +7776,7 @@ def build_app() -> gr.Blocks:
                                           llm_service_state, embedding_service_state,
                                           workspace_mode_state, project_state], outputs=protected_tabs,
         ).then(experiment_project_banner_for_ui, inputs=experiment_project_state, outputs=current_project_banner)
-        experiment_project_selector.change(
+        experiment_project_selector_event = experiment_project_selector.change(
             load_experiment_project_for_ui,
             inputs=[experiment_project_selector], outputs=experiment_project_outputs,
             show_progress="hidden",
@@ -7707,7 +7785,7 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
             outputs=[workspace_mode_state, experiment_project_connection_state,
-                     *experiment_workflow_tabs], show_progress="hidden",
+                     *experiment_run_sections], show_progress="hidden",
         ).then(
             experiment_member_rows_for_ui,
             inputs=[experiment_project_state, experiment_project_connection_state],
@@ -7718,7 +7796,7 @@ def build_app() -> gr.Blocks:
                                           workspace_mode_state, project_state], outputs=protected_tabs,
             show_progress="hidden",
         ).then(experiment_project_banner_for_ui, inputs=experiment_project_state, outputs=current_project_banner, show_progress="hidden")
-        experiment_project_tab.select(
+        experiment_project_tab_event = experiment_project_tab.select(
             load_experiment_project_for_ui,
             inputs=[experiment_project_selector], outputs=experiment_project_outputs,
         ).then(
@@ -7726,7 +7804,7 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
             outputs=[workspace_mode_state, experiment_project_connection_state,
-                     *experiment_workflow_tabs],
+                     *experiment_run_sections],
         ).then(
             experiment_member_rows_for_ui,
             inputs=[experiment_project_state, experiment_project_connection_state],
@@ -7747,7 +7825,7 @@ def build_app() -> gr.Blocks:
             outputs=[new_experiment_project_row, new_experiment_project_name],
             show_progress="hidden",
         )
-        create_experiment_project_button.click(
+        experiment_project_create_event = create_experiment_project_button.click(
             create_experiment_project_for_ui,
             inputs=[new_experiment_project_name],
             outputs=[experiment_project_selector, experiment_project_state, experiment_project_status,
@@ -7760,7 +7838,7 @@ def build_app() -> gr.Blocks:
             inputs=[experiment_workspace_mode, experiment_project_state,
                     workspace_mode_state, experiment_project_connection_state],
             outputs=[workspace_mode_state, experiment_project_connection_state,
-                     *experiment_workflow_tabs],
+                     *experiment_run_sections],
         ).then(
             experiment_member_rows_for_ui,
             inputs=[experiment_project_state, experiment_project_connection_state],
@@ -7780,47 +7858,59 @@ def build_app() -> gr.Blocks:
             reset_experiment_project_connection_for_ui,
             inputs=[experiment_project_state],
             outputs=[experiment_project_connection_state,
-                     *experiment_workflow_tabs, experiment_connection_status],
+                     *experiment_run_sections, experiment_connection_status],
+        )
+        experiment_project_members_table.change(
+            experiment_member_sections_visibility_for_ui,
+            inputs=experiment_project_members_table,
+            outputs=[experiment_project_members_table_column, experiment_connection_accordion],
+            show_progress="hidden",
         )
         test_experiment_connections_button.click(
             test_experiment_project_connections_for_ui,
             inputs=[experiment_project_selector, neo4j_uri, neo4j_username, neo4j_password],
             outputs=[experiment_project_members_table, experiment_project_connection_state, experiment_connection_status],
         ).then(
-            experiment_workflow_tabs_for_ui,
+            experiment_run_section_for_ui,
             inputs=[workspace_mode_state, experiment_project_state, experiment_project_connection_state],
-            outputs=experiment_workflow_tabs,
+            outputs=experiment_run_sections,
         )
-        experiment_project_test_tab.select(
-            load_experiment_project_setup_for_ui,
-            inputs=[experiment_project_state, experiment_llm_service_state],
-            outputs=[
-                *experiment_project_group_all_components,
-                experiment_project_max_concurrency, experiment_project_group_summary_table,
-                experiment_project_summary_table,
-                experiment_project_details_table, experiment_project_test_status,
-                experiment_project_groups_status, experiment_project_verify_judgment,
-            ],
-        ).then(
-            load_experiment_project_runtime_state_for_ui,
-            inputs=[experiment_project_state, experiment_llm_service_state],
-            outputs=[experiment_project_global_judge_model, experiment_project_judge_effort,
-                     experiment_project_judge_concurrency, experiment_project_pending_answers_state,
-                     experiment_project_results_state, evaluate_experiment_project_button,
-                     experiment_project_answers_status, save_experiment_run_button],
-        ).then(
-            refresh_experiment_model_choices_for_ui,
-            inputs=[experiment_llm_service_state,
-                    *[row[1] for row in experiment_project_group_rows],
-                    experiment_project_global_judge_model],
-            outputs=[*[row[1] for row in experiment_project_group_rows],
-                     experiment_project_global_judge_model],
-            show_progress="hidden",
-        ).then(
-            save_experiment_run_button_state_for_ui,
-            inputs=experiment_project_state, outputs=save_experiment_run_button,
-            show_progress="hidden",
-        )
+        # Each experiment load also refreshes the run sections (groups, judge settings, results).
+        for experiment_load_event in [
+            experiment_project_delete_event, experiment_project_load_event,
+            experiment_project_selector_event, experiment_project_tab_event,
+            experiment_project_create_event,
+        ]:
+            experiment_load_event.then(
+                load_experiment_project_setup_for_ui,
+                inputs=[experiment_project_state, experiment_llm_service_state],
+                outputs=[
+                    *experiment_project_group_all_components,
+                    experiment_project_max_concurrency, experiment_project_group_summary_table,
+                    experiment_project_summary_table,
+                    experiment_project_details_table, experiment_project_test_status,
+                    experiment_project_groups_status, experiment_project_verify_judgment,
+                ],
+            ).then(
+                load_experiment_project_runtime_state_for_ui,
+                inputs=[experiment_project_state, experiment_llm_service_state],
+                outputs=[experiment_project_global_judge_model, experiment_project_judge_effort,
+                         experiment_project_judge_concurrency, experiment_project_pending_answers_state,
+                         experiment_project_results_state, evaluate_experiment_project_button,
+                         experiment_project_answers_status, save_experiment_run_button],
+            ).then(
+                refresh_experiment_model_choices_for_ui,
+                inputs=[experiment_llm_service_state,
+                        *[row[1] for row in experiment_project_group_rows],
+                        experiment_project_global_judge_model],
+                outputs=[*[row[1] for row in experiment_project_group_rows],
+                         experiment_project_global_judge_model],
+                show_progress="hidden",
+            ).then(
+                save_experiment_run_button_state_for_ui,
+                inputs=experiment_project_state, outputs=save_experiment_run_button,
+                show_progress="hidden",
+            )
         add_experiment_project_group_button.click(
             add_experiment_project_inline_group_for_ui,
             inputs=[experiment_project_state, experiment_llm_service_state,
@@ -8083,6 +8173,12 @@ def build_app() -> gr.Blocks:
                      human_review_retrieval_summary_table, human_review_results_table],
             show_progress="hidden",
         )
+        human_review_results_table.change(
+            human_review_results_visibility,
+            inputs=human_review_results_table,
+            outputs=human_review_results_section,
+            show_progress="hidden",
+        )
         human_review_results_run_selector.change(
             human_review_results_for_ui,
             inputs=human_review_results_run_selector,
@@ -8280,7 +8376,7 @@ def build_app() -> gr.Blocks:
                 inputs=[single_workspace_mode, project_state,
                         workspace_mode_state, experiment_project_connection_state],
                 outputs=[workspace_mode_state, experiment_project_connection_state,
-                         *experiment_workflow_tabs], show_progress="hidden",
+                         *experiment_run_sections], show_progress="hidden",
             ).then(
                 workflow_tabs_for_ui, inputs=access_inputs, outputs=protected_tabs,
                 show_progress="hidden",
@@ -8325,10 +8421,10 @@ def build_app() -> gr.Blocks:
                 workflow_tabs_for_ui, inputs=access_inputs, outputs=protected_tabs,
                 show_progress="hidden",
             ).then(
-                experiment_workflow_tabs_for_ui,
+                experiment_run_section_for_ui,
                 inputs=[workspace_mode_state, experiment_project_state,
                         experiment_project_connection_state],
-                outputs=experiment_workflow_tabs, show_progress="hidden",
+                outputs=experiment_run_sections, show_progress="hidden",
             ).then(
                 experiment_member_rows_for_ui,
                 inputs=[experiment_project_state, experiment_project_connection_state],

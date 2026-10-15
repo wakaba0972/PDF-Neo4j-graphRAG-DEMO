@@ -526,7 +526,7 @@ def test_temp_unlock_opens_every_gated_tab() -> None:
     app = build_app()
     gated_labels = {
         "1-1 PDF 與參數", "1-2 建圖", "1-3 問答測試",
-        "1-4 從 PDF 生題", "1-5 單一專案實驗", "2-2 自動實驗測試",
+        "1-4 從 PDF 生題", "1-5 單一專案實驗",
     }
     gated_tabs = [
         component for component in app.config["components"]
@@ -534,10 +534,15 @@ def test_temp_unlock_opens_every_gated_tab() -> None:
     ]
     assert len(gated_tabs) == len(gated_labels)
     assert all(tab["props"].get("interactive", True) is not False for tab in gated_tabs)
+    run_section = next(
+        component for component in app.config["components"]
+        if component.get("props", {}).get("elem_id") == "experiment-run-section"
+    )
+    assert run_section["props"]["visible"] is True
     llm = settings.load_service_settings("llm")
     embedding = settings.load_service_settings("embedding")
     assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("", False, llm, embedding, "experiment"))
-    assert all(update["interactive"] is True for update in ui.experiment_workflow_tabs_for_ui("single", None, {}))
+    assert all(update["visible"] is True for update in ui.experiment_run_section_for_ui("single", None, {}))
     assert all(update["interactive"] is True for update in ui.lock_project_tabs_for_ui(""))
 
 
@@ -555,21 +560,18 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     ]
     experiment_tabs = [
         component for component in app.config["components"]
-        if component.get("props", {}).get("label") in {
-            "2-0 實驗專案", "2-2 自動實驗測試",
-        }
+        if component.get("props", {}).get("label") == "2-0 跨專案實驗"
     ]
+    run_section = next(
+        component for component in app.config["components"]
+        if component.get("props", {}).get("elem_id") == "experiment-run-section"
+    )
 
     assert len(tabs) == 5
-    assert len(experiment_tabs) == 2
-    experiment_tab_states = {
-        tab["props"]["label"]: tab["props"]["interactive"]
-        for tab in experiment_tabs
-    }
-    assert experiment_tab_states["2-0 實驗專案"] is not False
-    assert {label: state for label, state in experiment_tab_states.items() if label != "2-0 實驗專案"} == {
-        "2-2 自動實驗測試": False,
-    }
+    assert len(experiment_tabs) == 1
+    assert experiment_tabs[0]["props"]["interactive"] is not False
+    # 實驗組、評測與結果區塊在成員連線全部通過前隱藏。
+    assert run_section["props"]["visible"] is False
     assert not any(
         "歷史紀錄" in str(component.get("props", {}).get("label", ""))
         for component in app.config["components"]
@@ -584,24 +586,24 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", True, llm, embedding, "single"))
     assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("project", False, llm, embedding, "experiment"))
     experiment = {"experiment_project_id": "exp-1", "members": ["p1", "p2"]}
-    assert [update["interactive"] for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {})] == [False]
-    assert [update["interactive"] for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {"p1": True, "p2": False})] == [False]
-    assert [update["interactive"] for update in ui.experiment_workflow_tabs_for_ui("experiment", experiment, {"p1": True, "p2": True})] == [True]
+    assert [update["visible"] for update in ui.experiment_run_section_for_ui("experiment", experiment, {})] == [False]
+    assert [update["visible"] for update in ui.experiment_run_section_for_ui("experiment", experiment, {"p1": True, "p2": False})] == [False]
+    assert [update["visible"] for update in ui.experiment_run_section_for_ui("experiment", experiment, {"p1": True, "p2": True})] == [True]
     assert all(
-        update["interactive"] is False
-        for update in ui.experiment_workflow_tabs_for_ui("single", experiment, {"p1": True, "p2": True})
+        update["visible"] is False
+        for update in ui.experiment_run_section_for_ui("single", experiment, {"p1": True, "p2": True})
     )
-    mode, statuses, test_tab = ui.activate_workspace_for_ui("experiment", {"name": "試驗"})
+    mode, statuses, run_update = ui.activate_workspace_for_ui("experiment", {"name": "試驗"})
     assert mode == "experiment" and statuses == {}
-    assert test_tab["interactive"] is False
-    mode, statuses, test_tab = ui.activate_workspace_for_ui(
+    assert run_update["visible"] is False
+    mode, statuses, run_update = ui.activate_workspace_for_ui(
         "experiment", experiment, "experiment", {"p1": True, "p2": True},
     )
     assert mode == "experiment" and statuses == {"p1": True, "p2": True}
-    assert test_tab["interactive"] is True
-    statuses, test_tab, status = ui.reset_experiment_project_connection_for_ui(experiment)
+    assert run_update["visible"] is True
+    statuses, run_update, status = ui.reset_experiment_project_connection_for_ui(experiment)
     assert statuses == {}
-    assert test_tab["interactive"] is False
+    assert run_update["visible"] is False
     assert "重新測試" in status
     page_labels = {
         component.get("props", {}).get("label") for component in app.config["components"]
@@ -609,9 +611,9 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     assert {
         "1-0 專案設定", "1-1 PDF 與參數", "1-2 建圖",
         "1-3 問答測試", "1-4 從 PDF 生題", "1-5 單一專案實驗",
-        "2-0 實驗專案", "2-2 自動實驗測試",
+        "2-0 跨專案實驗",
     } <= page_labels
-    assert "2-1 成員專案連線測試" not in page_labels
+    assert not {"2-1 自動實驗測試", "2-2 自動實驗測試"} & page_labels
     gate_dependencies = [
         dependency for dependency in app.config["dependencies"]
         if str(dependency.get("api_name", "")).startswith("workflow_tabs_for_ui")
@@ -620,7 +622,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     assert all(len(dependency["outputs"]) == 5 for dependency in gate_dependencies)
     experiment_gate_dependencies = [
         dependency for dependency in app.config["dependencies"]
-        if str(dependency.get("api_name", "")).startswith("experiment_workflow_tabs_for_ui")
+        if str(dependency.get("api_name", "")).startswith("experiment_run_section_for_ui")
     ]
     assert len(experiment_gate_dependencies) >= 2
     assert all(len(dependency["outputs"]) == 1 for dependency in experiment_gate_dependencies)
@@ -858,10 +860,13 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     assert labels.index("1-3 問答測試") < labels.index("1-4 從 PDF 生題")
     assert "1-6 匯入問題集" not in labels
     assert labels.index("1-4 從 PDF 生題") < labels.index("1-5 單一專案實驗")
-    assert labels.index("1-5 單一專案實驗") < labels.index("2-0 實驗專案")
-    assert "2-1 成員專案連線測試" not in labels
-    assert "2-3 問題集準備" not in labels
-    assert labels.index("2-0 實驗專案") < labels.index("2-2 自動實驗測試")
+    assert labels.index("1-5 單一專案實驗") < labels.index("2-0 跨專案實驗")
+    assert not {"2-1 自動實驗測試", "2-2 自動實驗測試", "2-3 問題集準備"} & set(labels)
+    assert (
+        labels.index("2-0 跨專案實驗") < labels.index("① 實驗專案工作區") < labels.index("② 成員專案")
+        < labels.index("③ 成員專案連線測試") < labels.index("④ 實驗組與生成回答")
+        < labels.index("⑤ 評測") < labels.index("⑥ 實驗結果") < labels.index("3-0 人工評測抽樣")
+    )
     components = app.config["components"]
     question_table_index = next(
         index for index, component in enumerate(components)
@@ -1060,7 +1065,7 @@ def test_global_api_credentials_exist_only_on_page_zero() -> None:
         "API Key 設定", "OpenAI API Key",
     })
     assert {"1-0 專案設定", "Neo4j 連線設定", "1-5 單一專案實驗",
-            "2-0 實驗專案", "2-2 自動實驗測試"} <= set(labels)
+            "2-0 跨專案實驗"} <= set(labels)
 
 
 def test_generated_questions_save_as_central_set_and_bind_to_project(tmp_path, monkeypatch) -> None:
@@ -1251,7 +1256,7 @@ def test_login_reveals_app_and_names_audited_projects(tmp_path, monkeypatch) -> 
     root_tabs = [
         component for component in app.config["components"]
         if component.get("props", {}).get("label") in {
-            "0 系統設定", "1-0 專案設定", "2-0 實驗專案",
+            "0 系統設定", "1-0 專案設定", "2-0 跨專案實驗",
             "3-0 人工評測抽樣", "3-1 人工評測", "4-0 AI／人工評測結果",
         }
     ]
@@ -2446,8 +2451,8 @@ def test_experiment_group_table_shows_strategy_parameter_labels_only_on_first_ro
         if item.get("props", {}).get("label") == "有效搜尋比例"
         and item.get("props", {}).get("show_label") is False
     ]
-    # 1-5 table rows after the first hide labels; vector and hybrid both declare this label.
-    assert len(hidden_ratio_labels) == (ui.EXPERIMENT_GROUP_LIMIT - 1) * 2
+    # 1-5 and 2-0 table rows after the first hide labels; vector and hybrid both declare this label.
+    assert len(hidden_ratio_labels) == (ui.EXPERIMENT_GROUP_LIMIT - 1) * 2 * 2
 
 
 def test_experiment_group_cards_use_number_boxes_instead_of_sliders() -> None:
@@ -3034,7 +3039,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         and component.get("type") == "dropdown"
         for component in components
     ) == 2
-    assert any(component.get("props", {}).get("value") == "新增實驗組" for component in components)
+    assert any(component.get("props", {}).get("value") == "＋ 新增實驗組" for component in components)
     assert not any(component.get("props", {}).get("value") == "載入臨時題目集" for component in components)
     assert not any(component.get("props", {}).get("label") == "臨時題目集（JSON／CSV）" for component in components)
     experiment_tables = [
@@ -4499,14 +4504,13 @@ def test_experiment_project_inline_groups_add_edit_and_remove(tmp_path, monkeypa
 def test_experiment_project_page_uses_inline_group_layout_and_start_evaluation_button():
     app = build_app()
     components = app.config["components"]
-    headings = [
-        item for item in components
-        if item.get("props", {}).get("value")
-        == "#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）"
-    ]
-    # 1-5 改用「② 實驗組與生成回答」區塊標題；此標題只剩 2-2 使用。
-    assert len(headings) == 1
-    assert any(item.get("props", {}).get("label") == "② 實驗組與生成回答" for item in components)
+    accordion_labels = {item.get("props", {}).get("label") for item in components}
+    # 1-5 與 2-0 都以編號區塊分段，取代舊的「回答模型設定｜實驗組」標題。
+    assert {"② 實驗組與生成回答", "④ 實驗組與生成回答", "⑤ 評測", "⑥ 實驗結果"} <= accordion_labels
+    assert not any(
+        item.get("props", {}).get("value") == "#### 回答模型設定｜實驗組（直接編輯欄位；每次變更會自動儲存）"
+        for item in components
+    )
     visible_component_labels = {
         item.get("props", {}).get("label")
         for item in components
@@ -4910,3 +4914,59 @@ def test_experiment_project_inline_groups_preserve_saved_groups_on_empty_snapsho
     assert message.startswith("✅ 保留已保存")
     assert restored["groups"] == experiment["groups"]
     assert restored["pending_answers"] == experiment["pending_answers"]
+
+
+def test_experiment_project_results_hidden_until_evaluated():
+    app = build_app()
+    results = next(
+        item for item in app.config["components"]
+        if item.get("props", {}).get("label") == "⑥ 實驗結果"
+    )
+    assert results["props"]["visible"] is False
+
+
+def test_experiment_member_sections_hidden_until_members_exist():
+    import pandas as pd
+
+    for empty in (None, [], pd.DataFrame(columns=["專案"]), pd.DataFrame([[""]], columns=["專案"])):
+        table, accordion = ui.experiment_member_sections_visibility_for_ui(empty)
+        assert table["visible"] is False and accordion["visible"] is False
+    table, accordion = ui.experiment_member_sections_visibility_for_ui(pd.DataFrame([["P1"]], columns=["專案"]))
+    assert table["visible"] is True and accordion["visible"] is True
+
+
+def test_human_review_task_card_shows_fields_vertically_and_escapes_html():
+    card = ui._human_review_task_html(
+        {"group_name": "A 組", "source_project_name": "車型 X", "question_set_name": "題目集",
+         "number": 3, "question": "<b>胎壓?</b>", "expected_answer": "2.3 bar",
+         "actual_answer": "2.3 bar\n第二行", "document": "manual.pdf"},
+        {"assigned_to": "57"}, 2,
+    )
+    assert "&lt;b&gt;胎壓?&lt;/b&gt;" in card and "<b>胎壓?</b>" not in card
+    assert card.index("題目") < card.index("正確答案") < card.index("模型回答")
+    assert "原分派評測人</b> 57" in card and "manual.pdf" in card
+
+
+def test_human_review_pages_use_numbered_sections_with_removal_collapsed():
+    app = build_app()
+    accordions = {
+        item["props"]["label"]: item["props"]
+        for item in app.config["components"] if item.get("type") == "accordion"
+    }
+    assert {"① 待評測的實驗結果", "② 抽樣並分派", "③ 移除抽樣資料",
+            "① 選擇題目", "② 題目內容", "③ 評分"} <= set(accordions)
+    assert accordions["③ 移除抽樣資料"]["open"] is False
+
+
+def test_human_review_results_page_hides_sections_until_loaded():
+    import pandas as pd
+
+    app = build_app()
+    labels = [item.get("props", {}).get("label") for item in app.config["components"]]
+    assert (
+        labels.index("4-0 AI／人工評測結果") < labels.index("① 選擇實驗執行")
+        < labels.index("② 檢索指標") < labels.index("③ AI／人工評分對照") < labels.index("④ 逐題對照")
+    )
+    assert ui.human_review_results_visibility(None)["visible"] is False
+    assert ui.human_review_results_visibility(pd.DataFrame([[""]]))["visible"] is False
+    assert ui.human_review_results_visibility([["A 組", "車型 X"]])["visible"] is True
