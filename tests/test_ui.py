@@ -619,10 +619,11 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     assert [update["visible"] for update in ui.experiment_run_section_for_ui("experiment", experiment, {})] == [False]
     assert [update["visible"] for update in ui.experiment_run_section_for_ui("experiment", experiment, {"p1": True, "p2": False})] == [False]
     assert [update["visible"] for update in ui.experiment_run_section_for_ui("experiment", experiment, {"p1": True, "p2": True})] == [True]
-    assert all(
-        update["visible"] is False
-        for update in ui.experiment_run_section_for_ui("single", experiment, {"p1": True, "p2": True})
-    )
+    # Once every member has a successful connection result, visibility should
+    # not depend on the separate workspace-mode state being synchronized.
+    assert ui.experiment_run_section_for_ui(
+        "single", experiment, {"p1": True, "p2": True},
+    )[0]["visible"] is True
     mode, statuses, run_update = ui.activate_workspace_for_ui("experiment", {"name": "試驗"})
     assert mode == "experiment" and statuses == {}
     assert run_update["visible"] is False

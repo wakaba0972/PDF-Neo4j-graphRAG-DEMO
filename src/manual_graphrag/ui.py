@@ -619,8 +619,7 @@ def experiment_run_section_for_ui(
     members = (project or {}).get("members", [])
     statuses = connection_statuses or {}
     enabled = (
-        workspace_mode == "experiment" and bool(members)
-        and all(statuses.get(member_id) is True for member_id in members)
+        bool(members) and all(statuses.get(member_id) is True for member_id in members)
     )
     return (_section_update(enabled),)
 
