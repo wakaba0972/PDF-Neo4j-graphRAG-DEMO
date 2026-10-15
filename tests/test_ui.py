@@ -26,6 +26,14 @@ def _retrieval_config(
 def test_build_app_returns_blocks() -> None:
     app = build_app()
     assert isinstance(app, gr.Blocks)
+    graph_partition = next(
+        component for component in app.config["components"]
+        if component.get("props", {}).get("label") == "圖譜範圍"
+    )
+    assert graph_partition["props"]["value"] == "merged"
+    assert [choice[1] for choice in graph_partition["props"]["choices"]] == [
+        "merged", "per_document",
+    ]
     concurrency = next(
         component for component in app.config["components"]
         if component.get("props", {}).get("label") == "最大並行 Embedding 請求數"
@@ -33,6 +41,12 @@ def test_build_app_returns_blocks() -> None:
     assert concurrency["props"]["value"] == 10
     assert concurrency["props"]["minimum"] == 1
     assert concurrency["props"]["maximum"] == 32
+    member_table = next(
+        component for component in app.config["components"]
+        if (component.get("props", {}).get("headers") or [None])[0] == "專案"
+        and "圖譜模式" in component.get("props", {}).get("headers", [])
+    )
+    assert "圖譜模式" in member_table["props"]["headers"]
 
 
 def test_embedded_evidence_batches_run_with_bounded_concurrency(monkeypatch) -> None:
@@ -109,9 +123,59 @@ def test_new_experiment_project_option_opens_create_row(monkeypatch) -> None:
     )
 
 
+def test_experiment_member_summary_shows_graph_partition_mode(monkeypatch) -> None:
+    monkeypatch.setattr(ui, "load_project", lambda _project_id: {"name": "車型 A"})
+    monkeypatch.setattr(ui, "load_project_summary", lambda _project_id: {
+        "created_by": "57", "document_count": 2, "chunk_count": 10,
+        "question_count": 0, "chunk_size": 1500, "chunk_overlap": 200,
+        "schema_granularity": None, "graph_partition_mode": "per_document",
+    })
+    monkeypatch.setattr(ui, "migrate_project_question_sets", lambda _project_id: [])
+
+    row = ui._experiment_member_summary_row("vehicle-a")
+
+    assert row[0] == "車型 A"
+    assert row[4] == "每份文件分區"
+    assert len(row) == 12
+
+
 def test_current_project_banner_reflects_project_name() -> None:
     assert ui._current_project_banner({}) == "### 📁 目前專案：尚未選擇"
     assert ui._current_project_banner({"name": "手冊專案"}) == "### 📁 目前專案：手冊專案"
+
+
+def test_strategy_selector_options_follow_graph_partition_mode() -> None:
+    merged_update = ui._strategy_dropdown_updates_for_graph_mode(
+        "merged", "Multi-Agent Search 1", "混合檢索",
+    )
+    partitioned_update = ui._strategy_dropdown_updates_for_graph_mode(
+        "per_document", "Multi-Agent Search 1", "混合檢索",
+    )
+
+    assert "Multi-Agent Search 1" not in merged_update[1]["choices"]
+    assert merged_update[0]["choices"][0][1] == "Multi-Agent Search 1"
+    assert "不相容" in merged_update[0]["choices"][0][0]
+    assert "Multi-Agent Search 1" in partitioned_update[0]["choices"]
+
+
+def test_reranker_and_expansion_controls_are_strategy_specific() -> None:
+    supported = ui._postprocessing_control_updates(
+        "基本向量檢索", "LLM Reranker", "證據擴展",
+    )
+    unsupported = ui._postprocessing_control_updates(
+        "Agentic Search", "LLM Reranker", "證據擴展",
+    )
+
+    assert supported[0]["interactive"] is True
+    assert supported[0]["value"] == "LLM Reranker"
+    assert supported[1]["interactive"] is True
+    assert supported[1]["value"] == "證據擴展"
+    assert unsupported[0]["interactive"] is False
+    assert unsupported[0]["value"] == "停用"
+    assert unsupported[0]["visible"] is False
+    assert unsupported[1]["interactive"] is False
+    assert unsupported[1]["value"] == "停用"
+    assert unsupported[1]["visible"] is False
 
 
 def test_delete_experiment_project_ui_clears_selected_workspace(monkeypatch) -> None:
@@ -234,7 +298,6 @@ def test_build_app_wires_project_state_change_to_banner() -> None:
 def test_model_fields_only_offer_initially_checked_models() -> None:
     app = build_app()
     labels = {
-        "Schema 規劃 LLM",
         "知識圖譜抽取 LLM",
         "Embedding 模型",
         "生題模型",
@@ -266,7 +329,7 @@ def test_graph_controls_are_above_schema_and_type_limit_fields_are_removed() -> 
         for component in components
         if isinstance((value := component.get("props", {}).get("value")), str)
     }
-    schema_heading = ids_by_value["#### ① 規劃 Schema（可選）"]
+    schema_heading = ids_by_value["#### ① 抽取實體與關係"]
     assert ids_by_value["⏸ 暫停"] < schema_heading
     assert ids_by_value["⏹ 停止"] < schema_heading
     labels = {component.get("props", {}).get("label") for component in components}
@@ -283,14 +346,14 @@ def test_pages_three_through_five_default_judge_fields_to_luna(monkeypatch) -> N
     monkeypatch.setattr(ui, "preferred_service_model", lambda state: "gpt-4.1-mini")
     app = build_app()
     labels = {
-        "Schema 規劃 LLM", "知識圖譜抽取 LLM", "生題模型", "回答模型", "評測模型", "問答 LLM",
+        "知識圖譜抽取 LLM", "生題模型", "回答模型", "評測模型", "問答 LLM",
     }
     fields = [
         component for component in app.config["components"]
         if component.get("props", {}).get("label") in labels
         and component.get("props", {}).get("visible", True)
     ]
-    assert len(fields) == 6
+    assert len(fields) == 5
     assert all(
         field["props"]["value"] == "gpt-6-luna"
         for field in fields
@@ -355,15 +418,20 @@ def test_pause_and_stop_buttons_bypass_the_queue() -> None:
     assert any(target[0] == stop_button["id"] for target in stop_dependencies[0]["targets"])
 
 
-def test_plan_schema_button_uses_primary_variant() -> None:
+def test_schema_planner_is_removed_from_graph_build_ui() -> None:
     app = build_app()
-    button = next(
-        component
+    labels = {
+        component.get("props", {}).get("label")
         for component in app.config["components"]
-        if component.get("props", {}).get("value") == "分析文件並規劃 Schema（可選）"
-    )
-
-    assert button["props"]["variant"] == "primary"
+    }
+    values = [
+        component.get("props", {}).get("value")
+        for component in app.config["components"]
+    ]
+    assert "Schema 規劃 LLM" not in labels
+    assert "用於規劃 Schema 的 PDF" not in labels
+    assert "分析文件並規劃 Schema（可選）" not in values
+    assert "自訂 Schema 約束（選填 JSON；留白時直接依文本抽取）" in labels
 
 
 def test_project_page_uses_automatic_refresh_and_save() -> None:
@@ -473,7 +541,7 @@ def test_all_concurrency_inputs_default_to_ten_without_provider_hints() -> None:
         if "最大並行請求數" in str(component.get("props", {}).get("label", ""))
     ]
 
-    assert len(concurrency_inputs) == 8
+    assert len(concurrency_inputs) == 7
     assert all(component["props"].get("value") == 10 for component in concurrency_inputs)
     assert all(not component["props"].get("info") for component in concurrency_inputs)
 
@@ -850,7 +918,7 @@ def test_build_app_has_automatic_evaluation_page() -> None:
         component.get("props", {}).get("label") for component in app.config["components"]
     ]
     assert "0-0 登入" not in labels
-    assert labels.index("0 系統設定") < labels.index("1-0 專案設定")
+    assert labels.index("0-0 系統設定") < labels.index("1-0 專案設定")
     assert labels.index("API Key 設定") < labels.index("題目集管理") < labels.index("專案綁定題目集")
     assert not {"0-1 管理題目集", "0-2 綁定題目集", "0-3 API Key 設定"} & set(labels)
     assert "0-4 API Key 設定" not in labels
@@ -994,15 +1062,10 @@ def test_pdf_table_has_checkbox_and_new_project_resets_visible_status() -> None:
         and str(dependency.get("api_name", "")).startswith("reset_new_project_pdf_status_for_ui")
         for dependency in app.config["dependencies"]
     )
-    schema_selector = next(
-        component for component in components
-        if component.get("props", {}).get("label") == "用於規劃 Schema 的 PDF"
+    assert not any(
+        component.get("props", {}).get("label") == "用於規劃 Schema 的 PDF"
+        for component in components
     )
-    assert schema_selector["type"] == "dataframe"
-    assert schema_selector["props"]["headers"] == ["使用", "PDF"]
-    assert schema_selector["props"]["datatype"] == ["bool", "str"]
-    assert schema_selector["props"]["static_columns"] == [1]
-    assert schema_selector["props"]["max_height"] == 300
     assert not any(
         component.get("props", {}).get("label") in {"Schema 規劃範圍", "隨機抽取頁數 N"}
         for component in components
@@ -1058,7 +1121,7 @@ def test_global_api_credentials_exist_only_on_page_zero() -> None:
     labels = [component.get("props", {}).get("label") for component in components]
 
     assert "0-0 登入" not in labels
-    assert {"0 系統設定", "API Key 設定", "題目集管理", "專案綁定題目集"} <= set(labels)
+    assert {"0-0 系統設定", "API Key 設定", "題目集管理", "專案綁定題目集"} <= set(labels)
     assert labels.count("OpenAI API Key") == 1
     assert labels.count("OpenAI API Base URL") == 1
     assert not any("API Key" in str(label) for label in labels if label not in {
@@ -1256,7 +1319,7 @@ def test_login_reveals_app_and_names_audited_projects(tmp_path, monkeypatch) -> 
     root_tabs = [
         component for component in app.config["components"]
         if component.get("props", {}).get("label") in {
-            "0 系統設定", "1-0 專案設定", "2-0 跨專案實驗",
+            "0-0 系統設定", "1-0 專案設定", "2-0 跨專案實驗",
             "3-0 人工評測抽樣", "3-1 人工評測", "4-0 AI／人工評測結果",
         }
     ]
@@ -1346,8 +1409,9 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
         "build", "embed", "answer", 1200, 100, 0.2,
         "詳細", 2, "extract", 2,
         "混合檢索", 6, '{"entity_types": []}',
-        ui.DEFAULT_REASONING_EFFORT, ui.DEFAULT_REASONING_EFFORT,
+        ui.DEFAULT_REASONING_EFFORT,
         ui.DEFAULT_REASONING_EFFORT, '{"effective_search_ratio": 6}',
+        "per_document",
     ]
     saved, save_status = ui.save_project_for_ui(*values)
     loaded = ui.load_project_for_ui(created["project_id"])
@@ -1356,8 +1420,9 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert loaded[0]["project_id"] == created["project_id"]
     assert loaded[11:13] == (1200, 100)
     assert loaded[22][0].text == "內容"
+    assert loaded[36] == {"effective_search_ratio": 6}
+    assert loaded[37] == "per_document"
     parameter_entries = ui._strategy_parameter_entries()
-    assert loaded[-len(parameter_entries) - 1] == {"effective_search_ratio": 6}
     hybrid_ratio = next(
         update for (strategy_id, name, _spec), update
         in zip(parameter_entries, loaded[-len(parameter_entries):])
@@ -1367,6 +1432,7 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     stored_project = ui.load_full_project(created["project_id"])
     assert "model_endpoint" not in stored_project["settings"]
     assert "api_key" not in stored_project["settings"]
+    assert stored_project["settings"]["graph_partition_mode"] == "per_document"
     assert stored_project["graph_state"]["entities"][0]["name"] == "設備"
     assert stored_project["graph_state"]["relationships"][0]["type"] == "USES"
     assert loaded[30] == [] and loaded[31] == []
@@ -1704,7 +1770,8 @@ def test_retrieval_metrics_match_gold_document_page_even_when_chunk_differs() ->
     ]
 
     assert ui._retrieval_metrics(question, rows) == {
-        "evidence_hit": True, "evidence_precision": 0.5, "document_hit": True,
+        "evidence_hit": True, "evidence_recall": 1.0,
+        "evidence_precision": 0.5, "document_hit": True,
     }
 
 
@@ -1713,7 +1780,8 @@ def test_retrieval_precision_is_unavailable_for_gold_document_without_pages() ->
     rows = [["原文", "相同 chunk", "", "0.9", "manual.pdf：1", "manual.pdf：42", "manual.pdf"]]
 
     assert ui._retrieval_metrics(question, rows) == {
-        "evidence_hit": None, "evidence_precision": None, "document_hit": None,
+        "evidence_hit": None, "evidence_recall": None,
+        "evidence_precision": None, "document_hit": None,
     }
 
 
@@ -1722,7 +1790,8 @@ def test_retrieval_metrics_are_unavailable_without_gold_record() -> None:
     rows = [["原文", "任意取回證據", "", "0.9", "manual.pdf：1", "manual.pdf：42", "manual.pdf"]]
 
     assert ui._retrieval_metrics(question, rows) == {
-        "evidence_hit": None, "evidence_precision": None, "document_hit": None,
+        "evidence_hit": None, "evidence_recall": None,
+        "evidence_precision": None, "document_hit": None,
     }
 
 
@@ -1739,7 +1808,8 @@ def test_question_set_import_allows_no_gold_as_empty_source_list() -> None:
 
     assert questions[0]["answer_sources"] == []
     assert ui._retrieval_metrics(questions[0], []) == {
-        "evidence_hit": None, "evidence_precision": None, "document_hit": None,
+        "evidence_hit": None, "evidence_recall": None,
+        "evidence_precision": None, "document_hit": None,
     }
 
 
@@ -1752,7 +1822,8 @@ def test_retrieval_metrics_count_unique_document_pages() -> None:
     ]
 
     assert ui._retrieval_metrics(question, rows) == {
-        "evidence_hit": True, "evidence_precision": 0.5, "document_hit": True,
+        "evidence_hit": True, "evidence_recall": 1.0,
+        "evidence_precision": 0.5, "document_hit": True,
     }
 
 
@@ -1761,7 +1832,8 @@ def test_document_hit_does_not_require_exact_gold_page() -> None:
     rows = [["原文", "同文件其他頁", "", "0.9", "manual.pdf：5", "manual.pdf：6", "manual.pdf"]]
 
     assert ui._retrieval_metrics(question, rows) == {
-        "evidence_hit": False, "evidence_precision": 0.0, "document_hit": True,
+        "evidence_hit": False, "evidence_recall": 0.0,
+        "evidence_precision": 0.0, "document_hit": True,
     }
 
 
@@ -1771,7 +1843,23 @@ def test_retrieval_metrics_map_source_name_to_document_id() -> None:
 
     assert ui._retrieval_metrics(
         question, rows, {"manual.pdf": "stable-document-id"},
-    ) == {"evidence_hit": True, "evidence_precision": 1.0, "document_hit": True}
+    ) == {"evidence_hit": True, "evidence_recall": 1.0,
+          "evidence_precision": 1.0, "document_hit": True}
+
+
+def test_evidence_recall_is_retrieved_gold_pages_over_unique_gold_pages() -> None:
+    question = {"answer_sources": [{"document_name": "manual.pdf", "pages": [1, 2, 3]}]}
+    rows = [
+        ["原文", "命中第一頁", "", "0.9", "manual.pdf：1", "manual.pdf：10", "manual.pdf"],
+        ["原文", "命中第二頁的另一個 chunk", "", "0.8", "manual.pdf：2", "manual.pdf：11", "manual.pdf"],
+        ["原文", "重複命中第二頁", "", "0.7", "manual.pdf：2", "manual.pdf：12", "manual.pdf"],
+        ["原文", "無關頁面", "", "0.6", "manual.pdf：8", "manual.pdf：13", "manual.pdf"],
+    ]
+
+    metrics = ui._retrieval_metrics(question, rows)
+
+    assert metrics["evidence_recall"] == 2 / 3
+    assert metrics["evidence_precision"] == 2 / 3
 
 
 def test_run_evaluation_for_ui_judges_and_saves(monkeypatch) -> None:
@@ -1810,6 +1898,7 @@ def test_run_evaluation_for_ui_judges_and_saves(monkeypatch) -> None:
     assert "錯誤：0 題" in status
     assert "得分正確率：100.0%" in status
     assert "Evidence Hit Rate：100.0%" in status
+    assert "Evidence Recall：100.0%" in status
     assert "Evidence Precision：100.0%" in status
     assert "Document Hit Rate：100.0%" in status
     assert rows[0][3:] == ["manual.pdf", "實際答案", 2, None, "正確"]
@@ -1989,10 +2078,12 @@ def test_experiment_summaries_report_each_question_set_separately() -> None:
     results = [
         {"group_index": 0, "group_name": "A", "question_set_id": "set-a",
          "question_set_name": "手冊題", "score": 2,
-         "evidence_hit": True, "evidence_precision": 1.0, "document_hit": True},
+         "evidence_hit": True, "evidence_recall": 1.0,
+         "evidence_precision": 1.0, "document_hit": True},
         {"group_index": 0, "group_name": "A", "question_set_id": "set-b",
          "question_set_name": "故障題", "score": 0,
-         "evidence_hit": False, "evidence_precision": 0.0, "document_hit": False},
+         "evidence_hit": False, "evidence_recall": 0.0,
+         "evidence_precision": 0.0, "document_hit": False},
     ]
 
     summaries = ui._single_experiment_summary_rows(groups, results, "judge")
@@ -2003,15 +2094,15 @@ def test_experiment_summaries_report_each_question_set_separately() -> None:
         (1, "100.0%", "手冊題"), (1, "0.0%", "故障題"),
     ]
     assert len(group_summaries) == 1
-    assert group_summaries[0][5:14] == [
-        2, "1 / 2", 0, "50.0%", "50.0%", "50.0%", "50.0%", 0, 2,
+    assert group_summaries[0][5:15] == [
+        2, "1 / 2", 0, "50.0%", "50.0%", "50.0%", "50.0%", "50.0%", 0, 2,
     ]
     single_project_summary = ui._experiment_group_overall_summary_rows(
         groups, results, "judge", include_project_count=False,
     )
     assert len(single_project_summary) == 1
-    assert single_project_summary[0][5:13] == [
-        2, "1 / 2", 0, "50.0%", "50.0%", "50.0%", "50.0%", 2,
+    assert single_project_summary[0][5:14] == [
+        2, "1 / 2", 0, "50.0%", "50.0%", "50.0%", "50.0%", "50.0%", 2,
     ]
 
 
@@ -2360,16 +2451,19 @@ def test_import_and_roundtrip_cross_document_provenance(tmp_path) -> None:
         ["原文", "錯誤文件同頁", "", "0.9", "other.pdf：7", "other.pdf：2", "other.pdf"],
         ["原文", "命中答案來源", "", "0.8", "part-b.pdf：7, 8", "part-b.pdf：9", "part-b.pdf"],
     ], {"part-b.pdf": sources[1]["document_id"], "other.pdf": "other-id"})
-    assert metrics == {"evidence_hit": True, "evidence_precision": 2 / 3, "document_hit": True}
+    assert metrics == {"evidence_hit": True, "evidence_recall": 1.0,
+                       "evidence_precision": 2 / 3, "document_hit": True}
     renamed_metrics = ui._retrieval_metrics(
         reparsed[0], [["原文", "相同內容的新檔名", "", "0.9", "renamed.pdf：7, 8", "renamed.pdf：9", "renamed.pdf"]],
         {"renamed.pdf": sources[1]["document_id"]},
     )
-    assert renamed_metrics == {"evidence_hit": True, "evidence_precision": 1.0, "document_hit": True}
+    assert renamed_metrics == {"evidence_hit": True, "evidence_recall": 1.0,
+                               "evidence_precision": 1.0, "document_hit": True}
     assert ui._retrieval_metrics(
         reparsed[0], [["原文", "不同文件但同名", "", "0.9", "part-b.pdf：7, 8", "part-b.pdf：9", "part-b.pdf"]],
         {"part-b.pdf": "different-document-id"},
-    ) == {"evidence_hit": False, "evidence_precision": 0.0, "document_hit": False}
+    ) == {"evidence_hit": False, "evidence_recall": 0.0,
+          "evidence_precision": 0.0, "document_hit": False}
 
     csv_file = tmp_path / "cross-document.csv"
     with csv_file.open("w", encoding="utf-8", newline="") as handle:
@@ -2545,10 +2639,10 @@ def test_same_named_strategy_controls_keep_values_within_each_strategy_limits() 
         "name": "Agentic 組", "answer_model": "model-a",
         "retrieval_config": saved,
     }])
-    for index, (strategy_id, name, _spec) in enumerate(entries):
+    for index, (strategy_id, name, spec) in enumerate(entries):
         if name != "seed_top_k":
             continue
-        expected = 30 if strategy_id == "agentic" else 4
+        expected = 30 if strategy_id == "agentic" else spec.default
         assert experiment_updates[index]["value"] == expected
         assert single_updates[index + 1]["value"] == expected
         assert group_updates[ui.EXPERIMENT_GROUP_FIELDS + index]["value"] == expected
@@ -2667,6 +2761,16 @@ def test_model_selection_dynamically_toggles_reasoning_effort_control() -> None:
     )
     assert effort_ids.intersection(dependency["outputs"])
     assert (model["id"], "change") in dependency["targets"]
+    assert any(
+        c.get("props", {}).get("label") == "推理強度"
+        for c in components
+    )
+    assert not any(
+        c.get("type") == "dropdown"
+        and c.get("props", {}).get("choices") == list(ui.GPT_6_LUNA_REASONING_EFFORTS)
+        and not c.get("props", {}).get("label")
+        for c in components
+    )
 
 
 def test_experiment_group_reasoning_controls_follow_each_selected_model() -> None:
@@ -2982,7 +3086,7 @@ def test_remove_inline_group_accepts_integral_value_for_float_strategy_parameter
     monkeypatch.chdir(tmp_path)
     project = ui.create_project("experiment-float-parameter")
     agentic_config = ui._retrieval_config_from_controls(
-        ui.RETRIEVAL_STRATEGIES.labels["agentic_search_2"],
+        ui.RETRIEVAL_STRATEGIES.labels["agentic_search_3"],
         10, "停用", "停用", {"max_runtime_seconds": 45.0},
     )
     groups = [
@@ -2992,7 +3096,7 @@ def test_remove_inline_group_accepts_integral_value_for_float_strategy_parameter
     values = ui._inline_group_values(groups)
     parameter_index = next(
         index for index, (strategy_id, name, _) in enumerate(ui._strategy_parameter_entries())
-        if strategy_id == "agentic_search_2" and name == "max_runtime_seconds"
+        if strategy_id == "agentic_search_3" and name == "max_runtime_seconds"
     )
     values[ui.EXPERIMENT_GROUP_COMPONENTS + ui.EXPERIMENT_GROUP_FIELDS + parameter_index] = 45
 
@@ -3025,12 +3129,12 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         if component.get("props", {}).get("headers", [])[:3] == ["編號", "問題", "標準答案"]
     )
     assert evaluation_table["props"]["static_columns"] == list(range(8))
+    strategy_choices = [
+        (label, label)
+        for label in ui.strategy_choices_for_graph_modes("merged")
+    ]
     assert sum(
-        component.get("props", {}).get("choices") == [
-            ("基本向量檢索", "基本向量檢索"), ("混合檢索", "混合檢索"),
-            ("Agentic Search", "Agentic Search"),
-                ("Agentic Search 2", "Agentic Search 2"),
-        ]
+        component.get("props", {}).get("choices") == strategy_choices
         and component.get("type") == "dropdown"
         for component in components
     ) == ui.EXPERIMENT_GROUP_LIMIT * 2 + 1
@@ -3192,7 +3296,8 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
         "answer_model": "model-a", "judge_model": "judge-a",
         "question": "問題二", "document": "manual.pdf", "expected_answer": "標準答案",
         "actual_answer": "模型答案", "passed": True, "reason": "正確",
-        "evidence_hit": True, "evidence_precision": 1.0, "document_hit": True,
+        "evidence_hit": True, "evidence_recall": 1.0,
+        "evidence_precision": 1.0, "document_hit": True,
     }
     ui.save_project(project["project_id"], {"experiment": {
         "questions": [{"question": "問題二"}], "groups": groups,
@@ -3207,7 +3312,7 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
     compact = json.loads(Path(compact_file_path).read_text(encoding="utf-8"))
 
     assert status.startswith("✅ 已匯出 1 個實驗組；總答對 1 / 1")
-    assert payload["schema_version"] == 5
+    assert payload["schema_version"] == 6
     assert "status" not in payload
     assert payload["project"] == {
         "project_id": project["project_id"], "name": "experiment-export",
@@ -3218,7 +3323,7 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
     }
     assert payload["summary"] == {
         "question_count": 1, "correct_count": 1, "partial_count": 0, "correct_total": "1 / 1",
-        "accuracy": 1.0, "evidence_hit_rate": 1.0,
+        "accuracy": 1.0, "evidence_hit_rate": 1.0, "evidence_recall_rate": 1.0,
         "evidence_precision": 1.0, "document_hit_rate": 1.0,
     }
     assert payload["groups"][0] == {
@@ -3232,7 +3337,7 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
         "summary": {
             "answer_model": "model-a", "judge_model": "judge-a",
             "question_count": 1, "correct_count": 1, "partial_count": 0, "correct_total": "1 / 1",
-            "accuracy": 1.0, "evidence_hit_rate": 1.0,
+            "accuracy": 1.0, "evidence_hit_rate": 1.0, "evidence_recall_rate": 1.0,
             "evidence_precision": 1.0, "document_hit_rate": 1.0,
         },
         "results": [{
@@ -3285,14 +3390,14 @@ def test_export_experiment_results_syncs_latest_manual_judgment(tmp_path, monkey
     assert exported["groups"][0]["summary"] == {
         "answer_model": "model-a", "judge_model": "judge-a",
         "question_count": 1, "correct_count": 0, "partial_count": 1, "correct_total": "0 / 1",
-        "accuracy": 0.5, "evidence_hit_rate": 1.0,
+        "accuracy": 0.5, "evidence_hit_rate": 1.0, "evidence_recall_rate": None,
         "evidence_precision": 1.0, "document_hit_rate": 1.0,
     }
     assert exported["summary"]["correct_total"] == "0 / 1"
     assert exported["summary"]["partial_count"] == 1
     assert exported["summary"]["accuracy"] == 0.5
     assert compact["summary"]["correct_total"] == "0 / 1"
-    assert compact["schema_version"] == 3
+    assert compact["schema_version"] == 4
     assert compact["summary"]["accuracy"] == 0.5
     assert compact["groups"][0]["summary"]["correct_total"] == "0 / 1"
     _second_status, second_file_path, second_compact_file_path = ui.export_experiment_results_for_ui(
@@ -3345,8 +3450,8 @@ def test_run_experiment_groups_outputs_each_group_summary_and_details(monkeypatc
 
     assert status.startswith("✅ 已完成 2 個實驗組")
     assert summaries == [
-        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
-        ["混合擴展", "model-b", "Reranker", "證據擴展", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
+        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
+        ["混合擴展", "model-b", "Reranker", "證據擴展", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
     ]
     assert len(details) == len(results) == 4
     assert captured["workers"] == 2
@@ -3635,43 +3740,6 @@ def test_toggle_pause_for_ui_flips_state_and_button_label() -> None:
     assert control.is_paused is False
 
 
-def test_plan_schema_for_ui_reports_stopped_status(monkeypatch) -> None:
-    monkeypatch.setattr(
-        ui, "plan_graph_schema",
-        lambda *args, **kwargs: (_ for _ in ()).throw(ui.RunCancelled("stopped")),
-    )
-
-    status, schema_text = ui.plan_schema_for_ui(
-        "http://models/v1", "key", "llm", 0.3, "平衡", 3,
-        [[True, "manual.pdf"]], [TextChunk(1, "text", (1,), "manual.pdf")], ui.RunControl(),
-    )
-
-    assert status.startswith("⏹")
-    assert schema_text == ""
-
-
-def test_schema_documents_default_to_all_and_require_a_selection() -> None:
-    update = ui.schema_documents_for_ui([
-        {"file_name": "a.pdf"},
-        {"file_name": "b.pdf"},
-    ])
-    assert update["value"] == [[True, "a.pdf"], [True, "b.pdf"]]
-
-    status, schema_text = ui.plan_schema_for_ui(
-        "http://models/v1",
-        "key",
-        "llm",
-        0.3,
-        "平衡",
-        3,
-        [],
-        [TextChunk(1, "text", (1,), "a.pdf")],
-        ui.RunControl(),
-    )
-    assert status == "❌ 請至少勾選一份用於規劃 Schema 的 PDF"
-    assert schema_text == ""
-
-
 def test_extract_graph_for_ui_reports_stopped_status(monkeypatch) -> None:
     monkeypatch.setattr(
         ui, "extract_graph",
@@ -3685,51 +3753,6 @@ def test_extract_graph_for_ui_reports_stopped_status(monkeypatch) -> None:
     )
 
     assert result == ("⏹ 已停止（使用者中止抽取）。", [], [], {})
-
-
-def test_plan_schema_for_ui_returns_editable_json(monkeypatch) -> None:
-    from manual_graphrag.graph_service import SchemaPlan
-
-    captured = {}
-
-    def fake_plan(*args, **kwargs):
-        captured["chunks"] = args[3]
-        return SchemaPlan(
-            {"entity_types": [{"name": "DEVICE"}], "relationship_types": [{"name": "USES"}]},
-            5,
-            5,
-            2,
-            1,
-        )
-
-    monkeypatch.setattr(
-        ui,
-        "plan_graph_schema",
-        fake_plan,
-    )
-
-    status, schema_text = ui.plan_schema_for_ui(
-        "http://models/v1",
-        "key",
-        "llm",
-        0.3,
-        "平衡",
-        3,
-        [[True, "a.pdf"], [False, "b.pdf"]],
-        [
-            TextChunk(1, "A", (1,), "a.pdf"),
-            TextChunk(2, "B", (1, 2), "b.pdf"),
-        ],
-        ui.RunControl(),
-    )
-
-    assert status.startswith("✅")
-    assert "1 份 PDF（a.pdf）的全部 1 頁、5 個 chunk" in status
-    assert [chunk.document for chunk in captured["chunks"]] == ["a.pdf"]
-    assert "共 2 批、1 輪整合" in status
-    assert "粒度：平衡。" in status
-    assert "類型上限" not in status
-    assert json.loads(schema_text)["entity_types"][0]["name"] == "DEVICE"
 
 
 def test_extract_graph_for_ui_formats_tables_and_state(monkeypatch) -> None:
@@ -3800,7 +3823,7 @@ def test_extract_graph_for_ui_formats_tables_and_state(monkeypatch) -> None:
     assert "進行 Embedding 並匯入 Neo4j" in status
 
 
-def test_extract_graph_for_ui_allows_skipping_schema_planning(monkeypatch) -> None:
+def test_extract_graph_for_ui_defaults_to_direct_text_extraction(monkeypatch) -> None:
     from manual_graphrag.graph_service import GraphExtraction
 
     captured = {}
@@ -3824,6 +3847,31 @@ def test_extract_graph_for_ui_allows_skipping_schema_planning(monkeypatch) -> No
         "chunk_overlap": 200,
         "schema_granularity": None,
     }
+
+
+def test_extract_graph_for_ui_extracts_each_document_independently(monkeypatch) -> None:
+    from manual_graphrag.graph_service import GraphExtraction
+
+    calls = []
+
+    def fake_extract(*args, **kwargs):
+        calls.append([chunk.document_id for chunk in args[3]])
+        return GraphExtraction([], [], len(args[3]))
+
+    monkeypatch.setattr(ui, "extract_graph", fake_extract)
+    status, _, _, state = ui.extract_graph_for_ui(
+        "https://api.openai.com/v1", "key", "model", 0, 2,
+        [
+            TextChunk(1, "a1", (1,), "a.pdf", "doc-a"),
+            TextChunk(2, "a2", (2,), "a.pdf", "doc-a"),
+            TextChunk(3, "b1", (1,), "b.pdf", "doc-b"),
+        ], "", [], ui.RunControl(), graph_partition_mode="per_document",
+    )
+
+    assert status.startswith("✅")
+    assert calls == [["doc-a", "doc-a"], ["doc-b"]]
+    assert state["graph_partition_mode"] == "per_document"
+    assert "每份文件獨立" in status
 
 
 def test_project_name_suffix_uses_build_settings_and_planned_granularity() -> None:
@@ -3882,7 +3930,6 @@ def test_extract_graph_for_ui_rejects_invalid_schema() -> None:
 
 def _importable_graph_state() -> dict:
     return {
-        "run_id": "run-1",
         "document": "manual.pdf",
         "llm_model": "llm",
         "schema": {
@@ -3892,9 +3939,16 @@ def _importable_graph_state() -> dict:
         "entities": [{
             "name": "設備 A", "type": "DEVICE", "description": "設備",
             "source_chunk_numbers": [1], "source_pages": [1],
+            "source_references": [{
+                "document_id": "doc-a", "document": "manual.pdf",
+                "chunk_numbers": [1], "pages": [1],
+            }],
         }],
         "relationships": [],
-        "chunks": [{"number": 1, "text": "設備說明", "pages": [1]}],
+        "chunks": [{
+            "number": 1, "text": "設備說明", "pages": [1],
+            "document": "manual.pdf", "document_id": "doc-a",
+        }],
         "neo4j_imported": False,
     }
 
@@ -3906,7 +3960,8 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
 
     def fake_import(*args, **kwargs):
         captured["args"] = args
-        captured["batches"] = list(args[11])
+        captured["batches"] = list(args[10])
+        captured["graph_documents"] = kwargs["graph_documents"]
         captured["progress"] = kwargs.get("progress")
         return ImportSummary(2, 1, 1)
 
@@ -3933,10 +3988,67 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
     assert state["embedding_dimensions"] == 1
     assert state["vector_index_name"] == "graph_evidence_embedding_1"
     assert provisioned == [("bolt://db", "neo4j", "user", "password")]
-    assert captured["args"][4] == "run-1"
+    assert captured["args"][4] == "manual.pdf"
+    assert captured["graph_documents"] == [{
+        "document_id": "", "file_name": "manual.pdf",
+        "graph_partition_mode": "merged",
+    }]
+    assert captured["args"][8][0]["document_id"] == ""
+    assert captured["args"][8][0]["source_references"][0]["document_id"] == "doc-a"
+    assert captured["batches"][0][0]["source_references"][0]["document_id"] == "doc-a"
     assert [len(batch) for batch in captured["batches"]] == [2]
     assert all("embedding" in item for batch in captured["batches"] for item in batch)
     assert captured["max_concurrency"] == 2
+
+
+def test_import_graph_for_ui_passes_document_partitions_to_neo4j(monkeypatch) -> None:
+    from manual_graphrag.neo4j_service import ImportSummary
+
+    captured = {}
+
+    def fake_import(*args, **kwargs):
+        captured["entities"] = args[8]
+        captured["graph_documents"] = kwargs["graph_documents"]
+        captured["evidence"] = [item for batch in args[10] for item in batch]
+        return ImportSummary(2, 0, 1)
+
+    graph_state = {
+        "document": "a.pdf、b.pdf", "graph_partition_mode": "per_document",
+        "llm_model": "model", "schema": {},
+        "entities": [
+            {"name": "零件", "type": "PART", "description": "A",
+             "source_chunk_numbers": [1], "source_pages": [1],
+             "source_references": [{"document_id": "doc-a", "document": "a.pdf",
+                                    "chunk_numbers": [1], "pages": [1]}]},
+            {"name": "零件", "type": "PART", "description": "B",
+             "source_chunk_numbers": [2], "source_pages": [2],
+             "source_references": [{"document_id": "doc-b", "document": "b.pdf",
+                                    "chunk_numbers": [2], "pages": [2]}]},
+        ],
+        "relationships": [],
+        "chunks": [
+            {"number": 1, "text": "A 原文", "pages": [1], "document": "a.pdf", "document_id": "doc-a"},
+            {"number": 2, "text": "B 原文", "pages": [2], "document": "b.pdf", "document_id": "doc-b"},
+        ],
+    }
+    monkeypatch.setattr(ui, "embedding_vectors", lambda *args: [[0.1]] * len(args[3]))
+    monkeypatch.setattr(ui, "ensure_project_database", lambda *args: None)
+    monkeypatch.setattr(ui, "import_extraction_batched", fake_import)
+
+    status, state = ui.import_graph_for_ui(
+        "https://api.openai.com/v1", "key", "bolt://db", "neo4j", "user", "password",
+        "embed", graph_state,
+    )
+
+    assert status.startswith("✅")
+    assert state["neo4j_imported"] is True
+    assert captured["graph_documents"] == [
+        {"document_id": "doc-a", "file_name": "a.pdf", "graph_partition_mode": "per_document"},
+        {"document_id": "doc-b", "file_name": "b.pdf", "graph_partition_mode": "per_document"},
+    ]
+    assert [item["document_id"] for item in captured["entities"]] == ["doc-a", "doc-b"]
+    assert {item["document_id"] for item in captured["evidence"]} == {"doc-a", "doc-b"}
+    assert len({item["evidence_id"] for item in captured["evidence"]}) == len(captured["evidence"])
 
 
 def test_import_graph_for_ui_keeps_state_when_import_fails(monkeypatch) -> None:
@@ -3963,6 +4075,17 @@ def test_import_graph_for_ui_requires_extraction() -> None:
         "http://models/v1", "key", "bolt://db", "neo4j", "user", "password",
         "embed", {},
     ) == ("❌ 請先完成知識圖譜抽取。", {})
+
+
+def test_import_graph_for_ui_requires_reextract_when_partition_mode_changed() -> None:
+    graph_state = _importable_graph_state()
+    status, returned = ui.import_graph_for_ui(
+        "https://api.openai.com/v1", "key", "bolt://db", "neo4j", "user", "password",
+        "embed", graph_state, selected_graph_partition_mode="per_document",
+    )
+
+    assert "請重新執行「抽取實體與關係」" in status
+    assert returned["neo4j_imported"] is False
 
 
 def test_answer_question_for_ui_can_disable_reranker(tmp_path, monkeypatch) -> None:
@@ -4008,8 +4131,8 @@ def test_answer_question_for_ui_can_disable_reranker(tmp_path, monkeypatch) -> N
 
     assert status.startswith("✅ 基本向量檢索")
     assert answer == "請重新啟動。"
-    assert captured["args"][5] == "E01 怎麼處理？"
-    config = captured["args"][7]
+    assert captured["args"][4] == "E01 怎麼處理？"
+    config = captured["args"][6]
     assert config.to_dict()["params"]["candidate_top_k"] == 8
     assert config.to_dict()["expansion"]["id"] == "disabled"
     assert rows == [[
@@ -4028,7 +4151,7 @@ def test_answer_question_for_ui_passes_model_context_to_agentic_strategy(tmp_pat
     captured = {}
 
     def fake_search(*args, **kwargs):
-        captured["config"] = args[7]
+        captured["config"] = args[6]
         captured["model_context"] = kwargs
         return [{
             "evidence_id": "chunk-agent", "kind": "原文", "text": "路徑原文",
@@ -4311,9 +4434,6 @@ def test_project_list_refreshes_on_page_load_and_tab_select_without_focus_rerend
 
 
 def test_unselected_models_report_actionable_errors_without_network() -> None:
-    plan = ui.plan_schema_for_ui(
-        "", "", None, 0, "平衡", 1, [], [], ui.RunControl(),
-    )
     extraction = ui.extract_graph_for_ui("", "", None, 0, 1, [], "{}", [], ui.RunControl())
     generation = ui.generate_evaluation_for_ui("project", "", "", None, None, 1, "基本檢索", 1, [])
     evaluation = ui.run_evaluation_for_ui(
@@ -4321,8 +4441,11 @@ def test_unselected_models_report_actionable_errors_without_network() -> None:
         {"questions": [{"question": "Q"}]},
     )
     answer = ui.answer_question_for_ui("", "", "", "", "", "", "", "", None, "Q", "基本向量檢索", 1)
-    embedding = ui.import_graph_for_ui("", "", "", "", "", "", None, {"run_id": "run"})
-    for result in [plan, extraction, generation, evaluation, answer, embedding]:
+    embedding = ui.import_graph_for_ui(
+        "", "", "", "", "", "", None,
+        {"document": "manual.pdf", "schema": {}, "entities": [], "relationships": []},
+    )
+    for result in [extraction, generation, evaluation, answer, embedding]:
         assert result[0].startswith("❌")
         assert "選擇" in result[0]
 
@@ -4368,7 +4491,8 @@ def test_experiment_project_members_require_existing_built_graphs(tmp_path, monk
     assert status.startswith("✅")
     assert state["members"] == [built["project_id"]]
     assert rows == [[
-        "已建圖車型", built["project_id"], "未知", 1, 1, 0, 1500, 200, "粗略",
+        "已建圖車型", built["project_id"], "未知", 1, "所有文件合併", 1, 0,
+        1500, 200, "粗略",
         built["neo4j_database"], "未測試",
     ]]
     summary_file = tmp_path / "data" / "projects" / built["project_id"] / "summary.json"
@@ -4403,7 +4527,7 @@ def test_legacy_experiment_question_sets_move_to_each_member_project(tmp_path, m
     migrated = ui.bound_question_sets(stored_member)
     assert migrated[0]["questions"] == [question]
     assert "questions" not in stored_member.get("evaluation", {})
-    assert rows[0][5] == 1
+    assert rows[0][6] == 1
     assert rows[0][-1] == "未測試"
 
 
@@ -4411,7 +4535,7 @@ def test_experiment_member_connection_results_fill_member_table(monkeypatch) -> 
     def summary_row(project_id, result="未測試"):
         if project_id == "gone":
             raise ValueError("專案不存在")
-        return [project_id.upper(), project_id, "", 0, 0, 0, "", "", "None", f"db-{project_id}", result]
+        return [project_id.upper(), project_id, "", 0, "所有文件合併", 0, 0, "", "", "None", f"db-{project_id}", result]
 
     def load_member(project_id):
         if project_id == "gone":
@@ -4426,7 +4550,7 @@ def test_experiment_member_connection_results_fill_member_table(monkeypatch) -> 
     rows, statuses, status = ui.test_experiment_project_connections_for_ui("exp", "bolt://x", "neo4j", "pw")
 
     assert statuses == {"p1": True, "gone": False}
-    assert [len(row) for row in rows] == [11, 11]
+    assert [len(row) for row in rows] == [12, 12]
     assert rows[0][-1] == "✅ Neo4j 連線成功"
     assert rows[1][0] == "（原專案不存在）" and rows[1][-1] == "❌ 專案不存在"
     assert status.startswith("⚠️ 1 / 2")
@@ -4737,7 +4861,8 @@ def test_saved_experiment_run_is_sampled_distributed_and_compared_with_human_sco
     assert summaries[0][3] == 5
     assert summaries[0][4] == "0.80"
     assert summaries[0][5] == "1.20"
-    assert retrieval_summaries == [["向量組", 5, "40.0%", "37.0%", "60.0%"]]
+    # Fixture results carry no Evidence Recall data, so the column shows "—".
+    assert retrieval_summaries == [["向量組", 5, "40.0%", "—", "37.0%", "60.0%"]]
     assert len(details) == 5
     assert {row[12] for row in details} == set(ui.KNOWN_USERS)
     assert {row[13] for row in details} == set(ui.KNOWN_USERS)
@@ -4809,8 +4934,8 @@ def test_human_review_results_show_retrieval_metrics_for_each_experiment_group(t
 
     assert [row[0] for row in human_summaries] == ["向量組", "混合組"]
     assert retrieval_summaries == [
-        ["向量組", 2, "50.0%", "75.0%", "100.0%"],
-        ["混合組", 1, "0.0%", "25.0%", "100.0%"],
+        ["向量組", 2, "50.0%", "—", "75.0%", "100.0%"],
+        ["混合組", 1, "0.0%", "—", "25.0%", "100.0%"],
     ]
 
 

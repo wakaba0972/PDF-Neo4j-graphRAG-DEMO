@@ -55,18 +55,18 @@ class AgenticRetrievalStrategy:
         records = AgenticRetrievalStrategy._read(
             context,
             """
-            MATCH (evidence:GraphEvidence {run_id: $run_id})
+            MATCH (evidence:GraphEvidence)
             WHERE evidence.evidence_id IN $evidence_ids
             OPTIONAL MATCH (evidence)-[:REPRESENTS|MENTIONS_ENTITY|EVIDENCE_SOURCE|EVIDENCE_TARGET]->
-                (entity:ExtractedEntity {run_id: $run_id})
+                (entity:ExtractedEntity)
             WITH evidence, entity WHERE entity IS NOT NULL
             RETURN DISTINCT elementId(entity) AS entity_id,
                    entity.name AS name, entity.type AS type,
                    entity.description AS description,
+                   evidence.document_id AS document_id,
                    evidence.evidence_id AS seed_evidence_id
             LIMIT $limit
             """,
-            run_id=context.run_id,
             evidence_ids=evidence_ids,
             limit=max(len(evidence_ids) * 20, 20),
         )
@@ -178,7 +178,7 @@ class AgenticRetrievalStrategy:
             query_vector=context.embedding,
             top_k=seed_limit,
             effective_search_ratio=params.get("effective_search_ratio", 3),
-            query_params={"run_id": context.run_id},
+            query_params={},
         ))
         seeds = [
             dict(item.content) for item in result.items
@@ -215,12 +215,12 @@ class AgenticRetrievalStrategy:
             neighbor_records = self._read(
                 context,
                 """
-                MATCH (current:ExtractedEntity {run_id: $run_id})
+                MATCH (current:ExtractedEntity)
                 WHERE elementId(current) IN $entity_ids
-                MATCH (current)-[relation:EXTRACTED_RELATION {run_id: $run_id}]-
-                      (neighbor:ExtractedEntity {run_id: $run_id})
+                MATCH (current)-[relation:EXTRACTED_RELATION]-
+                      (neighbor:ExtractedEntity)
                 WHERE NOT (elementId(neighbor) IN $visited_ids)
-                OPTIONAL MATCH (neighbor)-[adjacent:EXTRACTED_RELATION {run_id: $run_id}]-()
+                OPTIONAL MATCH (neighbor)-[adjacent:EXTRACTED_RELATION]-()
                 WITH current, relation, neighbor, count(DISTINCT adjacent) AS degree
                 RETURN elementId(current) AS current_id, current.name AS current_name,
                        elementId(neighbor) AS neighbor_id, neighbor.name AS name,
@@ -230,11 +230,11 @@ class AgenticRetrievalStrategy:
                        endNode(relation).name AS target_name,
                        coalesce(relation.source_pages, []) AS source_pages,
                        coalesce(relation.source_documents, []) AS source_documents,
+                       relation.document_id AS document_id,
                        degree
                 ORDER BY degree ASC, name ASC
                 LIMIT $limit
                 """,
-                run_id=context.run_id,
                 entity_ids=list(frontier_by_id),
                 visited_ids=list(visited),
                 limit=min(max_branches * 8, 80),
@@ -294,18 +294,17 @@ class AgenticRetrievalStrategy:
             records = self._read(
                 context,
                 """
-                MATCH (chunk:GraphEvidence {run_id: $run_id, kind: '原文'})
-                      -[:MENTIONS_ENTITY]->(entity:ExtractedEntity {run_id: $run_id})
+                MATCH (chunk:GraphEvidence {kind: '原文'})
+                      -[:MENTIONS_ENTITY]->(entity:ExtractedEntity)
                 WHERE elementId(entity) IN $entity_ids
                 WITH DISTINCT chunk, collect(DISTINCT elementId(entity)) AS entity_ids
                 RETURN chunk {
                     .evidence_id, .kind, .name, .source, .target, .text,
                     .source_pages, .source_chunk_numbers, .source_documents,
-                    .source_references_json
+                    .source_references_json, .document_id
                 } AS evidence, entity_ids
                 LIMIT $limit
                 """,
-                run_id=context.run_id,
                 entity_ids=list(expanded_entity_paths),
                 limit=min(candidate_limit * max_branches * max_hops, 100),
             )

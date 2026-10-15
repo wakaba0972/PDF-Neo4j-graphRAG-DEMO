@@ -189,6 +189,47 @@ class FakeDriver:
         return self.session_instance
 
 
+def test_document_partition_writes_scope_nodes_and_relationship_endpoints() -> None:
+    transaction = FakeTransaction()
+
+    neo4j_service._write_entity_batch(transaction, [{
+        "document_id": "doc-a", "name": "零件", "type": "PART",
+        "description": "A 文件中的零件", "source_chunk_numbers": [1],
+        "source_pages": [2], "source_documents": ["a.pdf"],
+    }])
+    neo4j_service._write_relationship_batch(transaction, [{
+        "document_id": "doc-a", "source": "零件", "type": "USES", "target": "工具",
+        "description": "關係", "source_chunk_numbers": [1],
+        "source_pages": [2], "source_documents": ["a.pdf"],
+    }])
+
+    entity_query, entity_params = transaction.calls[0]
+    relation_query, relation_params = transaction.calls[1]
+    assert "MATCH (document:GraphDocument)" in entity_query
+    assert "coalesce(document.document_id, '') = item.document_id" in entity_query
+    assert "document_id: item.document_id" in entity_query
+    assert entity_params["entities"][0]["document_id"] == "doc-a"
+    assert "source:ExtractedEntity {document_id: item.document_id" in relation_query
+    assert "target:ExtractedEntity {document_id: item.document_id" in relation_query
+    assert relation_params["relationships"][0]["document_id"] == "doc-a"
+
+
+def test_merged_graph_document_uses_mode_without_empty_document_id() -> None:
+    transaction = FakeTransaction()
+
+    neo4j_service._create_graph_documents(
+        transaction,
+        [{"document_id": "", "file_name": "manual.pdf", "graph_partition_mode": "merged"}],
+        "llm", "embed", {}, 1536, "graph_evidence_embedding_1536",
+    )
+
+    query, parameters = transaction.calls[0]
+    assert "graph_partition_mode" in query
+    assert "SET document.document_id = CASE" in query
+    assert "THEN null" in query
+    assert parameters["documents"][0]["graph_partition_mode"] == "merged"
+
+
 def test_load_latest_graph_metadata_does_not_collect_all_graph_nodes(monkeypatch) -> None:
     class Record(dict):
         pass
@@ -196,7 +237,6 @@ def test_load_latest_graph_metadata_does_not_collect_all_graph_nodes(monkeypatch
     class MetadataResult:
         def single(self):
             return Record({
-                "run_id": "run-1",
                 "document": "manual.pdf",
                 "embedding_model": "embed-model",
                 "embedding_dimensions": 3072,
@@ -232,7 +272,7 @@ def test_load_latest_graph_metadata_does_not_collect_all_graph_nodes(monkeypatch
     finally:
         neo4j_service._close_cached_drivers()
 
-    assert result["run_id"] == "run-1"
+    assert "run_id" not in result
     assert result["embedding_model"] == "embed-model"
     assert result["neo4j_imported"] is True
     assert "collect(" not in captured["query"].casefold()
@@ -281,7 +321,6 @@ def test_import_extraction_writes_document_entities_and_relationships(monkeypatc
         "neo4j",
         "user",
         "password",
-        "run-1",
         "manual.pdf",
         "llm",
         "embed",
@@ -357,7 +396,7 @@ def test_import_extraction_batched_writes_evidence_in_separate_transactions(monk
     progress_updates = []
 
     summary = neo4j_service.import_extraction_batched(
-        "bolt://db", "neo4j", "user", "password", "run-batched",
+        "bolt://db", "neo4j", "user", "password",
         "manual.pdf", "llm", "embed", {},
         [
             {"name": "A", "type": "PART", "source_chunk_numbers": [1]},
@@ -425,7 +464,6 @@ def test_import_extraction_validates_connection_fields(values, message) -> None:
     with pytest.raises(ValueError, match=message):
         neo4j_service.import_extraction(
             *values,
-            "run-1",
             "manual.pdf",
             "llm",
             "embed",
@@ -448,7 +486,6 @@ def test_import_extraction_wraps_driver_errors(monkeypatch) -> None:
             "neo4j",
             "user",
             "password",
-            "run-1",
             "manual.pdf",
             "llm",
             "embed",
@@ -515,6 +552,12 @@ class SearchSession:
 
     def run(self, query, **parameters):
         self.calls.append((query, parameters))
+        if "partitioned_count" in query:
+            return type("GraphModeResult", (), {
+                "single": lambda _self: {
+                    "document_count": 1, "partitioned_count": 0,
+                },
+            })()
         if "count(node)" in query:
             return FakeResult(3)
         raise AssertionError(f"unexpected query: {query}")
@@ -594,7 +637,7 @@ def test_missing_dimension_index_replaces_upstream_attribute_error(monkeypatch) 
 
     with pytest.raises(ValueError) as error:
         neo4j_service.search_graph_evidence(
-            "bolt://db", "neo4j", "user", "password", "run-1",
+            "bolt://db", "neo4j", "user", "password",
             "question", [0.1] * 1536, _retrieval_config(),
         )
 
@@ -626,7 +669,7 @@ def test_search_dimension_error_instructs_user_to_reimport(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="重新執行.*Embedding 並匯入 Neo4j"):
         neo4j_service.search_graph_evidence(
-            "bolt://db", "neo4j", "user", "password", "run-1",
+            "bolt://db", "neo4j", "user", "password",
             "question", [0.1] * 1536, _retrieval_config(),
         )
 
@@ -643,7 +686,7 @@ def test_search_graph_evidence_uses_official_hybrid_retriever(monkeypatch) -> No
     )
 
     results = neo4j_service.search_graph_evidence(
-        "bolt://db", "neo4j", "user", "password", "run-1",
+        "bolt://db", "neo4j", "user", "password",
         "E01 +(重試)", [0.1], _retrieval_config(candidate_top_k=9),
     )
 
@@ -654,7 +697,7 @@ def test_search_graph_evidence_uses_official_hybrid_retriever(monkeypatch) -> No
     assert initialization["vector_index_name"] == "graph_evidence_embedding_1"
     assert initialization["fulltext_index_name"] == "graph_evidence_fulltext"
     assert initialization["neo4j_database"] == "neo4j"
-    assert "$run_id" in initialization["retrieval_query"]
+    assert "$run_id" not in initialization["retrieval_query"]
     assert "$document_names" not in initialization["retrieval_query"]
     arguments = FakeOfficialRetriever.search_arguments
     assert "source_documents" in initialization["retrieval_query"]
@@ -662,9 +705,38 @@ def test_search_graph_evidence_uses_official_hybrid_retriever(monkeypatch) -> No
     assert arguments["query_vector"] == [0.1]
     assert arguments["top_k"] == 9
     assert arguments["effective_search_ratio"] == 3
-    assert arguments["query_params"] == {"run_id": "run-1"}
+    assert arguments["query_params"] == {}
     assert arguments["ranker"] == "naive"
     assert not any("count(node)" in query for query, _parameters in session.calls)
+
+
+def test_document_scoped_strategy_rejects_merged_graph_before_retrieving(monkeypatch) -> None:
+    class GraphModeResult:
+        def single(self):
+            return {"document_count": 2, "partitioned_count": 0}
+
+    class GraphModeSession(SearchSession):
+        def run(self, query, **parameters):
+            self.calls.append((query, parameters))
+            if "MATCH (document:GraphDocument)" in query:
+                return GraphModeResult()
+            raise AssertionError("strategy retrieval must not run on merged graph")
+
+    session = GraphModeSession()
+    monkeypatch.setattr(
+        neo4j_service.GraphDatabase,
+        "driver",
+        lambda *args, **kwargs: SearchDriver(session),
+    )
+    config = RetrievalConfig(strategy_id="multi_agent_search_1", top_k=3)
+
+    with pytest.raises(ValueError, match="目前專案是「所有文件合併」圖譜"):
+        neo4j_service.search_graph_evidence(
+            "bolt://db", "neo4j", "user", "password",
+            "question", [0.1], config,
+        )
+
+    assert len(session.calls) == 1
 
 
 def test_basic_vector_retrieval_uses_vector_cypher_retriever(monkeypatch) -> None:
@@ -683,7 +755,7 @@ def test_basic_vector_retrieval_uses_vector_cypher_retriever(monkeypatch) -> Non
     )
 
     results = neo4j_service.search_graph_evidence(
-        "bolt://db", "neo4j", "user", "password", "run-1",
+        "bolt://db", "neo4j", "user", "password",
         "E01 如何處理", [0.1], _retrieval_config("vector"),
     )
 
@@ -692,13 +764,13 @@ def test_basic_vector_retrieval_uses_vector_cypher_retriever(monkeypatch) -> Non
     initialization = FakeOfficialVectorRetriever.initialization
     assert initialization["index_name"] == "graph_evidence_embedding_1"
     assert initialization["neo4j_database"] == "neo4j"
-    assert "$run_id" in initialization["retrieval_query"]
+    assert "$run_id" not in initialization["retrieval_query"]
     assert "$document_names" not in initialization["retrieval_query"]
     assert FakeOfficialVectorRetriever.search_arguments == {
         "query_vector": [0.1],
         "top_k": 3,
         "effective_search_ratio": 3,
-        "query_params": {"run_id": "run-1"},
+        "query_params": {},
     }
     assert not any("count(node)" in query for query, _parameters in session.calls)
 
@@ -715,6 +787,12 @@ class ExpansionSearchSession:
 
     def run(self, query, **parameters):
         self.calls.append((query, parameters))
+        if "partitioned_count" in query:
+            return type("GraphModeResult", (), {
+                "single": lambda _self: {
+                    "document_count": 1, "partitioned_count": 0,
+                },
+            })()
         if "MATCH (candidate:GraphEvidence" in query:
             return FakeResult(rows=[{
                 "evidence": {
@@ -784,7 +862,7 @@ def test_graph_expansion_can_be_disabled(monkeypatch) -> None:
     )
 
     results = neo4j_service.search_graph_evidence(
-        "bolt://db", "neo4j", "user", "password", "run-1",
+        "bolt://db", "neo4j", "user", "password",
         "P0301 怎麼處理", [0.1], _retrieval_config(top_k=5),
     )
 
@@ -805,7 +883,7 @@ def test_legacy_graph_expansion_uses_name_and_chunk_matching(monkeypatch) -> Non
     monkeypatch.setattr(hybrid, "HybridCypherRetriever", ExpansionRetriever)
 
     results = neo4j_service.search_graph_evidence(
-        "bolt://db", "neo4j", "user", "password", "run-1",
+        "bolt://db", "neo4j", "user", "password",
         "P0301 怎麼處理", [0.1],
         _retrieval_config(top_k=5, expansion_id="legacy_name_chunk"),
     )

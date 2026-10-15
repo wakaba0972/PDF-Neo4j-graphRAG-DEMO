@@ -38,6 +38,13 @@ def build_project_summary(project: dict[str, Any]) -> dict[str, Any]:
     """Return a compact, human-readable snapshot of the project's build metadata."""
     settings = project.get("settings") or {}
     graph_state = project.get("graph_state") or {}
+    graph_partition_mode = (
+        graph_state.get("graph_partition_mode")
+        or settings.get("graph_partition_mode")
+        or "merged"
+    )
+    if graph_partition_mode not in {"merged", "per_document"}:
+        graph_partition_mode = "merged"
     build_config = graph_state.get("build_config") or {}
     schema_granularity = build_config.get("schema_granularity")
     if schema_granularity is None and graph_state.get("schema"):
@@ -78,7 +85,8 @@ def build_project_summary(project: dict[str, Any]) -> dict[str, Any]:
         "chunk_size": build_config.get("chunk_size", settings.get("chunk_size")),
         "chunk_overlap": build_config.get("chunk_overlap", settings.get("chunk_overlap")),
         "schema_granularity": schema_granularity,
-        "graph_built": bool(graph_state.get("run_id")),
+        "graph_partition_mode": graph_partition_mode,
+        "graph_built": bool(graph_state.get("document") or graph_state.get("graph_data_file")),
         "updated_at": project.get("updated_at", ""),
     }
 
@@ -97,7 +105,14 @@ def load_project_summary(
     project_dir = Path(root) / project_id
     summary_path = project_dir / "summary.json"
     if summary_path.is_file():
-        return read_json(summary_path)
+        summary = read_json(summary_path)
+        if "graph_partition_mode" in summary:
+            return summary
+        # Upgrade old compact summaries without loading large graph/chunk sidecars.
+        project = _read_project_metadata(project_id, root)
+        summary = {**summary, **build_project_summary(project)}
+        write_json(summary_path, summary)
+        return summary
     # One-time compatibility path for projects created before summary.json
     # existed. Normal summary reads stay small and do not parse all chunks.
     project = _read_project_metadata(project_id, root)
@@ -281,6 +296,9 @@ def load_project_metadata(
             project["graph_state"] = graph_state
         project_dir = Path(root) / project_id
         changed = False
+        if "run_id" in graph_state:
+            graph_state.pop("run_id", None)
+            changed = True
         has_inline_graph = "entities" in graph_state or "relationships" in graph_state
         if has_inline_graph and not graph_state.get("graph_data_file"):
             graph_payload = {
@@ -568,6 +586,11 @@ def _save_project_unlocked(
                 by_name[source.name] = len(documents)
                 documents.append(record)
     payload_for_storage = dict(payload)
+    incoming_graph_state = payload_for_storage.get("graph_state")
+    if isinstance(incoming_graph_state, dict) and "run_id" in incoming_graph_state:
+        incoming_graph_state = dict(incoming_graph_state)
+        incoming_graph_state.pop("run_id", None)
+        payload_for_storage["graph_state"] = incoming_graph_state
     graph_state_for_chunks = payload_for_storage.get("graph_state")
     has_graph_chunks = isinstance(graph_state_for_chunks, dict) and "chunks" in graph_state_for_chunks
     if "chunks" in payload or has_graph_chunks:

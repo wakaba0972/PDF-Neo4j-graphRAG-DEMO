@@ -1,9 +1,11 @@
-id: agentic_search_2
-name: Agentic Search 2
-order: 40
+id: agentic_search_3
+name: Agentic Search 3
+order: 50
+supported_graph_modes:
+  - merged
 implementation:
-  file: agentic_search_2/strategy.py
-  class: AgenticSearch2RetrievalStrategy
+  file: agentic_search_3/strategy.py
+  class: AgenticSearch3RetrievalStrategy
 parameters:
   candidate_top_k:
     type: integer
@@ -14,23 +16,23 @@ parameters:
   seed_top_k:
     type: integer
     label: 向量起始證據數
-    default: 4
+    default: 6
     minimum: 1
     maximum: 20
     control: slider
-  max_rounds:
+  max_tool_calls:
     type: integer
-    label: LLM 搜尋輪數上限
-    default: 3
+    label: Agent 工具呼叫上限
+    default: 8
     minimum: 1
-    maximum: 6
+    maximum: 20
     control: slider
   result_limit:
     type: integer
-    label: 每輪 Cypher 結果上限
+    label: 每次工具最多回傳證據數
     default: 8
     minimum: 1
-    maximum: 30
+    maximum: 20
     control: slider
   max_runtime_seconds:
     type: number

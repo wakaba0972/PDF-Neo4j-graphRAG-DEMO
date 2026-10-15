@@ -44,9 +44,9 @@ from .graph_service import (
     GPT_6_LUNA_REASONING_EFFORTS,
     RunCancelled,
     RunControl,
+    GraphExtraction,
     check_model_connection,
     extract_graph,
-    plan_graph_schema,
     validate_schema,
 )
 from .human_review import (
@@ -106,6 +106,7 @@ from .retrieval import (
     RETRIEVAL_STRATEGIES,
     RetrievalConfig,
     strategy_choices,
+    strategy_choices_for_graph_modes,
     strategy_id_from_label,
     strategy_label,
 )
@@ -587,10 +588,10 @@ def persist_global_api_settings_for_ui(
     )
     return (*llm, *embedding, experiment, status)
 
-
 # TEMP(UI 修理): 修 UI 期間暫時打開所有會上鎖的頁籤（1-1～1-5）與 2-0 的實驗執行區塊，
 # 原本的解鎖條件仍保留在各函式中。修完後改回 False 即可還原，見交接紀錄。
 TEMP_UNLOCK_ALL_TABS = True
+
 
 
 def _tab_update(enabled: bool) -> dict[str, Any]:
@@ -1161,7 +1162,7 @@ def load_graph_tables_for_project_ui(
     project_id: str | None, graph_state: dict[str, Any] | None,
 ) -> tuple[list[list[object]], list[list[object]], dict[str, Any], str]:
     state = graph_state or {}
-    if not state.get("run_id"):
+    if not state.get("document") and not state.get("graph_data_file"):
         return [], [], state, "尚未執行圖譜抽取。"
     if "entities" not in state or "relationships" not in state:
         try:
@@ -1205,10 +1206,10 @@ def save_project_for_ui(
     max_concurrent_requests: int, extraction_llm_model: str,
     extraction_max_concurrent_requests: int,
     retrieval_mode: str, top_k: int, schema_text: str,
-    graph_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     extraction_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     answer_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     retrieval_strategy_params_json: Any = None,
+    graph_partition_mode: str = "merged",
 ) -> tuple[dict[str, Any], str]:
     if not project_id:
         return {}, "❌ 請先建立或載入專案。"
@@ -1219,7 +1220,7 @@ def save_project_for_ui(
         "answer_model": answer_model,
         "chunk_size": int(chunk_size), "chunk_overlap": int(chunk_overlap),
         "graph_temperature": float(graph_temperature),
-        "schema_granularity": schema_granularity,
+        "schema_granularity": None,
         "max_concurrent_requests": int(max_concurrent_requests),
         "extraction_llm_model": extraction_llm_model,
         "extraction_max_concurrent_requests": int(extraction_max_concurrent_requests),
@@ -1228,7 +1229,7 @@ def save_project_for_ui(
             retrieval_strategy_params_json,
         ).to_dict(),
         "schema_text": schema_text or "",
-        "graph_reasoning_effort": graph_reasoning_effort or DEFAULT_REASONING_EFFORT,
+        "graph_partition_mode": graph_partition_mode or "merged",
         "extraction_reasoning_effort": extraction_reasoning_effort or DEFAULT_REASONING_EFFORT,
         "answer_reasoning_effort": answer_reasoning_effort or DEFAULT_REASONING_EFFORT,
     }
@@ -1284,7 +1285,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         _document_status(len(documents) - 1, len(documents), active_preview, len(active_chunks))
         if documents else "請先解析 PDF。"
     )
-    if graph.get("run_id"):
+    if graph.get("document") or graph.get("graph_data_file"):
         graph_status = (
             f"✅ 已載入專案保存的圖譜：{graph.get('entity_count', len(graph.get('entities') or []))} 個實體、"
             f"{graph.get('relationship_count', len(graph.get('relationships') or []))} 筆關係。"
@@ -1297,6 +1298,13 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         )
     else:
         graph_status, import_status = "尚未執行抽取。", "尚未執行 Embedding 與匯入。"
+    strategy_parameter_updates = _single_strategy_parameter_updates(project_retrieval)
+    graph_mode = get("graph_partition_mode", "merged")
+    compatible_strategies = strategy_choices_for_graph_modes(graph_mode)
+    selected_strategy = project_retrieval.ui_values()[0]
+    strategy_options: list[Any] = list(compatible_strategies)
+    if selected_strategy not in compatible_strategies:
+        strategy_options.insert(0, (f"{selected_strategy}（與目前圖譜模式不相容）", selected_strategy))
     return (
         _project_ui_state(project), f"✅ 已載入專案「{project['name']}」。",
         get("neo4j_uri", env["NEO4J_URI"]), project.get("neo4j_database") or project_database_name(project_id),
@@ -1307,22 +1315,17 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         get("chunk_size", 1500), get("chunk_overlap", 200),
         gr.update(
             value=get("graph_temperature", 0),
-            visible=str(get("graph_llm_model", DEFAULT_LLM_MODEL) or "").casefold() != GPT_6_LUNA_MODEL,
+            visible=str(get("extraction_llm_model", DEFAULT_LLM_MODEL) or "").casefold() != GPT_6_LUNA_MODEL,
         ),
         get("schema_granularity", "平衡"),
         get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         get("extraction_llm_model", DEFAULT_LLM_MODEL),
         get("extraction_max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
-        *project_retrieval.ui_values()[:2], get("schema_text", ""),
+        gr.update(choices=strategy_options, value=selected_strategy), project_retrieval.top_k, "",
         documents, chunks, graph, active_preview, active_chunks,
         _document_rows(documents), _document_choices(documents),
         _chunk_rows(active_chunks), document_status,
         [], [], graph_status, import_status,
-        gr.update(
-            value=get("graph_reasoning_effort", DEFAULT_REASONING_EFFORT),
-            visible=str(get("graph_llm_model", DEFAULT_LLM_MODEL) or "").casefold() == GPT_6_LUNA_MODEL,
-            choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-        ),
         gr.update(
             value=get("extraction_reasoning_effort", DEFAULT_REASONING_EFFORT),
             visible=str(get("extraction_llm_model", DEFAULT_LLM_MODEL) or "").casefold() == GPT_6_LUNA_MODEL,
@@ -1333,7 +1336,9 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
             visible=str(get("answer_model", DEFAULT_LLM_MODEL) or "").casefold() == GPT_6_LUNA_MODEL,
             choices=list(GPT_6_LUNA_REASONING_EFFORTS),
         ),
-        *_single_strategy_parameter_updates(project_retrieval),
+        strategy_parameter_updates[0],
+        graph_mode,
+        *strategy_parameter_updates[1:],
     )
 
 
@@ -2119,6 +2124,8 @@ def _experiment_member_summary_row(project_id: str, connection_result: str = EXP
         project_id,
         summary.get("created_by", "未知"),
         summary.get("document_count", 0),
+        "每份文件分區" if summary.get("graph_partition_mode") == "per_document"
+        else "所有文件合併",
         summary.get("chunk_count", 0),
         question_count,
         summary.get("chunk_size") if summary.get("chunk_size") is not None else "",
@@ -2153,7 +2160,7 @@ def experiment_member_sections_visibility_for_ui(rows: Any) -> tuple[dict[str, A
 
 
 def _missing_experiment_member_row(project_id: str, connection_result: str = EXPERIMENT_MEMBER_UNTESTED) -> list[Any]:
-    return ["（原專案不存在）", project_id, "未知", 0, 0, 0, "", "", "None", "", connection_result]
+    return ["（原專案不存在）", project_id, "未知", 0, "未知", 0, 0, "", "", "None", "", connection_result]
 
 
 def test_experiment_project_connections_for_ui(
@@ -2229,10 +2236,11 @@ def load_experiment_project_setup_for_ui(
     project: dict[str, Any] | None, experiment_llm_state: dict[str, Any] | None = None,
 ) -> tuple[Any, ...]:
     groups = (project or {}).get("groups", [])
+    graph_modes = _experiment_project_graph_modes(project)
     group_slots = _inline_group_updates(
         groups, _configured_service_choice_items(
             experiment_llm_state or load_service_settings("experiment_llm")
-        ),
+        ), graph_modes,
     )
     return (
         *group_slots,
@@ -2345,6 +2353,7 @@ def _experiment_project_inline_group_response(
         *_inline_group_updates(
             list(project.get("groups") or []),
             _configured_service_choice_items(llm_state),
+            _experiment_project_graph_modes(project),
         ),
         project, status,
     )
@@ -2469,6 +2478,7 @@ def _inline_group_values(groups: list[dict[str, Any]]) -> list[Any]:
 
 def _inline_group_updates(
     groups: list[dict[str, Any]], model_choices: list[tuple[str, str]] | None = None,
+    graph_modes: list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> list[Any]:
     choices = list(model_choices or [])
     available_models = {value for _, value in choices}
@@ -2486,6 +2496,12 @@ def _inline_group_updates(
             RetrievalConfig.from_dict(_default_retrieval_config())
         )
         strategy, top_k, reranker, expansion = config.ui_values()
+        retrieval_choices: list[Any] = list(strategy_choices_for_graph_modes(graph_modes))
+        if strategy not in retrieval_choices:
+            retrieval_choices.insert(0, (f"{strategy}（與目前圖譜模式不相容）", strategy))
+        reranker_update, expansion_update = _postprocessing_control_updates(
+            strategy, reranker, expansion, row_visible=visible,
+        )
         model_update = gr.update(value=item.get("answer_model"), visible=visible)
         answer_effort_model = item.get("answer_model")
         if model_choices is not None or choices:
@@ -2498,15 +2514,81 @@ def _inline_group_updates(
                 visible=visible and str(answer_effort_model or "").casefold() == GPT_6_LUNA_MODEL,
                 choices=list(GPT_6_LUNA_REASONING_EFFORTS),
             ),
-            gr.update(value=strategy, visible=visible),
+            gr.update(value=strategy, choices=retrieval_choices, visible=visible),
             gr.update(value=top_k, visible=visible),
-            gr.update(value=reranker, visible=visible),
-            gr.update(value=expansion, visible=visible),
+            reranker_update,
+            expansion_update,
             gr.update(value=_visible_params_for_strategy(config)),
             *_experiment_strategy_parameter_updates(config, visible),
             gr.update(visible=visible),
         ])
     return values
+
+
+def _project_graph_mode(project: dict[str, Any] | None) -> str:
+    project = project or {}
+    graph_state = project.get("graph_state") or {}
+    settings = project.get("settings") or {}
+    mode = graph_state.get("graph_partition_mode") or settings.get("graph_partition_mode")
+    return mode if mode in {"merged", "per_document"} else "merged"
+
+
+def _experiment_project_graph_modes(project: dict[str, Any] | None) -> list[str]:
+    modes: list[str] = []
+    for member_id in (project or {}).get("members", []):
+        try:
+            modes.append(_project_graph_mode(load_project(member_id)))
+        except (OSError, ValueError):
+            # Keep the selector usable when a member is temporarily unavailable;
+            # the runtime graph-mode check will report the precise failure.
+            continue
+    return modes
+
+
+def _strategy_dropdown_updates_for_graph_mode(
+    graph_mode: str | None, *values: Any,
+) -> tuple[Any, ...]:
+    choices = strategy_choices_for_graph_modes(graph_mode or "merged")
+    updates = []
+    for value in values:
+        options: list[Any] = list(choices)
+        if value and value not in choices:
+            options.insert(0, (f"{value}（與目前圖譜模式不相容）", value))
+        updates.append(gr.update(choices=options, value=value))
+    return tuple(updates)
+
+
+def _postprocessing_control_updates(
+    strategy: str | None, reranker: str | None, expansion: str | None,
+    *, row_visible: bool = True,
+) -> tuple[Any, Any]:
+    try:
+        spec = RETRIEVAL_STRATEGIES.get_spec(strategy_id_from_label(str(strategy or "")))
+        supports_reranker = "reranker" in spec.postprocessors
+        supports_expansion = "evidence_expansion" in spec.postprocessors
+    except ValueError:
+        supports_reranker = supports_expansion = False
+    return (
+        gr.update(
+            value=reranker if supports_reranker else "停用",
+            interactive=supports_reranker,
+            visible=row_visible and supports_reranker,
+        ),
+        gr.update(
+            value=expansion if supports_expansion else "停用",
+            interactive=supports_expansion,
+            visible=row_visible and supports_expansion,
+        ),
+    )
+
+
+def _single_project_graph_modes(project_id: str | None) -> list[str]:
+    if not project_id:
+        return []
+    try:
+        return [_project_graph_mode(load_project(project_id))]
+    except (OSError, ValueError):
+        return []
 
 
 def _groups_from_inline_values(values: tuple[Any, ...]) -> list[dict[str, Any]]:
@@ -2618,10 +2700,16 @@ def add_inline_experiment_group_for_ui(
         )
         if status.startswith("❌"):
             raise ValueError(status.removeprefix("❌ "))
-        return (*_inline_group_updates(saved_groups, service_choice_items(llm_state)), saved_groups, status, result_status)
+        return (*_inline_group_updates(
+            saved_groups, service_choice_items(llm_state),
+            _single_project_graph_modes(project_id),
+        ), saved_groups, status, result_status)
     except (OSError, TypeError, ValueError) as exc:
         return (
-            *_inline_group_updates(list(current_groups or []), service_choice_items(llm_state)),
+            *_inline_group_updates(
+                list(current_groups or []), service_choice_items(llm_state),
+                _single_project_graph_modes(project_id),
+            ),
             list(current_groups or []), f"❌ {exc}", gr.update(),
         )
 
@@ -2640,7 +2728,10 @@ def remove_inline_experiment_group_for_ui(
         *_inline_group_values(groups), allow_empty=True,
     )
     return (
-        *_inline_group_updates(saved_groups, service_choice_items(llm_state)),
+        *_inline_group_updates(
+            saved_groups, service_choice_items(llm_state),
+            _single_project_graph_modes(project_id),
+        ),
         saved_groups, status, result_status,
     )
 
@@ -2731,7 +2822,10 @@ def load_experiment_for_ui(
         questions, f"目前專案題庫共 {len(questions)} 題。", groups, results,
         data.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS), status,
         summary_rows, detail_rows,
-        *_inline_group_updates(groups, service_choice_items(llm_state)),
+        *_inline_group_updates(
+            groups, service_choice_items(llm_state),
+            [_project_graph_mode(project)] if project else None,
+        ),
         gr.update(
             value=global_judge_model,
             choices=judge_choices,
@@ -3021,6 +3115,7 @@ def _evaluation_summary(results: list[dict[str, Any]], *, loaded: bool = False) 
     partial = sum(_result_score(item) == 1 for item in results)
     total = len(results)
     evidence_hit_rate = _mean_result_metric(results, "evidence_hit")
+    evidence_recall = _mean_result_metric(results, "evidence_recall")
     evidence_precision = _mean_result_metric(results, "evidence_precision")
     document_hit_rate = _mean_result_metric(results, "document_hit")
 
@@ -3047,6 +3142,7 @@ def _evaluation_summary(results: list[dict[str, Any]], *, loaded: bool = False) 
         f"\n部分正確：{partial} 題｜錯誤：{failed} 題｜得分正確率：{accuracy:.1f}%"
         f"\n\n### 各 PDF 結果\n{document_summary}"
         f"  \nEvidence Hit Rate：{percent(evidence_hit_rate)}"
+        f"｜Evidence Recall：{percent(evidence_recall)}"
         f"｜Evidence Precision：{percent(evidence_precision)}"
         f"｜Document Hit Rate：{percent(document_hit_rate)}"
     )
@@ -3160,6 +3256,7 @@ def _retrieval_metrics(
     if not gold_sources:
         return {
             "evidence_hit": None,
+            "evidence_recall": None,
             "evidence_precision": None,
             "document_hit": None,
         }
@@ -3180,6 +3277,7 @@ def _retrieval_metrics(
     gold_documents = {source_identity for source_identity, _page in gold_sources}
     return {
         "evidence_hit": bool(matched_sources),
+        "evidence_recall": len(matched_sources) / len(gold_sources),
         "evidence_precision": (
             len(matched_sources) / len(retrieved_sources) if retrieved_sources else 0.0
         ),
@@ -3885,7 +3983,7 @@ def run_experiment_groups_for_ui(
                 "judge_reasoning_effort": effective_judge_effort,
                 "verification_enabled": bool(verification_enabled),
                 "results": completed_results, "summary_rows": summary_rows,
-                "retrieval_metrics_version": 1,
+                "retrieval_metrics_version": 2,
                 "detail_rows": detail_rows, "status": status,
             })
         except (OSError, ValueError) as exc:
@@ -3916,6 +4014,7 @@ def _single_experiment_summary_rows(
                 (item.get("source_project_name", "") for item in selected), "",
             )
             hit_rate = _mean_result_metric(selected, "evidence_hit")
+            evidence_recall = _mean_result_metric(selected, "evidence_recall")
             precision = _mean_result_metric(selected, "evidence_precision")
             document_hit_rate = _mean_result_metric(selected, "document_hit")
             summaries.append([
@@ -3924,6 +4023,7 @@ def _single_experiment_summary_rows(
                 f"{correct} / {total}", sum(_result_score(item) == 1 for item in selected),
                 f"{weighted_accuracy:.1%}" if total else "—",
                 f"{hit_rate:.1%}" if hit_rate is not None else "—",
+                f"{evidence_recall:.1%}" if evidence_recall is not None else "—",
                 f"{precision:.1%}" if precision is not None else "—",
                 f"{document_hit_rate:.1%}" if document_hit_rate is not None else "—",
                 source_project_name, set_name,
@@ -3963,6 +4063,7 @@ def _experiment_group_overall_summary_rows(
             for item in group_results
         } - {""}
         hit_rate = _mean_result_metric(group_results, "evidence_hit")
+        evidence_recall = _mean_result_metric(group_results, "evidence_recall")
         precision = _mean_result_metric(group_results, "evidence_precision")
         document_hit_rate = _mean_result_metric(group_results, "document_hit")
         row = [
@@ -3971,6 +4072,7 @@ def _experiment_group_overall_summary_rows(
             total, f"{fully_correct} / {total}", partially_correct,
             f"{score_accuracy:.1%}",
             f"{hit_rate:.1%}" if hit_rate is not None else "—",
+            f"{evidence_recall:.1%}" if evidence_recall is not None else "—",
             f"{precision:.1%}" if precision is not None else "—",
             f"{document_hit_rate:.1%}" if document_hit_rate is not None else "—",
         ]
@@ -4171,7 +4273,7 @@ def evaluate_experiment_answers_for_ui(
             **previous, "pending_answers": pending_answers, "results": results,
             "group_summary_rows": group_summary,
             "summary_rows": summary, "detail_rows": details,
-            "retrieval_metrics_version": 1,
+            "retrieval_metrics_version": 2,
             "judge_model": judge_model, "judge_reasoning_effort": judge_reasoning_effort,
             "judge_max_concurrent_requests": concurrency, "status": status,
         })
@@ -4239,7 +4341,7 @@ def update_manual_experiment_result_for_ui(
         _save_experiment_data(project_id, {
             **data, "results": current, "group_summary_rows": group_summary,
             "summary_rows": summary,
-            "retrieval_metrics_version": 1,
+            "retrieval_metrics_version": 2,
             "detail_rows": details,
         })
     except (OSError, TypeError, ValueError) as exc:
@@ -4293,12 +4395,23 @@ def export_experiment_results_for_ui(
         for row in summary_rows:
             if not row:
                 continue
-            if len(row) >= 12:
+            if retrieval_metrics_version >= 2 and len(row) >= 13:
+                summaries[str(row[0])] = {
+                    "answer_model": row[1], "judge_model": row[4],
+                    "question_count": row[5], "correct_total": row[6],
+                    "partial_count": row[7], "accuracy": row[8],
+                    "evidence_hit_rate": row[9],
+                    "evidence_recall_rate": row[10],
+                    "evidence_precision": row[11],
+                    "document_hit_rate": row[12],
+                }
+            elif len(row) >= 12:
                 summaries[str(row[0])] = {
                     "answer_model": row[1], "judge_model": row[4],
                     "question_count": row[5], "correct_total": row[6],
                     "partial_count": row[7], "accuracy": row[8],
                     "evidence_hit_rate": row[9] if retrieval_metrics_version else None,
+                    "evidence_recall_rate": None,
                     "evidence_precision": row[10] if retrieval_metrics_version else None,
                     "document_hit_rate": row[11] if retrieval_metrics_version else None,
                 }
@@ -4307,6 +4420,7 @@ def export_experiment_results_for_ui(
                     "answer_model": row[1], "judge_model": row[4],
                     "question_count": row[5], "correct_total": row[6],
                     "accuracy": row[7], "evidence_hit_rate": None,
+                    "evidence_recall_rate": None,
                     "evidence_precision": None, "document_hit_rate": None,
                 }
             elif len(row) >= 9:
@@ -4314,6 +4428,7 @@ def export_experiment_results_for_ui(
                     "answer_model": row[1], "judge_model": row[2],
                     "question_count": row[3], "correct_total": row[4],
                     "accuracy": row[5], "evidence_hit_rate": None,
+                    "evidence_recall_rate": None,
                     "evidence_precision": None, "document_hit_rate": None,
                 }
             else:
@@ -4323,13 +4438,14 @@ def export_experiment_results_for_ui(
                     "question_count": row[3] if len(row) >= 8 else row[1] if len(row) > 1 else 0,
                     "accuracy": row[4] if len(row) >= 8 else row[2] if len(row) > 2 else None,
                     "evidence_hit_rate": None,
+                    "evidence_recall_rate": None,
                     "evidence_precision": None,
                     "document_hit_rate": None,
                 }
         result_fields = (
             "number", "question", "document", "expected_answer", "actual_answer",
             "answer_model", "judge_model", "score", "passed", "reason",
-            "evidence_hit", "evidence_precision", "document_hit",
+            "evidence_hit", "evidence_recall", "evidence_precision", "document_hit",
             "answer_reasoning_effort", "judge_reasoning_effort",
             "manual_judgment", "verification_enabled", "first_passed", "first_reason",
             "verification_passed", "verification_reason", "verification_changed",
@@ -4356,6 +4472,7 @@ def export_experiment_results_for_ui(
                 partial_count = sum(_result_score(result) == 1 for result in group_results)
                 accuracy = sum(_result_score(result) for result in group_results) / (2 * question_count)
                 evidence_hit_rate = _mean_result_metric(group_results, "evidence_hit")
+                evidence_recall_rate = _mean_result_metric(group_results, "evidence_recall")
                 evidence_precision = _mean_result_metric(group_results, "evidence_precision")
                 document_hit_rate = _mean_result_metric(group_results, "document_hit")
             else:
@@ -4382,6 +4499,7 @@ def export_experiment_results_for_ui(
                         return None
 
                 evidence_hit_rate = rate(saved_summary.get("evidence_hit_rate"))
+                evidence_recall_rate = rate(saved_summary.get("evidence_recall_rate"))
                 evidence_precision = rate(saved_summary.get("evidence_precision"))
                 document_hit_rate = rate(saved_summary.get("document_hit_rate"))
             summary = {
@@ -4396,6 +4514,7 @@ def export_experiment_results_for_ui(
                 "correct_total": f"{correct_count} / {question_count}",
                 "accuracy": accuracy,
                 "evidence_hit_rate": evidence_hit_rate,
+                "evidence_recall_rate": evidence_recall_rate,
                 "evidence_precision": evidence_precision,
                 "document_hit_rate": document_hit_rate,
             }
@@ -4433,11 +4552,12 @@ def export_experiment_results_for_ui(
             "correct_total": f"{total_correct} / {total_questions}",
             "accuracy": (weighted_metric("accuracy") or 0.0) if total_questions else 0.0,
             "evidence_hit_rate": weighted_metric("evidence_hit_rate"),
+            "evidence_recall_rate": weighted_metric("evidence_recall_rate"),
             "evidence_precision": weighted_metric("evidence_precision"),
             "document_hit_rate": weighted_metric("document_hit_rate"),
         }
         payload = {
-            "schema_version": 5,
+            "schema_version": 6,
             "project": {"project_id": project_id, "name": project.get("name", "")},
             "max_concurrent_requests": experiment.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
             "evaluation": {
@@ -4459,7 +4579,7 @@ def export_experiment_results_for_ui(
             payload,
         )
         compact_payload = {
-            "schema_version": 3,
+            "schema_version": 4,
             "format": "manual-graphrag-experiment-summary",
             "project": {"project_id": project_id, "name": project.get("name", "")},
             "max_concurrent_requests": experiment.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
@@ -4720,7 +4840,7 @@ def evaluate_experiment_project_answers_for_ui(
         updated = save_experiment_project(project["experiment_project_id"], {
             "pending_answers": pending_answers, "results": results,
             "group_summary_rows": group_summary, "summary_rows": summary,
-            "retrieval_metrics_version": 1,
+            "retrieval_metrics_version": 2,
             "detail_rows": details, "judge_model": judge_model,
             "verification_enabled": bool(verification_enabled),
             "judge_reasoning_effort": judge_reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT,
@@ -4839,8 +4959,7 @@ def run_experiment_project_for_ui(
     try:
         updated = save_experiment_project(project_id, {
             "results": all_results, "summary_rows": summary_rows,
-            "retrieval_metrics_version": 1,
-            "retrieval_metrics_version": 1,
+            "retrieval_metrics_version": 2,
             "detail_rows": detail_rows, "judge_model": judge_model,
             "judge_reasoning_effort": judge_reasoning_effort or DEFAULT_JUDGE_REASONING_EFFORT,
             "max_concurrent_requests": int(max_concurrent_requests), "status": status,
@@ -5365,7 +5484,7 @@ def human_review_results_for_ui(
             group_items = bucket["items"]
             row: list[Any] = [bucket["name"], len(group_items)]
             for source_name in (
-                "evidence_hit", "evidence_precision", "document_hit",
+                "evidence_hit", "evidence_recall", "evidence_precision", "document_hit",
             ):
                 values: list[float] = []
                 for item in group_items:
@@ -5600,110 +5719,6 @@ def next_document(
     return switch_document(1, documents, chunks, active)
 
 
-def schema_documents_for_ui(
-    documents: list[dict[str, Any]] | None,
-) -> dict[str, Any]:
-    names = [
-        str(document.get("file_name") or "")
-        for document in (documents or [])
-        if document.get("file_name")
-    ]
-    return gr.update(value=[[True, name] for name in names])
-
-
-def _selected_schema_documents(rows: Any) -> list[str]:
-    if isinstance(rows, dict) and "data" in rows:
-        rows = rows["data"]
-    elif hasattr(rows, "values") and hasattr(rows.values, "tolist"):
-        rows = rows.values.tolist()
-    if not isinstance(rows, list):
-        return []
-    return list(dict.fromkeys(
-        str(row[1])
-        for row in rows
-        if isinstance(row, (list, tuple))
-        and len(row) >= 2
-        and row[0] is True
-        and row[1]
-    ))
-
-
-def _select_schema_planning_chunks(
-    chunks: list[TextChunk], document_rows: Any
-) -> tuple[list[TextChunk], list[str], int]:
-    if not chunks:
-        raise ValueError("請先在 PDF 頁面解析並產生 chunks")
-    selected = _selected_schema_documents(document_rows)
-    if not selected:
-        raise ValueError("請至少勾選一份用於規劃 Schema 的 PDF")
-    available_documents = {chunk.document for chunk in chunks}
-    unknown = [document for document in selected if document not in available_documents]
-    if unknown:
-        unknown_text = "、".join(unknown)
-        raise ValueError(f"找不到選取的 PDF：{unknown_text}")
-    selected_set = set(selected)
-    selected_chunks = [
-        chunk for chunk in chunks if chunk.document in selected_set
-    ]
-    page_count = len({
-        (chunk.document, page)
-        for chunk in selected_chunks
-        for page in chunk.pages
-    })
-    return selected_chunks, selected, page_count
-
-
-def plan_schema_for_ui(
-    model_endpoint: str,
-    api_key: str,
-    llm_model: str,
-    temperature: float,
-    schema_granularity: str,
-    max_concurrent_requests: int,
-    document_rows: Any,
-    chunks: list[TextChunk],
-    run_control: RunControl,
-    reasoning_effort: str | None = None,
-    progress=gr.Progress(),
-) -> tuple[str, str]:
-    if not llm_model:
-        return "❌ 請先勾選並選擇 Schema 規劃 LLM。", ""
-    run_control.reset()
-    try:
-        planning_chunks, planned_documents, page_count = _select_schema_planning_chunks(
-            chunks, document_rows
-        )
-        plan = plan_graph_schema(
-            model_endpoint,
-            api_key,
-            llm_model,
-            planning_chunks,
-            float(temperature),
-            lambda value, description: progress(value, desc=description),
-            schema_granularity,
-            int(max_concurrent_requests),
-            control=run_control,
-            **_reasoning_effort_kwargs(llm_model, reasoning_effort),
-        )
-    except RunCancelled:
-        return "⏹ 已停止（使用者中止 Schema 規劃）。", ""
-    except ValueError as exc:
-        return f"❌ {exc}", ""
-    document_text = "、".join(planned_documents)
-    scope_note = (
-        f"{len(planned_documents)} 份 PDF（{document_text}）的全部 {page_count} 頁"
-    )
-    note = (
-        f"✅ 已使用 {llm_model} 規劃 schema；參考 {scope_note}、"
-        f"{plan.analyzed_chunks} 個 chunk，"
-        f"共 {plan.batch_count} 批、{plan.merge_rounds} 輪整合。"
-        f"粒度：{schema_granularity}。"
-        f"最大並行請求數：{int(max_concurrent_requests)}。"
-        "請確認或編輯後再進行抽取。"
-    )
-    return note, json.dumps(plan.schema, ensure_ascii=False, indent=2)
-
-
 def extract_graph_for_ui(
     model_endpoint: str,
     api_key: str,
@@ -5718,6 +5733,7 @@ def extract_graph_for_ui(
     chunk_overlap: int = 0,
     schema_granularity: str = "平衡",
     reasoning_effort: str | None = None,
+    graph_partition_mode: str = "merged",
     progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], list[list[object]], dict[str, Any]]:
     if not llm_model:
@@ -5730,18 +5746,44 @@ def extract_graph_for_ui(
             if not isinstance(raw_schema, dict):
                 raise ValueError("schema 必須是 JSON 物件")
             schema = validate_schema(raw_schema)
-        extraction = extract_graph(
-            model_endpoint,
-            api_key,
-            llm_model,
-            chunks,
-            schema,
-            float(temperature),
-            int(max_concurrent_requests),
-            lambda value, description: progress(value, desc=description),
-            control=run_control,
-            **_reasoning_effort_kwargs(llm_model, reasoning_effort),
-        )
+        extraction_progress = lambda value, description: progress(value, desc=description)
+        if graph_partition_mode == "per_document":
+            if any(not chunk.document_id for chunk in chunks):
+                raise ValueError("文件分區模式需要每份 PDF 都有 document_id；請重新解析文件")
+            chunks_by_document: dict[tuple[str, str], list[TextChunk]] = {}
+            for chunk in chunks:
+                chunks_by_document.setdefault((chunk.document_id, chunk.document), []).append(chunk)
+            extracted = []
+            for index, ((document_id, document_name), document_chunks) in enumerate(
+                chunks_by_document.items(), start=1,
+            ):
+                def document_progress(value, description, *, current=index):
+                    fraction = ((current - 1) + float(value)) / max(len(chunks_by_document), 1)
+                    extraction_progress(fraction, f"文件 {current}/{len(chunks_by_document)}：{description}")
+                extracted.append(extract_graph(
+                    model_endpoint, api_key, llm_model, document_chunks, schema,
+                    float(temperature), int(max_concurrent_requests), document_progress,
+                    control=run_control,
+                    **_reasoning_effort_kwargs(llm_model, reasoning_effort),
+                ))
+            extraction = GraphExtraction(
+                [item for result in extracted for item in result.entities],
+                [item for result in extracted for item in result.relationships],
+                sum(result.processed_chunks for result in extracted),
+            )
+        else:
+            extraction = extract_graph(
+                model_endpoint,
+                api_key,
+                llm_model,
+                chunks,
+                schema,
+                float(temperature),
+                int(max_concurrent_requests),
+                extraction_progress,
+                control=run_control,
+                **_reasoning_effort_kwargs(llm_model, reasoning_effort),
+            )
     except RunCancelled:
         return "⏹ 已停止（使用者中止抽取）。", [], [], {}
     except json.JSONDecodeError:
@@ -5768,11 +5810,10 @@ def extract_graph_for_ui(
         ]
         for item in extraction.relationships
     ]
-    run_id = str(uuid4())
     document_name = "、".join(doc.get("file_name", "") for doc in (documents or []))
     graph_state = {
-        "run_id": run_id,
         "document": document_name,
+        "graph_partition_mode": graph_partition_mode or "merged",
         "llm_model": llm_model,
         "temperature": float(temperature),
         "max_concurrent_requests": int(max_concurrent_requests),
@@ -5797,7 +5838,9 @@ def extract_graph_for_ui(
     status = (
         f"✅ 已處理 {extraction.processed_chunks} 個 chunk，抽取 "
         f"{len(extraction.entities)} 個實體與 "
-        f"{len(extraction.relationships)} 筆關係（最大並行請求數：{int(max_concurrent_requests)}）。請確認結果後進行 Embedding 並匯入 Neo4j。"
+        f"{len(extraction.relationships)} 筆關係（圖譜範圍："
+        f"{'每份文件獨立' if graph_partition_mode == 'per_document' else '所有文件合併'}；"
+        f"最大並行請求數：{int(max_concurrent_requests)}）。請確認結果後進行 Embedding 並匯入 Neo4j。"
     )
     return status, entity_rows, relationship_rows, graph_state
 
@@ -5844,6 +5887,7 @@ def _build_graph_evidence(
         document = str(item.get("document", ""))
         evidence.append({
             "evidence_id": f"chunk-{number}", "kind": "原文",
+            "document_id": str(item.get("document_id", "")),
             "name": "", "source": "", "target": "",
             "text": str(item.get("text", "")),
             "source_pages": item.get("pages", []),
@@ -5858,8 +5902,10 @@ def _build_graph_evidence(
         })
     for index, item in enumerate(entities):
         for source_index, sources in enumerate(source_variants(item)):
+            document_id = str((sources.get("source_references") or [{}])[0].get("document_id", ""))
             evidence.append({
                 "evidence_id": f"entity-{index}-{source_index}", "kind": "實體",
+                "document_id": document_id,
                 "name": item.get("name", ""), "source": "", "target": "",
                 "text": "實體：{}；類型：{}；說明：{}".format(
                     item.get("name", ""), item.get("type", ""), item.get("description", "")
@@ -5868,8 +5914,10 @@ def _build_graph_evidence(
             })
     for index, item in enumerate(relationships):
         for source_index, sources in enumerate(source_variants(item)):
+            document_id = str((sources.get("source_references") or [{}])[0].get("document_id", ""))
             evidence.append({
                 "evidence_id": f"relationship-{index}-{source_index}",
+                "document_id": document_id,
                 "kind": "關係", "name": "",
                 "source": item.get("source", ""), "target": item.get("target", ""),
                 "text": "關係：{} -[{}]-> {}；說明：{}".format(
@@ -5956,13 +6004,23 @@ def import_graph_for_ui(
     embedding_model: str,
     graph_state: dict[str, Any],
     max_embedding_concurrency: int = EMBEDDING_MAX_CONCURRENCY,
+    selected_graph_partition_mode: str | None = None,
     progress=gr.Progress(),
 ) -> tuple[str, dict[str, Any]]:
-    if not graph_state or not graph_state.get("run_id"):
+    if not graph_state or not (
+        graph_state.get("document")
+        and ("entities" in graph_state or graph_state.get("graph_data_file"))
+    ):
         return "❌ 請先完成知識圖譜抽取。", graph_state or {}
     if not (embedding_model or "").strip():
         return "❌ 請選擇 Embedding 模型。", graph_state
-    updated_state = dict(graph_state)
+    updated_state = deepcopy(graph_state)
+    stored_partition_mode = updated_state.get("graph_partition_mode", "merged")
+    if selected_graph_partition_mode and selected_graph_partition_mode != stored_partition_mode:
+        return (
+            "❌ 圖譜範圍設定與目前抽取結果不一致；請重新執行「抽取實體與關係」。",
+            updated_state,
+        )
     updated_state["embedding_model"] = embedding_model.strip()
     try:
         progress(0, desc="準備向量證據…")
@@ -5976,6 +6034,53 @@ def import_graph_for_ui(
             updated_state["relationships"],
             updated_state.get("chunks", []),
         )
+        partitioned = updated_state.get("graph_partition_mode") == "per_document"
+        if partitioned:
+            document_names: dict[str, str] = {}
+            for chunk in updated_state.get("chunks", []):
+                document_id = str(chunk.get("document_id", ""))
+                document_name = str(chunk.get("document", ""))
+                if document_id and document_name:
+                    document_names[document_id] = document_name
+            if not document_names:
+                raise ValueError("文件分區模式需要每份文件都有 document_id，請重新解析 PDF 後再抽取")
+            graph_documents = [
+                {
+                    "document_id": document_id, "file_name": name,
+                    "graph_partition_mode": "per_document",
+                }
+                for document_id, name in document_names.items()
+            ]
+            for item in [*updated_state["entities"], *updated_state["relationships"], *evidence]:
+                if not item.get("document_id"):
+                    references = item.get("source_references") or []
+                    document_ids = list(dict.fromkeys(
+                        str(reference.get("document_id", ""))
+                        for reference in references if reference.get("document_id")
+                    ))
+                    if len(document_ids) == 1:
+                        item["document_id"] = document_ids[0]
+                if item.get("document_id"):
+                    item["evidence_id"] = (
+                        f"{item['document_id']}:{item['evidence_id']}"
+                        if "evidence_id" in item and not str(item["evidence_id"]).startswith(
+                            f"{item['document_id']}:"
+                        ) else item.get("evidence_id")
+                    )
+            invalid_items = [
+                item for item in [*updated_state["entities"], *updated_state["relationships"], *evidence]
+                if str(item.get("document_id", "")) not in document_names
+            ]
+            if invalid_items:
+                raise ValueError("抽取結果缺少有效的文件 document_id，請重新執行抽取")
+        else:
+            graph_documents = [{
+                "document_id": "",
+                "file_name": updated_state.get("document", ""),
+                "graph_partition_mode": "merged",
+            }]
+            for item in [*updated_state["entities"], *updated_state["relationships"], *evidence]:
+                item["document_id"] = ""
         if not evidence:
             raise ValueError("沒有可建立向量索引的原文、實體或關係")
 
@@ -5984,7 +6089,6 @@ def import_graph_for_ui(
             neo4j_database,
             neo4j_username,
             neo4j_password,
-            updated_state["run_id"],
             updated_state.get("document", ""),
             updated_state.get("llm_model", ""),
             updated_state.get("embedding_model", ""),
@@ -6003,6 +6107,7 @@ def import_graph_for_ui(
             ),
             len(evidence),
             progress=lambda value, description: progress(value, desc=description),
+            graph_documents=graph_documents,
         )
     except (KeyError, ValueError) as exc:
         updated_state["neo4j_imported"] = False
@@ -6062,7 +6167,7 @@ def answer_question_for_ui(
         should_rerank = retrieval_config.reranker["id"] != "disabled"
         evidence = search_graph_evidence(
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
-            graph_state["run_id"], question.strip(), question_vector,
+            question.strip(), question_vector,
             retrieval_config,
             model_base_url=model_endpoint,
             model_api_key=api_key,
@@ -6447,89 +6552,45 @@ def build_app() -> gr.Blocks:
                         )
 
             with gr.Tab("1-2 建圖", interactive=TEMP_UNLOCK_ALL_TABS) as graph_tab:
-                gr.Markdown("### 規劃並抽取知識圖譜")
+                gr.Markdown("### 從文件文本抽取知識圖譜")
                 with gr.Row():
                     pause_button = gr.Button("⏸ 暫停")
                     stop_button = gr.Button("⏹ 停止", variant="stop")
                 run_control_status = gr.Markdown(
-                    "「暫停」「停止」在下方「規劃 Schema」或「抽取實體與關係」"
+                    "「暫停」「停止」在下方「抽取實體與關係」"
                     "執行中都可使用：暫停只會停止送出新批次（已送出的批次仍會跑完）；"
                     "停止會盡快中止整個流程。"
                 )
+                # Retain old project-setting slots for loading/saving compatibility.
+                # Schema planning has been removed; extraction uses the model below.
+                graph_llm_model = gr.Dropdown(
+                    choices=llm_choices, value=preferred_llm, visible=False,
+                )
+                schema_granularity = gr.Radio(
+                    ["粗略", "平衡", "詳細"], value="平衡", visible=False,
+                )
+                max_concurrent_requests = gr.Number(
+                    value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1,
+                    precision=0, visible=False,
+                )
                 with gr.Group(elem_classes="graph-step-group"):
-                    gr.Markdown("#### ① 規劃 Schema（可選）")
+                    gr.Markdown("#### ① 抽取實體與關係")
                     gr.Markdown(
-                        "選擇 LLM，從上一頁產生的 chunks 規劃實體與關係類型。"
+                        "系統會直接閱讀已解析的文件文本並抽取實體與關係；不需要先規劃 Schema。"
+                        "檢查結果後，再手動匯入 Neo4j。"
                     )
-                    with gr.Row(equal_height=True):
-                        graph_llm_model = gr.Dropdown(
-                            choices=llm_choices,
-                            value=preferred_llm,
-                            allow_custom_value=False,
-                            label="Schema 規劃 LLM",
-                        )
-                        graph_reasoning_effort = gr.Dropdown(
-                            choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                            value=DEFAULT_REASONING_EFFORT, label="推理強度",
-                            visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
-                        )
-                        graph_temperature = gr.Slider(
-                            0, 2, value=0, step=0.1, label="Temperature",
-                            visible=str(preferred_llm or "").casefold() != GPT_6_LUNA_MODEL,
-                        )
-                        schema_granularity = gr.Radio(
-                            ["粗略", "平衡", "詳細"],
-                            value="平衡",
-                            label="Schema 粒度",
-                        )
-                        max_concurrent_requests = gr.Number(
-                            value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1, precision=0,
-                            label="最大並行請求數",
-                        )
-                    schema_documents = gr.Dataframe(
-                        headers=["使用", "PDF"],
-                        datatype=["bool", "str"],
-                        type="array",
-                        value=[],
-                        interactive=True,
-                        static_columns=[1],
-                        row_count=(0, "fixed"),
-                        col_count=(2, "fixed"),
-                        max_height=300,
-                        wrap=True,
-                        label="用於規劃 Schema 的 PDF",
-                    )
-                    gr.Markdown("預設全選；每份勾選的 PDF 都會讀取整份文件。")
-                    plan_schema_button = gr.Button(
-                        "分析文件並規劃 Schema（可選）", variant="primary"
-                    )
-                    plan_status = gr.Markdown("請先在 PDF 頁面解析並產生 chunks。")
-                    gr.HTML(
-                        """
-                        <style>
-                        .schema-scroll-editor .cm-content {
-                            font-size: 17px;
-                            line-height: 1.6;
-                        }
-                        </style>
-                        """,
-                        padding=False,
-                    )
-                    schema_editor = gr.Code(
-                        label="實體與關係 Schema（可編輯 JSON）",
-                        language="json",
-                        interactive=True,
-                        lines=18,
-                        max_lines=18,
-                        wrap_lines=False,
-                        elem_classes="schema-scroll-editor",
-                    )
-
-                with gr.Group(elem_classes="graph-step-group"):
-                    gr.Markdown("#### ② 抽取實體與關係")
-                    gr.Markdown(
-                        "若已規劃 Schema，可確認上方 JSON 後抽取；若跳過規劃並留白，"
-                        "系統會直接從文件抽取實體與關係。檢查結果後，再手動匯入 Neo4j。"
+                    graph_partition_mode = gr.Radio(
+                        choices=[
+                            ("所有文件合併為一張圖譜（現有模式）", "merged"),
+                            ("每份文件各自一張圖譜（以 document_id 分區）", "per_document"),
+                        ],
+                        value="merged",
+                        label="圖譜範圍",
+                        info=(
+                            "文件分區仍存放在同一個專案 Neo4j 資料庫。選擇每份文件各自成圖時，"
+                            "會逐文件抽取；基本向量、混合與 Agentic Search 1／3 僅供合併圖譜，"
+                            "Multi-Agent Search 1 僅供文件分區圖譜。"
+                        ),
                     )
                     with gr.Row(equal_height=True):
                         extraction_llm_model = gr.Dropdown(
@@ -6543,12 +6604,36 @@ def build_app() -> gr.Blocks:
                             value=DEFAULT_REASONING_EFFORT, label="推理強度",
                             visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
                         )
+                        graph_temperature = gr.Slider(
+                            0, 2, value=0, step=0.1, label="Temperature",
+                            visible=str(preferred_llm or "").casefold() != GPT_6_LUNA_MODEL,
+                        )
                         extraction_max_concurrent_requests = gr.Number(
                             value=DEFAULT_MAX_CONCURRENT_REQUESTS,
                             minimum=1,
                             precision=0,
                             label="最大並行請求數",
                         )
+                    gr.HTML(
+                        """
+                        <style>
+                        .schema-scroll-editor .cm-content {
+                            font-size: 17px;
+                            line-height: 1.6;
+                        }
+                        </style>
+                        """,
+                        padding=False,
+                    )
+                    schema_editor = gr.Code(
+                        label="自訂 Schema 約束（選填 JSON；留白時直接依文本抽取）",
+                        language="json",
+                        interactive=True,
+                        lines=18,
+                        max_lines=18,
+                        wrap_lines=False,
+                        elem_classes="schema-scroll-editor",
+                    )
                     generate_graph_button = gr.Button(
                         "抽取實體與關係", variant="primary"
                     )
@@ -6572,7 +6657,7 @@ def build_app() -> gr.Blocks:
                         )
 
                 with gr.Group(elem_classes="graph-step-group"):
-                    gr.Markdown("#### ③ Embedding 並匯入 Neo4j")
+                    gr.Markdown("#### ② Embedding 並匯入 Neo4j")
                     gr.Markdown(
                         "確認上方抽取結果後，選擇 Embedding 模型與最大並行請求數，再匯入 Neo4j。"
                     )
@@ -6602,8 +6687,8 @@ def build_app() -> gr.Blocks:
                 gr.Markdown(
                     "直接使用連線設定中的 Neo4j；預設查詢最近更新的建圖結果。"
                     "可選擇使用 LLM Reranker 重排候選，或啟用證據擴展。"
-                    "Agentic Search 以 LLM 選擇圖譜候選路徑；Agentic Search 2 可多輪提出受限唯讀 Cypher，"
-                    "程式會限定專案 run_id、圖譜標籤、每輪筆數、輪數與執行時間。"
+                    "Agentic Search 以 LLM 選擇圖譜候選路徑；Agentic Search 3 透過固定唯讀工具自主搜尋，"
+                    "程式會限定圖譜標籤、工具呼叫數與執行時間。"
                 )
                 with gr.Accordion("① 問答模型", open=True):
                     with gr.Row(equal_height=True):
@@ -6619,7 +6704,10 @@ def build_app() -> gr.Blocks:
                             visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
                         )
                 with gr.Accordion("② 檢索設定", open=True):
-                    retrieval_mode = gr.Radio(strategy_choices(), value="混合檢索", label="檢索模式")
+                    retrieval_mode = gr.Radio(
+                        strategy_choices_for_graph_modes("merged"),
+                        value="混合檢索", label="檢索模式",
+                    )
                     with gr.Row(equal_height=True):
                         top_k = gr.Slider(1, 50, value=8, step=1, label="Top K")
                         use_reranker = gr.Dropdown(
@@ -6786,7 +6874,7 @@ def build_app() -> gr.Blocks:
                                 visible=str(preferred_llm or "").casefold() == GPT_6_LUNA_MODEL,
                             )
                             evaluation_retrieval_mode = gr.Dropdown(
-                                strategy_choices(), value="混合檢索", label="檢索策略",
+                                strategy_choices_for_graph_modes("merged"), value="混合檢索", label="檢索策略",
                                 allow_custom_value=False,
                             )
                             evaluation_top_k = gr.Number(
@@ -6857,7 +6945,7 @@ def build_app() -> gr.Blocks:
                 gr.Markdown(
                     "使用「0 系統設定」或 1-4 存成並綁定到目前專案的題目集；建立一個或多個不同回答／檢索設定的實驗組，"
                     "先生成各組回答，再獨立評測並比較答案正確率、Evidence Hit Rate、"
-                    "Evidence Precision 與 Document Hit Rate。"
+                    "Evidence Recall、Evidence Precision 與 Document Hit Rate。"
                 )
                 experiment_questions_state = gr.State([])
                 experiment_groups_state = gr.State([])
@@ -6898,7 +6986,7 @@ def build_app() -> gr.Blocks:
                                     visible=False, scale=1,
                                 )
                                 group_retrieval = gr.Dropdown(
-                                    choices=strategy_choices(), value="混合檢索",
+                                    choices=strategy_choices_for_graph_modes("merged"), value="混合檢索",
                                     label="檢索策略", show_label=header, min_width=110, visible=False, scale=2,
                                 )
                                 group_top_k = gr.Number(value=8, minimum=1, maximum=50, precision=0, label="Top K", show_label=header, min_width=110, visible=False, scale=1)
@@ -6978,12 +7066,12 @@ def build_app() -> gr.Blocks:
                 with gr.Accordion("④ 實驗結果", open=True, visible=False) as experiment_results_accordion:
                     gr.Markdown("#### 實驗組總覽（跨題目集合併）")
                     experiment_group_overall_summary_table = gr.Dataframe(
-                        headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "題目集數"],
+                        headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Document Hit Rate", "題目集數"],
                         interactive=False, wrap=True,
                     )
                     gr.Markdown("#### 實驗組摘要（依題目集）")
                     experiment_summary_table = gr.Dataframe(
-                        headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
+                        headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
                         interactive=False, wrap=True,
                     )
                     gr.Markdown("#### 逐題結果")
@@ -7061,10 +7149,10 @@ def build_app() -> gr.Blocks:
                     with gr.Column(visible=False) as experiment_project_members_table_column:
                         experiment_project_members_table = gr.Dataframe(
                             headers=[
-                                "專案", "專案 ID", "建立者", "文件數", "Chunk 數", "問題集題數",
+                                "專案", "專案 ID", "建立者", "文件數", "圖譜模式", "Chunk 數", "問題集題數",
                                 "Chunk Size", "Overlap", "Schema 粒度", "Neo4j Database", "連線結果",
                             ],
-                            datatype=["str", "str", "str", "number", "number", "number", "number", "number", "str", "str", "str"],
+                            datatype=["str", "str", "str", "number", "str", "number", "number", "number", "number", "str", "str", "str"],
                             interactive=False, wrap=True,
                         )
                 with gr.Accordion("③ 成員專案連線測試", open=True, visible=False) as experiment_connection_accordion:
@@ -7102,7 +7190,7 @@ def build_app() -> gr.Blocks:
                                         visible=False, scale=1,
                                     )
                                     group_retrieval = gr.Dropdown(
-                                        choices=strategy_choices(), value="混合檢索",
+                                        choices=strategy_choices_for_graph_modes("merged"), value="混合檢索",
                                         label="檢索策略", show_label=header, min_width=110, visible=False, scale=2,
                                     )
                                     group_top_k = gr.Number(
@@ -7183,12 +7271,12 @@ def build_app() -> gr.Blocks:
                     with gr.Accordion("⑥ 實驗結果", open=True, visible=False) as experiment_project_results_accordion:
                         gr.Markdown("#### 實驗組總覽（跨成員專案與題目集合併）")
                         experiment_project_group_summary_table = gr.Dataframe(
-                            headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案數", "題目集數"],
+                            headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Document Hit Rate", "成員專案數", "題目集數"],
                             interactive=False, wrap=True,
                         )
                         gr.Markdown("#### 各成員專案／題目集統計")
                         experiment_project_summary_table = gr.Dataframe(
-                            headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
+                            headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
                             interactive=False, wrap=True,
                         )
                         gr.Markdown("#### 逐題結果")
@@ -7293,7 +7381,7 @@ def build_app() -> gr.Blocks:
                     with gr.Accordion("② 檢索指標", open=True):
                         gr.Markdown("依該次執行中各實驗組的全部題目計算，不限人工抽樣題。")
                         human_review_retrieval_summary_table = gr.Dataframe(
-                            headers=["實驗組", "總測試題數", "Evidence Hit Rate", "Evidence Precision", "Document Hit Rate"],
+                            headers=["實驗組", "總測試題數", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Document Hit Rate"],
                             interactive=False, wrap=True,
                         )
                     with gr.Accordion("③ AI／人工評分對照", open=True):
@@ -8195,9 +8283,10 @@ def build_app() -> gr.Blocks:
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor, graph_reasoning_effort,
+            top_k, schema_editor,
             extraction_reasoning_effort, answer_reasoning_effort,
             retrieval_strategy_params_state,
+            graph_partition_mode,
         ]
         project_load_outputs = [
             project_state, project_status,
@@ -8214,13 +8303,12 @@ def build_app() -> gr.Blocks:
             documents_table, remove_document_selector,
             chunk_table, page_status,
             entity_table, relationship_table, build_status, import_status,
-            graph_reasoning_effort, extraction_reasoning_effort,
+            extraction_reasoning_effort,
             answer_reasoning_effort, retrieval_strategy_params_state,
+            graph_partition_mode,
             *retrieval_strategy_parameter_controls,
         ]
-        for effort_control in [
-            graph_reasoning_effort, extraction_reasoning_effort, answer_reasoning_effort,
-        ]:
+        for effort_control in [extraction_reasoning_effort, answer_reasoning_effort]:
             effort_control.input(
                 save_project_for_ui, inputs=project_setting_inputs,
                 outputs=[project_state, project_status], show_progress="hidden",
@@ -8327,18 +8415,15 @@ def build_app() -> gr.Blocks:
                      embedding_test_button, embedding_list_button, embedding_connection_status],
             show_progress="hidden",
         )
-        load_project_event.success(
-            schema_documents_for_ui,
-            inputs=documents_state,
-            outputs=schema_documents,
-            show_progress="hidden",
-        )
-        initialize_project_event.success(
-            schema_documents_for_ui,
-            inputs=documents_state,
-            outputs=schema_documents,
-            show_progress="hidden",
-        )
+        for project_load_event in (
+            import_load_event, load_project_event, initialize_project_event,
+        ):
+            project_load_event.success(
+                _strategy_dropdown_updates_for_graph_mode,
+                inputs=[graph_partition_mode, retrieval_mode, evaluation_retrieval_mode],
+                outputs=[retrieval_mode, evaluation_retrieval_mode],
+                show_progress="hidden",
+            )
         delete_project_button.click(
             request_project_deletion_for_ui,
             inputs=project_selector,
@@ -8390,6 +8475,7 @@ def build_app() -> gr.Blocks:
             graph_llm_model, graph_embedding_model,
             answer_model, chunk_size, chunk_overlap,
             graph_temperature, schema_granularity,
+            graph_partition_mode,
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
@@ -8399,6 +8485,29 @@ def build_app() -> gr.Blocks:
             component.input(
                 save_project_for_ui, inputs=project_setting_inputs,
                 outputs=[project_state, project_status], show_progress="hidden",
+            )
+
+        graph_mode_strategy_controls = [
+            retrieval_mode, evaluation_retrieval_mode,
+            *[row[3] for row in experiment_group_rows],
+        ]
+        graph_partition_mode.change(
+            _strategy_dropdown_updates_for_graph_mode,
+            inputs=[graph_partition_mode, *graph_mode_strategy_controls],
+            outputs=graph_mode_strategy_controls,
+            show_progress="hidden",
+        )
+        for strategy_control, reranker_control, expansion_control in [
+            (retrieval_mode, use_reranker, expand_evidence),
+            (evaluation_retrieval_mode, evaluation_use_reranker, evaluation_expand_evidence),
+            *[(row[3], row[5], row[6]) for row in experiment_group_rows],
+            *[(row[3], row[5], row[6]) for row in experiment_project_group_rows],
+        ]:
+            strategy_control.change(
+                _postprocessing_control_updates,
+                inputs=[strategy_control, reranker_control, expansion_control],
+                outputs=[reranker_control, expansion_control],
+                show_progress="hidden",
             )
 
         neo4j_test_event = neo4j_test_button.click(
@@ -8514,7 +8623,6 @@ def build_app() -> gr.Blocks:
                 show_progress="hidden",
             )
         for model_field, effort_field in [
-            (graph_llm_model, graph_reasoning_effort),
             (extraction_llm_model, extraction_reasoning_effort),
             (answer_model, answer_reasoning_effort),
             (evaluation_generation_model, evaluation_generation_effort),
@@ -8532,8 +8640,8 @@ def build_app() -> gr.Blocks:
                 inputs=[entity_table, relationship_table], outputs=extraction_results_section,
                 show_progress="hidden",
             )
-        graph_llm_model.change(
-            temperature_visibility, inputs=graph_llm_model, outputs=graph_temperature,
+        extraction_llm_model.change(
+            temperature_visibility, inputs=extraction_llm_model, outputs=graph_temperature,
             show_progress="hidden",
         )
         for row in experiment_project_group_rows:
@@ -8606,11 +8714,6 @@ def build_app() -> gr.Blocks:
         preview_event.then(
             save_project_for_ui, inputs=project_setting_inputs,
             outputs=[project_state, project_status], show_progress="hidden",
-        ).then(
-            schema_documents_for_ui,
-            inputs=documents_state,
-            outputs=schema_documents,
-            show_progress="hidden",
         )
         remove_document_event = remove_document_button.click(
             remove_document_for_ui,
@@ -8630,11 +8733,6 @@ def build_app() -> gr.Blocks:
         remove_document_event.then(
             save_project_for_ui, inputs=project_setting_inputs,
             outputs=[project_state, project_status], show_progress="hidden",
-        ).then(
-            schema_documents_for_ui,
-            inputs=documents_state,
-            outputs=schema_documents,
-            show_progress="hidden",
         )
         previous_button.click(
             previous_document,
@@ -8645,22 +8743,6 @@ def build_app() -> gr.Blocks:
             next_document,
             inputs=[documents_state, chunk_state, active_preview_state],
             outputs=[active_preview_state, active_chunks_state, chunk_table, page_status],
-        )
-        plan_schema_button.click(
-            plan_schema_for_ui,
-            inputs=[
-                schema_model_endpoint,
-                schema_model_key,
-                graph_llm_model,
-                graph_temperature,
-                schema_granularity,
-                max_concurrent_requests,
-                schema_documents,
-                chunk_state,
-                run_control_state,
-                graph_reasoning_effort,
-            ],
-            outputs=[plan_status, schema_editor],
         )
         extraction_event = generate_graph_button.click(
             extract_graph_for_ui,
@@ -8678,6 +8760,7 @@ def build_app() -> gr.Blocks:
                 chunk_overlap,
                 schema_granularity,
                 extraction_reasoning_effort,
+                graph_partition_mode,
             ],
             outputs=[build_status, entity_table, relationship_table, graph_state],
             show_progress="minimal",
@@ -8710,6 +8793,7 @@ def build_app() -> gr.Blocks:
                 graph_embedding_model,
                 graph_state,
                 embedding_max_concurrency,
+                graph_partition_mode,
             ],
             outputs=[import_status, graph_state],
             show_progress="full",

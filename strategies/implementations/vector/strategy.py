@@ -37,7 +37,7 @@ class VectorRetrievalStrategy:
             query_vector=context.embedding,
             top_k=config.params.get("candidate_top_k", config.top_k),
             effective_search_ratio=config.params.get("effective_search_ratio", 3),
-            query_params={"run_id": context.run_id},
+            query_params={},
         ))
         return [
             dict(item.content) for item in result.items

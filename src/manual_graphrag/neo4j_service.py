@@ -201,8 +201,23 @@ def load_latest_graph(
         .source_documents, .source_references_json
     }) AS entities
     OPTIONAL MATCH (source:ExtractedEntity)-[relation:EXTRACTED_RELATION]->(target:ExtractedEntity)
-    WHERE relation.run_id = document.run_id
-    RETURN document.run_id AS run_id, document.file_name AS document,
+    WHERE (
+        coalesce(
+            document.graph_partition_mode,
+            CASE WHEN coalesce(document.document_id, '') <> ''
+                 THEN 'per_document' ELSE 'merged' END
+        ) = 'merged'
+        AND (source)-[:IN_DOCUMENT]->(document)
+        AND (target)-[:IN_DOCUMENT]->(document)
+    ) OR (
+        coalesce(
+            document.graph_partition_mode,
+            CASE WHEN coalesce(document.document_id, '') <> ''
+                 THEN 'per_document' ELSE 'merged' END
+        ) = 'per_document'
+        AND relation.document_id = document.document_id
+    )
+    RETURN document.file_name AS document,
            document.embedding_model AS embedding_model,
            document.embedding_dimensions AS embedding_dimensions,
            document.vector_index_name AS vector_index_name, entities,
@@ -257,8 +272,7 @@ def load_latest_graph_metadata(
     MATCH (document:GraphDocument)
     WHERE coalesce(document.import_status, 'complete') = 'complete'
     WITH document ORDER BY document.updated_at DESC LIMIT 1
-    RETURN document.run_id AS run_id,
-           document.file_name AS document,
+    RETURN document.file_name AS document,
            document.embedding_model AS embedding_model,
            document.embedding_dimensions AS embedding_dimensions,
            document.vector_index_name AS vector_index_name
@@ -284,7 +298,6 @@ def search_graph_evidence(
     database: str,
     username: str,
     password: str,
-    run_id: str,
     question: str,
     embedding: list[float],
     config: RetrievalConfig,
@@ -297,19 +310,77 @@ def search_graph_evidence(
     config.validated()
     target_vector_index = vector_index_name(len(embedding))
     retrieval_top_k = config.params.get("candidate_top_k", config.top_k)
+
+    def document_ids_for(items: list[dict[str, Any]]) -> list[str]:
+        document_ids: list[str] = []
+        for item in items:
+            if "document_id" in item:
+                value = str(item.get("document_id") or "")
+                if value:
+                    document_ids.append(value)
+                continue
+            references = item.get("source_references")
+            if not isinstance(references, list):
+                try:
+                    references = json.loads(item.get("source_references_json") or "[]")
+                except (TypeError, json.JSONDecodeError):
+                    references = []
+            if isinstance(references, list):
+                document_ids.extend(
+                    str(reference.get("document_id", ""))
+                    for reference in references
+                    if isinstance(reference, dict) and reference.get("document_id")
+                )
+        return list(dict.fromkeys(document_ids))
     retrieval_query = """
     WITH node, score
-    WHERE node.run_id = $run_id
     RETURN node {
         .evidence_id, .kind, .name, .source, .target, .text, .source_pages,
-        .source_chunk_numbers, .source_documents, .source_references_json
+        .source_chunk_numbers, .source_documents, .source_references_json, .document_id
     } AS evidence, score
     """
     try:
         with _shared_driver(uri, username, password) as driver:
+            strategy_spec = RETRIEVAL_STRATEGIES.get_spec(config.strategy_id)
+            if len(strategy_spec.supported_graph_modes) < 2:
+                with driver.session(database=database.strip()) as session:
+                    def inspect_graph_mode():
+                        return session.run(
+                            """
+                            MATCH (document:GraphDocument)
+                            WITH count(document) AS document_count,
+                                 count(CASE WHEN coalesce(
+                                     document.graph_partition_mode,
+                                     CASE WHEN coalesce(document.document_id, '') <> ''
+                                          THEN 'per_document' ELSE 'merged' END
+                                 ) = 'per_document'
+                                            THEN 1 END) AS partitioned_count
+                            RETURN document_count, partitioned_count
+                            """
+                        ).single()
+
+                    graph_record = _retry_read(inspect_graph_mode)
+                document_count = int((graph_record or {}).get("document_count", 0))
+                partitioned_count = int((graph_record or {}).get("partitioned_count", 0))
+                graph_mode = "per_document" if partitioned_count else "merged"
+                if document_count and partitioned_count not in {0, document_count}:
+                    raise ValueError("圖譜內混有合併與文件分區的 GraphDocument，請重新匯入圖譜")
+                if graph_mode not in strategy_spec.supported_graph_modes:
+                    graph_mode_label = {
+                        "merged": "所有文件合併",
+                        "per_document": "每份文件分區",
+                    }.get(graph_mode, graph_mode)
+                    supported_labels = "、".join(
+                        "所有文件合併" if mode == "merged" else "每份文件分區"
+                        for mode in strategy_spec.supported_graph_modes
+                    )
+                    raise ValueError(
+                        f"檢索策略「{strategy_spec.label}」支援「{supported_labels}」圖譜；"
+                        f"目前專案是「{graph_mode_label}」圖譜，請改用相容策略。"
+                    )
             strategy = RETRIEVAL_STRATEGIES.get(config.strategy_id)
             context = RetrievalContext(
-                driver=driver, database=database.strip(), run_id=run_id,
+                driver=driver, database=database.strip(),
                 question=question, embedding=embedding,
                 vector_index_name=target_vector_index,
                 fulltext_index_name="graph_evidence_fulltext",
@@ -327,25 +398,26 @@ def search_graph_evidence(
             if expansion_id != "disabled" and selected:
                 with driver.session(database=database.strip()) as session:
                     def fetch_source_chunks(
-                        target_chunk_numbers: list[int],
+                        target_chunk_numbers: list[int], document_ids: list[str],
                     ) -> list[dict[str, Any]]:
                         if not target_chunk_numbers:
                             return []
                         records = session.run(
                             """
-                            MATCH (chunk:GraphEvidence {run_id: $run_id, kind: "原文"})
-                            WHERE any(
+                            MATCH (chunk:GraphEvidence {kind: "原文"})
+                            WHERE (size($document_ids) = 0 OR chunk.document_id IN $document_ids)
+                              AND any(
                                 number IN coalesce(chunk.source_chunk_numbers, [])
                                 WHERE number IN $chunk_numbers
                             )
                             RETURN chunk {
                                 .evidence_id, .kind, .name, .source, .target, .text,
                                 .source_pages, .source_chunk_numbers, .source_documents,
-                                .source_references_json
+                                .source_references_json, .document_id
                             } AS evidence
                             """,
-                            run_id=run_id,
                             chunk_numbers=target_chunk_numbers,
+                            document_ids=document_ids,
                         ).data()
                         chunks = [
                             _expanded_evidence(record["evidence"])
@@ -380,11 +452,14 @@ def search_graph_evidence(
                             number for item in selected if item.get("kind") != "原文"
                             for number in item.get("source_chunk_numbers", [])
                         ))
-                        source_chunks = fetch_source_chunks(graph_chunk_numbers)
+                        document_ids = document_ids_for(selected)
+                        source_chunks = fetch_source_chunks(graph_chunk_numbers, document_ids)
                         related_records = session.run(
                             """
-                            MATCH (candidate:GraphEvidence {run_id: $run_id})
-                            WHERE candidate.kind IN ['實體', '關係'] AND (
+                            MATCH (candidate:GraphEvidence)
+                            WHERE candidate.kind IN ['實體', '關係']
+                              AND (size($document_ids) = 0 OR candidate.document_id IN $document_ids)
+                              AND (
                                 candidate.name IN $names OR candidate.source IN $names
                                 OR candidate.target IN $names OR any(
                                     number IN coalesce(candidate.source_chunk_numbers, [])
@@ -394,13 +469,13 @@ def search_graph_evidence(
                             RETURN candidate {
                                 .evidence_id, .kind, .name, .source, .target, .text,
                                 .source_pages, .source_chunk_numbers, .source_documents,
-                                .source_references_json
+                                .source_references_json, .document_id
                             } AS evidence
                             LIMIT $top_k
                             """,
-                            run_id=run_id,
                             names=names,
                             chunk_numbers=chunk_numbers,
+                            document_ids=document_ids,
                             top_k=retrieval_top_k,
                         ).data()
                         selected_ids = {item.get("evidence_id", "") for item in selected}
@@ -419,7 +494,7 @@ def search_graph_evidence(
                             for number in item.get("source_chunk_numbers", [])
                         ))
                         selected.extend(
-                            item for item in fetch_source_chunks(related_chunk_numbers)
+                            item for item in fetch_source_chunks(related_chunk_numbers, document_ids)
                             if item.get("evidence_id", "") not in selected_ids
                         )
                     selected_ids = {item.get("evidence_id", "") for item in selected}
@@ -430,7 +505,8 @@ def search_graph_evidence(
                         if item.get("kind") != "原文"
                         for number in item.get("source_chunk_numbers", [])
                     ))
-                    source_chunks = fetch_source_chunks(graph_chunk_numbers)
+                    document_ids = document_ids_for(selected)
+                    source_chunks = fetch_source_chunks(graph_chunk_numbers, document_ids)
                     selected.extend(
                         item for item in source_chunks
                         if item.get("evidence_id", "") not in selected_ids
@@ -467,7 +543,6 @@ def import_extraction(
     database: str,
     username: str,
     password: str,
-    run_id: str,
     document_name: str,
     llm_model: str,
     embedding_model: str,
@@ -520,7 +595,6 @@ def import_extraction(
                 session.run("CALL db.awaitIndexes(300)").consume()
                 counts = session.execute_write(
                     _write_graph,
-                    run_id,
                     document_name,
                     llm_model,
                     embedding_model,
@@ -543,7 +617,6 @@ def import_extraction_batched(
     database: str,
     username: str,
     password: str,
-    run_id: str,
     document_name: str,
     llm_model: str,
     embedding_model: str,
@@ -553,6 +626,7 @@ def import_extraction_batched(
     evidence_batches: Iterable[list[dict[str, Any]]],
     total_evidence: int,
     progress=None,
+    graph_documents: list[dict[str, str]] | None = None,
 ) -> ImportSummary:
     """Write each already-embedded evidence batch in its own Neo4j transaction."""
     if not uri.strip():
@@ -607,18 +681,12 @@ def import_extraction_batched(
                 ).data()
                 if fulltext_indexes:
                     session.run("DROP INDEX graph_evidence_fulltext IF EXISTS").consume()
-                session.run(
-                    "CREATE INDEX graph_evidence_run_id_evidence_id IF NOT EXISTS "
-                    "FOR (e:GraphEvidence) ON (e.run_id, e.evidence_id)"
-                ).consume()
-                session.run(
-                    "CREATE INDEX extracted_entity_run_id_type_name IF NOT EXISTS "
-                    "FOR (e:ExtractedEntity) ON (e.run_id, e.type, e.name)"
-                ).consume()
-                session.run(
-                    "CREATE INDEX extracted_entity_run_id_name IF NOT EXISTS "
-                    "FOR (e:ExtractedEntity) ON (e.run_id, e.name)"
-                ).consume()
+                for obsolete_index in (
+                    "graph_evidence_run_id_evidence_id",
+                    "extracted_entity_run_id_type_name",
+                    "extracted_entity_run_id_name",
+                ):
+                    session.run(f"DROP INDEX `{obsolete_index}` IF EXISTS").consume()
                 session.run("CALL db.awaitIndexes(300)").consume()
                 if progress:
                     progress(0.06, "Neo4j 寫入索引就緒，開始寫入實體與關係…")
@@ -631,9 +699,8 @@ def import_extraction_batched(
                     _execute_write_with_retry(
                         driver,
                         database.strip(),
-                        _create_graph_document,
-                        run_id,
-                        document_name,
+                        _create_graph_documents,
+                        graph_documents or [{"document_id": "", "file_name": document_name}],
                         llm_model,
                         embedding_model,
                         schema,
@@ -646,7 +713,6 @@ def import_extraction_batched(
                             driver,
                             database.strip(),
                             _write_entity_batch,
-                            run_id,
                             entity_batch,
                         )
                     for relationship_batch in _list_batches(
@@ -656,33 +722,32 @@ def import_extraction_batched(
                             driver,
                             database.strip(),
                             _write_relationship_batch,
-                            run_id,
                             relationship_batch,
                         )
-                    entities_by_chunk: dict[int, list[dict[str, str]]] = {}
+                    entities_by_chunk: dict[tuple[str, int], list[dict[str, str]]] = {}
                     for entity in entities:
                         for chunk_number in entity.get("source_chunk_numbers", []):
                             try:
                                 normalized_chunk_number = int(chunk_number)
                             except (TypeError, ValueError):
                                 continue
-                            entities_by_chunk.setdefault(normalized_chunk_number, []).append({
+                            document_id = str(entity.get("document_id", ""))
+                            entities_by_chunk.setdefault((document_id, normalized_chunk_number), []).append({
                                 "name": str(entity.get("name", "")),
                                 "type": str(entity.get("type", "")),
+                                "document_id": document_id,
                             })
 
                     _execute_write_with_retry(
                         driver,
                         database.strip(),
                         _write_evidence_batch,
-                        run_id,
                         first_batch,
                     )
                     _execute_write_with_retry(
                         driver,
                         database.strip(),
                         _link_evidence_batch,
-                        run_id,
                         first_batch,
                         entities_by_chunk,
                     )
@@ -706,14 +771,12 @@ def import_extraction_batched(
                             driver,
                             database.strip(),
                             _write_evidence_batch,
-                            run_id,
                             batch,
                         )
                         _execute_write_with_retry(
                             driver,
                             database.strip(),
                             _link_evidence_batch,
-                            run_id,
                             batch,
                             entities_by_chunk,
                         )
@@ -739,7 +802,7 @@ def import_extraction_batched(
                     ).consume()
                     session.run("CALL db.awaitIndexes(300)").consume()
                     _execute_write_with_retry(
-                        driver, database.strip(), _complete_graph_import, run_id,
+                        driver, database.strip(), _complete_graph_import,
                     )
                 except Exception:
                     if initialized:
@@ -747,8 +810,7 @@ def import_extraction_batched(
                             while _execute_write_with_retry(
                                 driver,
                                 database.strip(),
-                                _delete_graph_run_batch,
-                                run_id,
+                                _delete_existing_graph_batch,
                             ):
                                 pass
                         except Exception:
@@ -782,7 +844,6 @@ def import_extraction_batched(
 
 def _write_graph(
     transaction: Any,
-    run_id: str,
     document_name: str,
     llm_model: str,
     embedding_model: str,
@@ -798,6 +859,7 @@ def _write_graph(
         return [
             {
                 **item,
+                "document_id": str(item.get("document_id", "")),
                 "source_references_json": json.dumps(
                     item.get("source_references", []), ensure_ascii=False
                 ),
@@ -818,17 +880,17 @@ def _write_graph(
 
     transaction.run(
         """
-        MERGE (document:GraphDocument {run_id: $run_id})
+        CREATE (document:GraphDocument)
         SET document.file_name = $document_name,
             document.llm_model = $llm_model,
             document.embedding_model = $embedding_model,
             document.embedding_dimensions = $embedding_dimensions,
             document.vector_index_name = $vector_index_name,
             document.schema_json = $schema_json,
+            document.graph_partition_mode = 'merged',
             document.import_status = $import_status,
             document.updated_at = datetime()
         """,
-        run_id=run_id,
         document_name=document_name,
         llm_model=llm_model,
         embedding_model=embedding_model,
@@ -839,10 +901,10 @@ def _write_graph(
     ).consume()
     entity_result = transaction.run(
         """
-        MATCH (document:GraphDocument {run_id: $run_id})
+        MATCH (document:GraphDocument)
         UNWIND $entities AS item
         MERGE (entity:ExtractedEntity {
-            run_id: $run_id,
+            document_id: item.document_id,
             type: item.type,
             name: item.name
         })
@@ -854,73 +916,68 @@ def _write_graph(
         MERGE (entity)-[:IN_DOCUMENT]->(document)
         RETURN count(entity) AS count
         """,
-        run_id=run_id,
         entities=entities,
     ).single()
     relationship_result = transaction.run(
         """
         UNWIND $relationships AS item
-        MATCH (source:ExtractedEntity {run_id: $run_id, name: item.source})
-        MATCH (target:ExtractedEntity {run_id: $run_id, name: item.target})
+        MATCH (source:ExtractedEntity {name: item.source})
+        MATCH (target:ExtractedEntity {name: item.target})
         WITH item, head(collect(source)) AS source, head(collect(target)) AS target
         MERGE (source)-[relation:EXTRACTED_RELATION {
-            run_id: $run_id,
             type: item.type
         }]->(target)
         SET relation.description = item.description,
+            relation.document_id = item.document_id,
             relation.source_chunk_numbers = item.source_chunk_numbers,
             relation.source_pages = item.source_pages,
             relation.source_documents = item.source_documents,
             relation.source_references_json = item.source_references_json
         RETURN count(relation) AS count
         """,
-        run_id=run_id,
         relationships=relationships,
     ).single()
     transaction.run(
         """
-        MATCH (document:GraphDocument {run_id: $run_id})
+        MATCH (document:GraphDocument)
         UNWIND $evidence AS item
-        MERGE (evidence:GraphEvidence {run_id: $run_id, evidence_id: item.evidence_id})
+        MERGE (evidence:GraphEvidence {evidence_id: item.evidence_id})
         SET evidence.kind = item.kind, evidence.name = item.name,
             evidence.source = item.source, evidence.target = item.target,
             evidence.text = item.text, evidence.source_pages = item.source_pages,
             evidence.source_chunk_numbers = item.source_chunk_numbers,
             evidence.source_documents = item.source_documents,
             evidence.source_references_json = item.source_references_json,
+            evidence.document_id = item.document_id,
             evidence.embedding = item.embedding
         MERGE (evidence)-[:IN_DOCUMENT]->(document)
         """,
-        run_id=run_id,
         evidence=evidence,
     ).consume()
     transaction.run(
         """
-        MATCH (evidence:GraphEvidence {run_id: $run_id, kind: '實體'})
-        MATCH (entity:ExtractedEntity {run_id: $run_id, name: evidence.name})
+        MATCH (evidence:GraphEvidence {kind: '實體'})
+        MATCH (entity:ExtractedEntity {name: evidence.name})
         MERGE (evidence)-[:REPRESENTS]->(entity)
         """,
-        run_id=run_id,
     ).consume()
     transaction.run(
         """
-        MATCH (evidence:GraphEvidence {run_id: $run_id, kind: '關係'})
-        MATCH (source:ExtractedEntity {run_id: $run_id, name: evidence.source})
-        MATCH (target:ExtractedEntity {run_id: $run_id, name: evidence.target})
+        MATCH (evidence:GraphEvidence {kind: '關係'})
+        MATCH (source:ExtractedEntity {name: evidence.source})
+        MATCH (target:ExtractedEntity {name: evidence.target})
         MERGE (evidence)-[:EVIDENCE_SOURCE]->(source)
         MERGE (evidence)-[:EVIDENCE_TARGET]->(target)
         """,
-        run_id=run_id,
     ).consume()
     transaction.run(
         """
-        MATCH (chunk:GraphEvidence {run_id: $run_id, kind: '原文'})
+        MATCH (chunk:GraphEvidence {kind: '原文'})
         UNWIND coalesce(chunk.source_chunk_numbers, []) AS chunk_number
-        MATCH (entity:ExtractedEntity {run_id: $run_id})
+        MATCH (entity:ExtractedEntity)
         WHERE chunk_number IN coalesce(entity.source_chunk_numbers, [])
         MERGE (chunk)-[:MENTIONS_ENTITY]->(entity)
         """,
-        run_id=run_id,
     ).consume()
     return {
         "entity_count": int(entity_result["count"]) if entity_result else 0,
@@ -949,7 +1006,6 @@ def _delete_existing_graph_batch(transaction: Any) -> int:
 
 def _create_graph_document(
     transaction: Any,
-    run_id: str,
     document_name: str,
     llm_model: str,
     embedding_model: str,
@@ -960,19 +1016,59 @@ def _create_graph_document(
     transaction.run(
         """
         CREATE (document:GraphDocument {
-            run_id: $run_id,
             file_name: $document_name,
             llm_model: $llm_model,
             embedding_model: $embedding_model,
             embedding_dimensions: $embedding_dimensions,
             vector_index_name: $vector_index,
             schema_json: $schema_json,
+            graph_partition_mode: 'merged',
             import_status: 'staging',
             updated_at: datetime()
         })
         """,
-        run_id=run_id,
         document_name=document_name,
+        llm_model=llm_model,
+        embedding_model=embedding_model,
+        embedding_dimensions=embedding_dimensions,
+        vector_index=vector_index,
+        schema_json=json.dumps(schema, ensure_ascii=False),
+    ).consume()
+
+
+def _create_graph_documents(
+    transaction: Any,
+    documents: list[dict[str, str]],
+    llm_model: str,
+    embedding_model: str,
+    schema: dict[str, Any],
+    embedding_dimensions: int,
+    vector_index: str,
+) -> None:
+    transaction.run(
+        """
+        UNWIND $documents AS item
+        CREATE (document:GraphDocument {
+            file_name: item.file_name,
+            llm_model: $llm_model,
+            embedding_model: $embedding_model,
+            embedding_dimensions: $embedding_dimensions,
+            vector_index_name: $vector_index,
+            schema_json: $schema_json,
+            graph_partition_mode: coalesce(
+                item.graph_partition_mode,
+                CASE WHEN coalesce(item.document_id, '') <> ''
+                     THEN 'per_document' ELSE 'merged' END
+            ),
+            import_status: 'staging',
+            updated_at: datetime()
+        })
+        SET document.document_id = CASE
+            WHEN coalesce(item.document_id, '') = '' THEN null
+            ELSE item.document_id
+        END
+        """,
+        documents=documents,
         llm_model=llm_model,
         embedding_model=embedding_model,
         embedding_dimensions=embedding_dimensions,
@@ -985,6 +1081,7 @@ def _with_source_references(items: list[dict[str, Any]]) -> list[dict[str, Any]]
     return [
         {
             **item,
+            "document_id": str(item.get("document_id", "")),
             "source_references_json": json.dumps(
                 item.get("source_references", []), ensure_ascii=False,
             ),
@@ -995,15 +1092,15 @@ def _with_source_references(items: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 def _write_entity_batch(
     transaction: Any,
-    run_id: str,
     entities: list[dict[str, Any]],
 ) -> int:
     result = transaction.run(
         """
-        MATCH (document:GraphDocument {run_id: $run_id})
         UNWIND $entities AS item
+        MATCH (document:GraphDocument)
+        WHERE coalesce(document.document_id, '') = item.document_id
         MERGE (entity:ExtractedEntity {
-            run_id: $run_id,
+            document_id: item.document_id,
             type: item.type,
             name: item.name
         })
@@ -1015,7 +1112,6 @@ def _write_entity_batch(
         MERGE (entity)-[:IN_DOCUMENT]->(document)
         RETURN count(entity) AS count
         """,
-        run_id=run_id,
         entities=_with_source_references(entities),
     ).single()
     return int(result["count"]) if result else 0
@@ -1023,27 +1119,25 @@ def _write_entity_batch(
 
 def _write_relationship_batch(
     transaction: Any,
-    run_id: str,
     relationships: list[dict[str, Any]],
 ) -> int:
     result = transaction.run(
         """
         UNWIND $relationships AS item
-        MATCH (source:ExtractedEntity {run_id: $run_id, name: item.source})
-        MATCH (target:ExtractedEntity {run_id: $run_id, name: item.target})
+        MATCH (source:ExtractedEntity {document_id: item.document_id, name: item.source})
+        MATCH (target:ExtractedEntity {document_id: item.document_id, name: item.target})
         WITH item, head(collect(source)) AS source, head(collect(target)) AS target
         MERGE (source)-[relation:EXTRACTED_RELATION {
-            run_id: $run_id,
             type: item.type
         }]->(target)
         SET relation.description = item.description,
+            relation.document_id = item.document_id,
             relation.source_chunk_numbers = item.source_chunk_numbers,
             relation.source_pages = item.source_pages,
             relation.source_documents = item.source_documents,
             relation.source_references_json = item.source_references_json
         RETURN count(relation) AS count
         """,
-        run_id=run_id,
         relationships=_with_source_references(relationships),
     ).single()
     return int(result["count"]) if result else 0
@@ -1051,37 +1145,37 @@ def _write_relationship_batch(
 
 def _write_evidence_batch(
     transaction: Any,
-    run_id: str,
     evidence: list[dict[str, Any]],
 ) -> None:
     evidence = _with_source_references(evidence)
     transaction.run(
         """
-        MATCH (document:GraphDocument {run_id: $run_id})
         UNWIND $evidence AS item
-        MERGE (evidence:GraphEvidence {run_id: $run_id, evidence_id: item.evidence_id})
+        MATCH (document:GraphDocument)
+        WHERE coalesce(document.document_id, '') = item.document_id
+        MERGE (evidence:GraphEvidence {evidence_id: item.evidence_id})
         SET evidence.kind = item.kind, evidence.name = item.name,
             evidence.source = item.source, evidence.target = item.target,
             evidence.text = item.text, evidence.source_pages = item.source_pages,
             evidence.source_chunk_numbers = item.source_chunk_numbers,
             evidence.source_documents = item.source_documents,
             evidence.source_references_json = item.source_references_json,
+            evidence.document_id = item.document_id,
             evidence.embedding = item.embedding
         MERGE (evidence)-[:IN_DOCUMENT]->(document)
         """,
-        run_id=run_id,
         evidence=evidence,
     ).consume()
 
 
 def _link_evidence_batch(
     transaction: Any,
-    run_id: str,
     evidence: list[dict[str, Any]],
-    entities_by_chunk: dict[int, list[dict[str, str]]],
+    entities_by_chunk: dict[tuple[str, int], list[dict[str, str]]],
 ) -> None:
     entity_links = [
-        {"evidence_id": item["evidence_id"], "name": item.get("name", "")}
+        {"evidence_id": item["evidence_id"], "name": item.get("name", ""),
+         "document_id": item.get("document_id", "")}
         for item in evidence
         if item.get("kind") == "實體"
     ]
@@ -1089,12 +1183,11 @@ def _link_evidence_batch(
         transaction.run(
             """
             UNWIND $items AS item
-            MATCH (evidence:GraphEvidence {run_id: $run_id, evidence_id: item.evidence_id})
-            MATCH (entity:ExtractedEntity {run_id: $run_id, name: item.name})
+            MATCH (evidence:GraphEvidence {evidence_id: item.evidence_id})
+            MATCH (entity:ExtractedEntity {document_id: item.document_id, name: item.name})
             WITH evidence, head(collect(entity)) AS entity
             MERGE (evidence)-[:REPRESENTS]->(entity)
             """,
-            run_id=run_id,
             items=entity_links,
         ).consume()
 
@@ -1103,6 +1196,7 @@ def _link_evidence_batch(
             "evidence_id": item["evidence_id"],
             "source": item.get("source", ""),
             "target": item.get("target", ""),
+            "document_id": item.get("document_id", ""),
         }
         for item in evidence
         if item.get("kind") == "關係"
@@ -1111,15 +1205,14 @@ def _link_evidence_batch(
         transaction.run(
             """
             UNWIND $items AS item
-            MATCH (evidence:GraphEvidence {run_id: $run_id, evidence_id: item.evidence_id})
-            MATCH (source:ExtractedEntity {run_id: $run_id, name: item.source})
+            MATCH (evidence:GraphEvidence {evidence_id: item.evidence_id})
+            MATCH (source:ExtractedEntity {document_id: item.document_id, name: item.source})
             WITH evidence, item, head(collect(source)) AS source
-            MATCH (target:ExtractedEntity {run_id: $run_id, name: item.target})
+            MATCH (target:ExtractedEntity {document_id: item.document_id, name: item.target})
             WITH evidence, source, head(collect(target)) AS target
             MERGE (evidence)-[:EVIDENCE_SOURCE]->(source)
             MERGE (evidence)-[:EVIDENCE_TARGET]->(target)
             """,
-            run_id=run_id,
             items=relationship_links,
         ).consume()
 
@@ -1129,7 +1222,9 @@ def _link_evidence_batch(
             continue
         for chunk_number in item.get("source_chunk_numbers", []):
             try:
-                linked_entities = entities_by_chunk.get(int(chunk_number), [])
+                linked_entities = entities_by_chunk.get(
+                    (str(item.get("document_id", "")), int(chunk_number)), []
+                )
             except (TypeError, ValueError):
                 continue
             for entity in linked_entities:
@@ -1137,38 +1232,24 @@ def _link_evidence_batch(
                     "evidence_id": item["evidence_id"],
                     "name": entity["name"],
                     "type": entity["type"],
+                    "document_id": entity["document_id"],
                 })
     if mention_links:
         transaction.run(
             """
             UNWIND $items AS item
-            MATCH (chunk:GraphEvidence {run_id: $run_id, evidence_id: item.evidence_id})
+            MATCH (chunk:GraphEvidence {evidence_id: item.evidence_id})
             MATCH (entity:ExtractedEntity {
-                run_id: $run_id, name: item.name, type: item.type
+                document_id: item.document_id, name: item.name, type: item.type
             })
             MERGE (chunk)-[:MENTIONS_ENTITY]->(entity)
             """,
-            run_id=run_id,
             items=mention_links,
         ).consume()
 
 
-def _complete_graph_import(transaction: Any, run_id: str) -> None:
+def _complete_graph_import(transaction: Any) -> None:
     transaction.run(
-        "MATCH (document:GraphDocument {run_id: $run_id}) "
+        "MATCH (document:GraphDocument) "
         "SET document.import_status = 'complete', document.updated_at = datetime()",
-        run_id=run_id,
     ).consume()
-
-
-def _delete_graph_run_batch(transaction: Any, run_id: str) -> int:
-    result = transaction.run(
-        "MATCH (node) "
-        "WHERE (node:GraphDocument OR node:ExtractedEntity OR node:GraphEvidence) "
-        "AND node.run_id = $run_id "
-        "WITH node LIMIT $batch_size "
-        "DETACH DELETE node RETURN count(node) AS deleted",
-        run_id=run_id,
-        batch_size=GRAPH_WRITE_BATCH_SIZE,
-    ).single()
-    return int(result["deleted"]) if result else 0
