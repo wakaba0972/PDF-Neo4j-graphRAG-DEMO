@@ -37,6 +37,8 @@ def test_answer_graph_question_omits_max_tokens(monkeypatch) -> None:
     assert "answer primarily in the language of the retrieved evidence" in system_prompt
     assert "You may reason across multiple pieces of evidence" in system_prompt
     assert "every conclusion must be supported by the supplied evidence" in system_prompt
+    assert "If the evidence is ambiguous, conflicting, or only partially supports an answer" in system_prompt
+    assert "Do not present uncertain conclusions as facts" in system_prompt
     assert "cite the source document name and the page number" in system_prompt
     assert "(Source: <document name>, p. <page number>)" in system_prompt
     assert "never guess, infer, or invent citation details" in system_prompt
