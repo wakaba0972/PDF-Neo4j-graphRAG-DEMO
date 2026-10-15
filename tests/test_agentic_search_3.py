@@ -137,6 +137,9 @@ def test_agentic_search_3_executes_llm_selected_readonly_tool_calls(monkeypatch)
 
     results = agentic3.AgenticSearch3RetrievalStrategy().retrieve(_context(driver), _config())
 
+    assert "You are a knowledge-graph retrieval agent" in observed_messages[0][0]["content"]
+    assert "Use the retrieval tools" in observed_messages[0][1]["content"]
+    assert "Search the current project’s source text" in agentic3._tool_definitions()[0]["function"]["description"]
     assert '"error"' not in observed_messages[1][-1]["content"]
     assert [item["evidence_id"] for item in results] == ["seed", "text-hit"]
     assert results[1]["agentic_search_tool"] == "search_document_text"

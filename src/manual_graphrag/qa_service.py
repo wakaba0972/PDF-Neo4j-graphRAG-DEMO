@@ -5,8 +5,12 @@ import re
 from typing import Any
 
 from .graph_service import (
-    GPT_6_LUNA_MODEL, GPT_6_LUNA_REASONING_EFFORTS,
-    _api_url, _chat_response_content, _extract_json_text, _post_json,
+    GPT_6_LUNA_MODEL,
+    GPT_6_LUNA_REASONING_EFFORTS,
+    _api_url,
+    _chat_response_content,
+    _extract_json_text,
+    _post_json,
 )
 from .retrieval import RETRIEVAL_STRATEGIES
 
@@ -93,15 +97,16 @@ def rerank_evidence(
             {
                 "role": "system",
                 "content": (
-                    "你是檢索證據重排器。依據證據對回答使用者問題的直接幫助程度排序；"
-                    "優先選擇包含可驗證答案細節的證據，不要因為證據是圖譜擴展而降低排名。"
-                    "只輸出 JSON 物件，格式為 {\"ranking\":[候選 id，從最相關到最不相關]}。"
-                    "不得改寫、補充或臆測證據內容。"
+                    "You are a retrieval-evidence reranker. Rank evidence by how directly it helps "
+                    "answer the user's question. Prefer evidence containing verifiable answer details; "
+                    "do not penalize evidence because it was found through graph expansion. Return "
+                    "JSON only in this format: {\"ranking\":[candidate IDs from most to least relevant]}. "
+                    "Do not rewrite, add to, or infer beyond the evidence."
                 ),
             },
             {
                 "role": "user",
-                "content": "問題：{}\n候選證據：{}".format(
+                "content": "Question: {}\nCandidate evidence: {}".format(
                     question.strip(), json.dumps(candidate_payload, ensure_ascii=False)
                 ),
             },
@@ -232,64 +237,15 @@ def answer_graph_question(
     effective_effort = reasoning_effort or "low"
     if is_gpt_6_luna and effective_effort not in GPT_6_LUNA_REASONING_EFFORTS:
         raise ValueError("GPT-6 Luna 推理強度設定無效")
-    multi_agent_answers: dict[str, str] = {}
-    multi_agent_warnings: list[str] = []
-    multi_agent_documents: list[str] = []
-    multi_agent_discussion: list[dict[str, str]] = []
-    answer_evidence = []
-    for item in evidence:
-        document_name = str(item.get("document_agent_name") or "")
-        draft = str(item.get("document_agent_answer") or "").strip()
-        if document_name and draft:
-            multi_agent_answers.setdefault(document_name, draft)
-        answers = item.get("multi_agent_answers") or {}
-        if isinstance(answers, dict):
-            for name, answer in answers.items():
-                if str(name).strip() and str(answer).strip():
-                    multi_agent_answers.setdefault(str(name), str(answer).strip())
-        documents = item.get("multi_agent_documents") or []
-        if isinstance(documents, list):
-            multi_agent_documents.extend(str(value) for value in documents)
-        warnings = item.get("multi_agent_warnings") or []
-        if isinstance(warnings, list):
-            multi_agent_warnings.extend(str(value) for value in warnings)
-        discussion = item.get("multi_agent_discussion") or []
-        if isinstance(discussion, list) and not multi_agent_discussion:
-            multi_agent_discussion = [
-                {
-                    "phase": str(entry.get("phase", "")),
-                    "document": str(entry.get("document", "")),
-                    "message": str(entry.get("message", "")),
-                }
-                for entry in discussion if isinstance(entry, dict)
-            ]
-        answer_evidence.append({
-            key: value for key, value in item.items()
-            if key not in {
-                "document_agent_name", "document_agent_answer", "multi_agent_warnings",
-                "multi_agent_documents", "multi_agent_answers", "multi_agent_discussion",
-            }
-        })
     system_instruction = (
-        "你是車型文件知識圖譜問答助手。只能根據目前專案提供的證據回答；"
-        "證據不足時必須明確說明。除非問題明確指定回答語言，否則優先使用檢索證據的主要語言作答；"
-        "證據有多種語言時，使用最直接支持答案的來源語言。並在相關敘述後標示來源頁碼。"
-        "回答請使用一般純文字，不要使用 Markdown 格式：不要輸出 Markdown 標題、"
-        "粗體或斜體標記、項目符號、表格或程式碼區塊。"
-        "若需要列出多個要點，使用編號形式（例如 1.、2.），每個編號項目前都要空一行。"
+        "You are a vehicle-document knowledge-graph QA assistant. Answer only from the evidence supplied "
+        "for the current project, and clearly state when the evidence is insufficient. Unless the question "
+        "explicitly requests a language, answer primarily in the language of the retrieved evidence. If the "
+        "evidence uses multiple languages, use the language of the source that most directly supports the answer. "
+        "Cite source page numbers after the relevant statements. Use plain text, not Markdown: do not output "
+        "Markdown headings, bold or italic markers, bullet points, tables, or code blocks. If listing multiple "
+        "points, use numbered items (for example, 1. and 2.) and leave a blank line before each numbered item."
     )
-    if strategy_id in {"multi_agent_search_1", "multi_agent_search_2"}:
-        system_instruction += (
-            "你是主 Agent。先參考各文件 Agent 的答案草稿，再逐項核對下方原始證據；"
-            "只保留有原始證據支持的內容，整合互補資訊、去除重複。"
-            "若不同文件的原始證據互相矛盾，請清楚指出差異與來源，不可自行選邊或臆測。"
-            "Agent 草稿只是整理線索，不是權威證據；最終答案必須由原始證據支持。"
-        )
-    if strategy_id == "multi_agent_search_2":
-        system_instruction += (
-            "文件 Agent 的聊天室紀錄只代表討論過程與待查證主張，不等於已證實資訊；"
-            "只採用下方檢索到的原始證據作為事實依據。"
-        )
     payload = {
         "model": answer_model.strip(),
         "messages": [
@@ -301,22 +257,8 @@ def answer_graph_question(
             },
             {
                 "role": "user",
-                "content": (
-                    json.dumps({
-                        "question": question.strip(),
-                        "document_agent_drafts": multi_agent_answers,
-                        "agent_discussion": multi_agent_discussion,
-                        "documents_without_evidence": [
-                            name for name in dict.fromkeys(multi_agent_documents)
-                            if name not in multi_agent_answers
-                        ],
-                        "agent_warnings": list(dict.fromkeys(multi_agent_warnings)),
-                        "evidence": answer_evidence,
-                    }, ensure_ascii=False)
-                    if strategy_id in {"multi_agent_search_1", "multi_agent_search_2"}
-                    else "問題：{}\n\n證據：\n{}".format(
-                        question.strip(), json.dumps(evidence, ensure_ascii=False)
-                    )
+                "content": "Question: {}\n\nEvidence:\n{}".format(
+                    question.strip(), json.dumps(evidence, ensure_ascii=False)
                 ),
             },
         ],
@@ -332,5 +274,9 @@ def answer_graph_question(
         payload,
         api_key,
     )
-    answer, _ = _chat_response_content(response)
-    return {"answer": answer.strip(), "evidence": evidence}
+    answer, finish_reason = _chat_response_content(response)
+    answer = answer.strip()
+    if not answer:
+        reason = finish_reason or "unknown"
+        raise ValueError(f"回答模型回傳空白內容（finish_reason={reason}）")
+    return {"answer": answer, "evidence": evidence}

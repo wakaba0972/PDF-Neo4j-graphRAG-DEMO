@@ -313,9 +313,10 @@ def _chat_json(
             {
                 "role": "user",
                 "content": (
-                    "上一個回覆無法通過 JSON 解析或必要結構驗證。"
-                    f"驗證錯誤：{first_error}。請修正並只輸出一個完整 JSON 物件，"
-                    "不得加入 Markdown code fence 或說明文字，也不得省略必要欄位或回傳空陣列。"
+                    "The previous response failed JSON parsing or required-structure validation. "
+                    f"Validation error: {first_error}. Fix it and return exactly one complete JSON object. "
+                    "Do not include Markdown code fences or explanations, omit required fields, "
+                    "or return empty arrays."
                 ),
             },
         ]
@@ -453,10 +454,11 @@ def plan_graph_schema(
     if not chunks:
         raise ValueError("請先在 PDF 頁面解析並產生 chunks")
     granularity_guidance = {
-        "粗略": "只保留最核心的跨章節概念，積極合併上下位與近義類型。",
-        "平衡": "保留支援主要查詢所需的通用類型，合併過細的上下位與近義類型。",
-        "詳細": "可保留有明確查詢價值的專業子類型，但仍不得把具體實例當成類型。",
+        "粗略": "Keep only the most important cross-section concepts; aggressively merge synonyms and broader/narrower categories.",
+        "平衡": "Keep reusable types needed for common queries; merge overly specific or synonymous categories.",
+        "詳細": "Keep specialized subtypes when they clearly help retrieval, but never use concrete instances as types.",
     }
+    granularity_labels = {"粗略": "coarse", "平衡": "balanced", "詳細": "detailed"}
     if schema_granularity not in granularity_guidance:
         raise ValueError("Schema 粒度必須是粗略、平衡或詳細")
     if int(max_concurrent_requests) < 1:
@@ -464,10 +466,14 @@ def plan_graph_schema(
     max_concurrent_requests = int(max_concurrent_requests)
 
     planning_rules = (
-        f"Schema 粒度：{schema_granularity}。{granularity_guidance[schema_granularity]}"
-        "只建立可重複使用、可泛化的類型；具體名稱、型號、編號、人物、組織或章節"
-        "應在抽取階段成為實體，不得直接成為類型。只有重複出現且具有獨立查詢或關係"
-        "價值的概念才建立類型；相近概念應合併到較高階類型。"
+        f"Schema granularity: {granularity_labels[schema_granularity]}. "
+        f"{granularity_guidance[schema_granularity]} "
+        "Create reusable, generalizable types only. Specific names, models, identifiers, people, "
+        "organizations, and section names belong in extracted entities, not types. Create a type "
+        "only when a concept recurs and has independent retrieval or relational value; merge "
+        "similar concepts into a broader type. Keep entity names, relationship names, and "
+        "descriptions in the source language; for English source text, use English and preserve "
+        "the source's terminology rather than translating it."
     )
     batches = _chunk_batches(chunks, SCHEMA_CONTEXT_LIMIT)
     candidates: list[dict[str, Any] | None] = [None] * len(batches)
@@ -490,14 +496,14 @@ def plan_graph_schema(
             base_url,
             api_key,
             llm_model,
-            "你是知識圖譜 schema 設計專家。只輸出 JSON，不要 Markdown 或說明文字。",
-            "請根據這一批文件內容提出候選實體與關係類型。"
+            "You are a knowledge-graph schema designer. Return JSON only; do not include Markdown or explanations.",
+            "Propose candidate entity and relationship types based on this batch of document text. "
             f"{planning_rules}"
-            "名稱使用英文大寫 snake case，說明使用繁體中文。"
-            "輸出格式：{\"entity_types\":[{\"name\":\"...\",\"description\":\"...\"}],"
+            "Use concise UPPER_SNAKE_CASE type names and descriptions in the source language. "
+            "Return this JSON shape: {\"entity_types\":[{\"name\":\"...\",\"description\":\"...\"}],"
             "\"relationship_types\":[{\"name\":\"...\",\"description\":\"...\","
-            "\"source_types\":[\"...\"],\"target_types\":[\"...\"]}]}。\n\n"
-            f"文件 chunks：\n{context}",
+            "\"source_types\":[\"...\"],\"target_types\":[\"...\"]}]} .\n\n"
+            f"Document chunks:\n{context}",
             temperature,
             validate_schema,
             on_retry=report_retry,
@@ -578,14 +584,15 @@ def plan_graph_schema(
                 base_url,
                 api_key,
                 llm_model,
-                "你是知識圖譜 schema 整合專家。只輸出 JSON，不要 Markdown 或說明文字。",
-                "合併以下候選 Schema；這不是候選類型的聯集。"
+                "You are a knowledge-graph schema consolidation specialist. Return JSON only; "
+                "do not include Markdown or explanations.",
+                "Consolidate the candidate schemas below; do not simply take the union of all types. "
                 f"{planning_rules}"
-                "請積極去除重複、統一同義名稱並合併上下位與近義類型。"
-                "只保留類型名稱、簡短說明，以及關係的 source_types "
-                "與 target_types；不要輸出範例、屬性或其他欄位。"
-                "輸出格式必須維持 entity_types 與 relationship_types。\n\n"
-                f"候選 Schema：\n{json.dumps(group, ensure_ascii=False)}",
+                "Remove duplicates, standardize synonyms, and merge broader/narrower or similar types. "
+                "Keep only type names, concise descriptions, and relationship source_types and "
+                "target_types. Do not add examples, properties, or other fields. Preserve the "
+                "entity_types and relationship_types JSON keys.\n\n"
+                f"Candidate schemas:\n{json.dumps(group, ensure_ascii=False)}",
                 temperature,
                 validate_schema,
                 on_retry=report_retry,
@@ -688,24 +695,34 @@ def extract_graph(
                 )
 
         extraction_instructions = (
-            "依照 schema 抽取實體與關係。entity.type 與 relationship.type 必須來自 schema；"
-            f"schema：\n{json.dumps(schema, ensure_ascii=False)}\n\n"
+            "Extract entities and relationships according to the schema. entity.type and "
+            "relationship.type must exactly match values from the schema; "
+            f"schema:\n{json.dumps(schema, ensure_ascii=False)}\n\n"
             if schema else
-            "直接依據文件內容抽取重要實體與明確關係，為每個實體及關係提供簡潔、一致的類型名稱；"
-            "同一概念在不同 chunks 必須使用相同類型。不要為了湊數而抽取，禁止臆測。\n\n"
+            "Extract important entities and explicit relationships directly from the document. "
+            "Assign concise, consistent types to entities and relationships; use the same type "
+            "for the same concept across chunks. Do not invent extra items or infer unsupported facts.\n\n"
+        )
+        extraction_instructions += (
+            "Keep entity names, relationship types, and descriptions in the source language. "
+            "For English source text, write these fields in English and preserve original names "
+            "and terminology; do not translate them into Chinese. Use exact entity names in "
+            "relationship source and target fields.\n\n"
         )
         return _chat_json(
             base_url,
             api_key,
             llm_model,
-            "你是知識圖譜資訊抽取器。只能依據提供的文件內容抽取，禁止臆測。只輸出 JSON。",
+            "You are a knowledge-graph information extraction system. Extract only facts supported "
+            "by the provided document and do not hallucinate. Return JSON only.",
             extraction_instructions
-            + "關係的 source 與 target 使用實體 name。來源 chunk 由程式依本次輸入記錄，不需輸出來源編號。"
-            "輸出格式：{\"entities\":[{\"name\":\"...\",\"type\":\"...\","
+            + "Use entity names for relationship source and target. Source chunk provenance is "
+            "recorded by the program for this request; do not output source identifiers. "
+            "Return this JSON shape: {\"entities\":[{\"name\":\"...\",\"type\":\"...\","
             "\"description\":\"...\"}],"
             "\"relationships\":[{\"source\":\"...\",\"target\":\"...\","
-            "\"type\":\"...\",\"description\":\"...\"}]}。\n\n"
-            f"文件：\n{context}",
+            "\"type\":\"...\",\"description\":\"...\"}]} .\n\n"
+            f"Document:\n{context}",
             temperature,
             on_retry=report_retry,
             control=control,

@@ -146,16 +146,16 @@ def test_current_project_banner_reflects_project_name() -> None:
 
 def test_strategy_selector_options_follow_graph_partition_mode() -> None:
     merged_update = ui._strategy_dropdown_updates_for_graph_mode(
-        "merged", "Multi-Agent Search 1", "混合檢索",
+        "merged", "基本向量檢索", "混合檢索",
     )
     partitioned_update = ui._strategy_dropdown_updates_for_graph_mode(
-        "per_document", "Multi-Agent Search 1", "混合檢索",
+        "per_document", "基本向量檢索", "混合檢索",
     )
 
-    assert "Multi-Agent Search 1" not in merged_update[1]["choices"]
-    assert merged_update[0]["choices"][0][1] == "Multi-Agent Search 1"
-    assert "不相容" in merged_update[0]["choices"][0][0]
-    assert "Multi-Agent Search 1" in partitioned_update[0]["choices"]
+    assert merged_update[0]["choices"] == ["基本向量檢索", "混合檢索", "Agentic Search", "Agentic Search 3"]
+    assert merged_update[1]["choices"] == merged_update[0]["choices"]
+    assert partitioned_update[0]["choices"][0][1] == "基本向量檢索"
+    assert "不相容" in partitioned_update[0]["choices"][0][0]
 
 
 def test_reranker_and_expansion_controls_are_strategy_specific() -> None:
@@ -2937,13 +2937,37 @@ def test_generate_experiment_answers_populates_table_without_judging(monkeypatch
         "project", questions, groups, 2, {}, "embed", "key", "bolt", "database", "user", "pass",
     )
 
-    assert status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
+    assert status.startswith("✅ 已處理 1 個實驗題次；成功 1、失敗 0")
     assert pending[0]["actual_answer"] == "隱藏答案"
     assert results == group_summaries == summaries == []
     assert details == [["G", 1, "", "未分類題目集", "Q", "A", "隱藏答案", None, None, ""]]
     assert captured["experiment"]["pending_answers"] == pending
     assert captured["experiment"]["results"] == []
     assert captured["experiment"]["detail_rows"] == details
+
+
+def test_experiment_answer_generation_exposes_failure_in_status_and_reason(monkeypatch) -> None:
+    monkeypatch.setattr(ui, "resolve_model_credentials_for_ui", lambda *_: ("answer-endpoint", "key"))
+    monkeypatch.setattr(
+        ui, "answer_question_for_ui",
+        lambda *_args, **_kwargs: ("❌ Neo4j 檢索失敗：找不到向量索引", "", []),
+    )
+    monkeypatch.setattr(ui, "load_project", lambda _project_id: {"experiment": {}})
+    monkeypatch.setattr(ui, "save_project", lambda _project_id, _payload: {})
+    questions = [{"number": 1, "question": "Q", "expected_answer": "A"}]
+    groups = [{
+        "name": "G", "answer_model": "answer-model",
+        "retrieval_config": _retrieval_config(),
+    }]
+
+    status, pending, _results, _group_summaries, _summaries, details = ui.generate_experiment_answers_for_ui(
+        "project", questions, groups, 1, {}, "embed", "key", "bolt", "database", "user", "pass",
+    )
+
+    assert "成功 0、失敗 1" in status
+    assert "找不到向量索引" in status
+    assert pending[0]["actual_answer"] == ""
+    assert details[0][-1] == "❌ Neo4j 檢索失敗：找不到向量索引"
 
 
 def test_evaluate_experiment_answers_and_manual_edit_recompute_summary(monkeypatch) -> None:
@@ -3053,6 +3077,31 @@ def test_inline_experiment_group_add_and_remove(tmp_path, monkeypatch) -> None:
     assert removed[1]["visible"] is True
     assert removed[17]["visible"] is False
     assert ui.load_project(project["project_id"])["experiment"]["groups"] == removed[-3]
+
+
+def test_removing_last_group_hides_postprocessors_for_per_document_project(
+    tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_project("partitioned-experiment")
+    llm_state = settings.load_service_settings("llm")
+    groups = [{
+        "name": "實驗組 1", "answer_model": "gpt-4o-mini",
+        "retrieval_config": _retrieval_config(),
+    }]
+    monkeypatch.setattr(ui, "_single_project_graph_modes", lambda _project_id: ["per_document"])
+
+    removed = ui.remove_inline_experiment_group_for_ui(
+        0, project["project_id"], [], 1, llm_state, groups,
+        *ui._inline_group_values(groups),
+    )
+
+    assert removed[-3] == []
+    assert removed[5]["visible"] is False
+    assert removed[6]["visible"] is False
+    second_row = ui.EXPERIMENT_GROUP_COMPONENTS
+    assert removed[second_row + 5]["visible"] is False
+    assert removed[second_row + 6]["visible"] is False
 
 
 def test_remove_inline_group_accepts_integral_value_for_float_strategy_parameter(
@@ -3892,6 +3941,8 @@ def test_graph_evidence_separates_merged_sources_by_pdf() -> None:
     assert [item["source_chunk_numbers"] for item in evidence] == [
         [1], [8], [1], [8]
     ]
+    assert evidence[0]["text"] == "Entity: 共用設備; Type: DEVICE; Description: 設備"
+    assert evidence[2]["text"] == "Relationship: 共用設備 -[USES]-> 配件; Description: 使用"
     assert all(len(item["source_references"]) == 1 for item in evidence)
 
 
@@ -4737,7 +4788,7 @@ def test_experiment_project_answers_are_generated_then_evaluated_separately(tmp_
     generated_status, pending, group_summaries, summaries, details, saved = ui.generate_experiment_project_answers_for_ui(
         experiment, 2, {}, "embed", "key", "bolt", "user", "password",
     )
-    assert generated_status.startswith("✅ 已生成 1 個實驗題次回答並填入逐題表格")
+    assert generated_status.startswith("✅ 已處理 1 個實驗題次；成功 1、失敗 0")
     assert len(pending) == 1 and pending[0]["actual_answer"] == "A"
     assert summaries == []
     assert group_summaries == []

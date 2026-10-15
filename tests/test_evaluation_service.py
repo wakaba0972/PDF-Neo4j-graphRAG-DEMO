@@ -128,8 +128,10 @@ def test_random_page_context_selects_focus_page_at_document_boundaries(monkeypat
 def test_page_context_expands_until_llm_reports_complete(monkeypatch) -> None:
     assessments = iter([False, False, True])
     checked_contexts = []
+    prompts = []
 
     def fake_chat(*args, **kwargs):
+        prompts.append((args[3], args[4]))
         checked_contexts.append(args[4])
         return kwargs["validator"]({"sufficient": next(assessments), "reason": "需更多上下文"})
 
@@ -147,6 +149,8 @@ def test_page_context_expands_until_llm_reports_complete(monkeypatch) -> None:
     assert len(checked_contexts) == 3
     assert "PAGES 3" in checked_contexts[0]
     assert "PAGES 2" in checked_contexts[1] and "PAGES 4" in checked_contexts[1]
+    assert prompts[0][0].startswith("You are a document-context completeness reviewer.")
+    assert prompts[0][1].startswith("Focus page: 3.")
 
 
 def test_generate_evaluation_questions_tells_model_which_questions_to_avoid(
@@ -155,6 +159,7 @@ def test_generate_evaluation_questions_tells_model_which_questions_to_avoid(
     captured = {}
 
     def fake_chat(*args, **kwargs):
+        captured["system_prompt"] = args[3]
         captured["prompt"] = args[4]
         return kwargs["validator"]({
             "questions": [{
@@ -171,8 +176,9 @@ def test_generate_evaluation_questions_tells_model_which_questions_to_avoid(
     )
 
     assert "既有問題？" in captured["prompt"]
-
-    assert "不得重複或改寫以下已建立題目" in captured["prompt"]
+    assert captured["system_prompt"].startswith("You are a document-grounded QA dataset designer.")
+    assert "Do not duplicate or paraphrase any of these existing questions" in captured["prompt"]
+    assert "same language as the source content" in captured["prompt"]
 def test_generate_evaluation_questions_rejects_missing_chunk_numbers(monkeypatch) -> None:
     def fake_chat(*args, **kwargs):
         return kwargs["validator"]({
@@ -220,10 +226,17 @@ def test_generate_evaluation_questions_rejects_invalid_input() -> None:
 
 
 def test_judge_evaluation_answer_returns_three_level_score(monkeypatch) -> None:
+    captured = {}
+
+    def fake_chat(*args, **kwargs):
+        captured["system_prompt"] = args[3]
+        captured["user_prompt"] = args[4]
+        return kwargs["validator"]({"score": 1, "reason": "部分涵蓋"})
+
     monkeypatch.setattr(
         evaluation_service,
         "_chat_json",
-        lambda *args, **kwargs: kwargs["validator"]({"score": 1, "reason": "部分涵蓋"}),
+        fake_chat,
     )
 
     result = evaluation_service.judge_evaluation_answer(
@@ -231,6 +244,8 @@ def test_judge_evaluation_answer_returns_three_level_score(monkeypatch) -> None:
     )
 
     assert result == {"score": 1, "reason": "部分涵蓋"}
+    assert captured["system_prompt"].startswith("You are a rigorous question-answer evaluator.")
+    assert captured["user_prompt"].startswith("Question: 問題\nExpected answer: 標準")
 
 
 def test_judge_evaluation_answer_rejects_scores_outside_zero_to_two(monkeypatch) -> None:
@@ -259,9 +274,10 @@ def test_verify_evaluation_judgment_reviews_first_pass_and_reason(monkeypatch) -
     )
 
     assert result == {"score": 1, "reason": "標準答案中的數值遺漏"}
-    assert "第一輪判定分數：2" in captured["user_prompt"]
-    assert "第一輪理由：第一輪認為正確" in captured["user_prompt"]
-    assert "實際答案：實際答案" in captured["user_prompt"]
+    assert captured["system_prompt"].startswith("You are an independent second-pass reviewer")
+    assert "First-pass score: 2" in captured["user_prompt"]
+    assert "First-pass rationale: 第一輪認為正確" in captured["user_prompt"]
+    assert "Actual answer: 實際答案" in captured["user_prompt"]
 
 
 def test_judge_rejects_abstention_when_expected_answer_has_fact(monkeypatch) -> None:

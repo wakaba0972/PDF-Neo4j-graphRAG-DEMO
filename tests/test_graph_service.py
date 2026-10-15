@@ -57,12 +57,15 @@ def test_plan_graph_schema_parses_fenced_json_and_uses_chunks(monkeypatch) -> No
     assert captured["payload"]["temperature"] == 0.4
     assert "max_tokens" not in captured["payload"]
     assert "[CHUNK 1; PAGES 2]" in captured["payload"]["messages"][1]["content"]
+    assert "You are a knowledge-graph schema designer" in captured["payload"]["messages"][0]["content"]
 
 
 def test_extract_graph_without_schema_keeps_model_assigned_types(monkeypatch) -> None:
     prompts: list[str] = []
+    system_prompts: list[str] = []
 
     def fake_chat(*args, **kwargs):
+        system_prompts.append(args[3])
         prompts.append(args[4])
         return {
             "entities": [{
@@ -84,8 +87,11 @@ def test_extract_graph_without_schema_keeps_model_assigned_types(monkeypatch) ->
 
     assert result.entities[0]["type"] == "電子元件"
     assert result.relationships[0]["type"] == "驅動"
-    assert "直接依據文件內容抽取" in prompts[0]
-    assert "依照 schema 抽取" not in prompts[0]
+    assert "Extract important entities and explicit relationships directly" in prompts[0]
+    assert "Extract entities and relationships according to the schema" not in prompts[0]
+    assert "Keep entity names, relationship types, and descriptions in the source language" in prompts[0]
+    assert "do not translate them into Chinese" in prompts[0]
+    assert "You are a knowledge-graph information extraction system" in system_prompts[0]
 
 
 def test_schema_planning_analyzes_all_chunks_and_merges_hierarchically(monkeypatch) -> None:
@@ -110,7 +116,7 @@ def test_schema_planning_analyzes_all_chunks_and_merges_hierarchically(monkeypat
         ),
     )
 
-    chunk_prompts = [prompt for prompt in prompts if "文件 chunks" in prompt]
+    chunk_prompts = [prompt for prompt in prompts if "Document chunks" in prompt]
     seen = {
         number
         for number in range(1, 11)
@@ -136,7 +142,7 @@ def test_schema_groups_use_smaller_merge_limit(monkeypatch) -> None:
 
     def fake_chat(*args, **kwargs):
         prompt = args[4]
-        if "候選 Schema" in prompt:
+        if "Candidate schemas" in prompt:
             merge_group_sizes.append(prompt.count('"entity_types"'))
         return SCHEMA
 
@@ -200,8 +206,8 @@ def test_schema_planning_prompt_applies_granularity_without_type_limits(monkeypa
         [TextChunk(1, "設備 A 使用設備 B", (1,))],
         schema_granularity="粗略",
     )
-    assert "Schema 粒度：粗略" in prompts[0]
-    assert "具體名稱、型號、編號、人物、組織或章節" in prompts[0]
+    assert "Schema granularity: coarse" in prompts[0]
+    assert "Specific names, models, identifiers, people, organizations, and section names" in prompts[0]
     assert "類型最多" not in prompts[0]
     assert "上限" not in prompts[0]
 
@@ -440,7 +446,7 @@ def test_extract_graph_uses_one_chunk_per_request_and_records_sources(monkeypatc
     assert extraction.processed_chunks == 2
     assert len(prompts) == len(chunks)
     assert all(prompt.count("[CHUNK ") == 1 for prompt in prompts)
-    assert "來源 chunk 由程式依本次輸入記錄" in prompts[0]
+    assert "Source chunk provenance is recorded by the program" in prompts[0]
     assert len(extraction.entities) == 2
     assert extraction.entities[0]["source_chunk_numbers"] == [1, 2]
     assert extraction.entities[0]["source_pages"] == [1, 2]
@@ -672,7 +678,7 @@ def test_chat_json_retries_invalid_output_once(monkeypatch) -> None:
     assert payloads[0]["temperature"] == 0.7
     assert payloads[1]["temperature"] == 0
     assert len(payloads[1]["messages"]) == 4
-    assert "請修正" in payloads[1]["messages"][-1]["content"]
+    assert "Fix it and return exactly one complete JSON object" in payloads[1]["messages"][-1]["content"]
 
 
 def test_luna_chat_json_uses_reasoning_effort_and_omits_temperature(monkeypatch) -> None:
@@ -744,7 +750,7 @@ def test_chat_json_retries_schema_that_fails_structure_validation(monkeypatch) -
     assert payloads[1]["temperature"] == 0
     repair_prompt = payloads[1]["messages"][-1]["content"]
     assert "entity_types" in repair_prompt
-    assert "不得省略必要欄位或回傳空陣列" in repair_prompt
+    assert "omit required fields, or return empty arrays" in repair_prompt
 
 
 def test_chat_json_reports_schema_validation_error_after_retry(monkeypatch) -> None:

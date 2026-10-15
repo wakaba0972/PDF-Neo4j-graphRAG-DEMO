@@ -151,13 +151,15 @@ def expand_page_context_until_complete(
             base_url,
             api_key,
             model,
-            "你是文件脈絡完整性檢查員。判斷提供的頁面內容是否足以獨立理解一個明確事實，"
-            "並能據此提出答案不含糊的問答題。只輸出 JSON。",
-            f"焦點頁：第 {focus_page} 頁。檢查目前提供的內容是否已包含足夠主詞、條件、步驟與結論，"
-            "使一個可由內容明確回答的問題不依賴缺失的前文或後文。若內容已完整，sufficient=true；"
-            "若句子被截斷、指代不明、步驟/條件/結論延續到未提供頁面，或資訊不足以形成明確問答，則為 false。"
-            '輸出格式：{"sufficient":true,"reason":"簡短說明"}。\n\n'
-            f"目前已提供頁面 {pages[lower]} 至 {pages[upper]}：\n{context}",
+            "You are a document-context completeness reviewer. Determine whether the supplied page content "
+            "is self-contained enough to understand a clear fact and formulate an unambiguous question-answer pair. "
+            "Return JSON only.",
+            f"Focus page: {focus_page}. Check whether the supplied content includes enough subjects, conditions, "
+            "steps, and conclusions for a question that can be answered without missing preceding or following context. "
+            "Set sufficient=true if the content is complete. Set it to false if a sentence is cut off, a reference is "
+            "unclear, a step/condition/conclusion continues on an unavailable page, or the information is insufficient "
+            'for an unambiguous question-answer pair. Output format: {"sufficient":true,"reason":"brief explanation"}.\n\n'
+            f"Currently supplied pages {pages[lower]} through {pages[upper]}:\n{context}",
             temperature=0,
             validator=validate,
             reasoning_effort=reasoning_effort,
@@ -306,10 +308,12 @@ def generate_evaluation_questions(
     if excluded:
         excluded_text = [_question_value(item) for item in excluded]
         exclusion_instruction = (
-            "\n不得重複或改寫以下已建立題目：\n- " + "\n- ".join(excluded_text) + "\n"
+            "\nDo not duplicate or paraphrase any of these existing questions:\n- "
+            + "\n- ".join(excluded_text) + "\n"
         )
     focus_instruction = (
-        f"本次隨機抽樣的焦點頁是第 {focus_page} 頁；請優先從該頁出題，必要時使用前後相鄰 chunk 補足脈絡。"
+        f"The randomly selected focus page for this generation attempt is page {focus_page}. "
+        "Prioritize a question grounded in that page; use adjacent chunks only when needed to provide sufficient context. "
         if focus_page is not None else ""
     )
 
@@ -317,18 +321,21 @@ def generate_evaluation_questions(
         base_url,
         api_key,
         model,
-        "你是文件問答評測資料設計師。只能根據提供的文件內容出題，並只輸出 JSON。",
-        f"請建立剛好 {count} 道可由文件明確回答、彼此不重複且涵蓋不同知識點的繁體中文問題。"
-        "不同措辭若詢問相同事實、操作步驟或預期答案，仍視為重複；每題必須測試不同資訊，不可只替換同義詞、語序或問句模板。"
+        "You are a document-grounded QA dataset designer. Create questions only from the supplied document content. "
+        "Return JSON only.",
+        f"Generate exactly {count} questions that are clearly answerable from the document, are not duplicates, "
+        "and cover distinct facts. Write each question and expected answer in the same language as the source content. "
+        "Questions that ask about the same fact, procedure, or expected answer are duplicates even if phrased differently. "
+        "Each question must test distinct information; do not create variants by changing only synonyms, word order, or a question template. "
         f"{focus_instruction}"
         f"{exclusion_instruction}"
-        "每題提供精確標準答案、題目來源頁碼（question_source_pages）、答案來源頁碼（answer_source_pages），"
-        "並提供該題所依據的 CHUNK 編號"
-        "（source_chunk_numbers，必須引用下方文件中標示的 CHUNK 編號）。輸出格式："
+        "For each item, provide a precise expected answer, the question source pages (question_source_pages), "
+        "the answer source pages (answer_source_pages), and the supporting chunk numbers (source_chunk_numbers). "
+        "Use only chunk numbers shown in the supplied document text. Output format: "
         '{"questions":[{"question":"...","expected_answer":"...",'
         '"question_source_pages":[1],"answer_source_pages":[1],'
-        '"source_chunk_numbers":[1]}]}。\n\n'
-        f"文件：\n{context}",
+        '"source_chunk_numbers":[1]}]}\n\n'
+        f"Document text:\n{context}",
         temperature=0.2,
         validator=validate,
         reasoning_effort=reasoning_effort,
@@ -376,14 +383,15 @@ def judge_evaluation_answer(
         base_url,
         api_key,
         model,
-        "你是嚴謹的問答評測員，請依答案涵蓋標準答案核心內容的程度給 0 到 2 分。"
-        "0 代表錯誤或未回答核心事實；1 代表部分正確但遺漏重要內容或條件；"
-        "2 代表完整正確，涵蓋標準答案的必要事實。"
-        "誠實表示不知道、文件未提及、找不到資訊或證據不足，不能得分；"
-        "不要求逐字相同，只輸出 JSON。",
-        f"問題：{question}\n標準答案：{expected_answer}\n實際答案：{actual_answer}\n"
-        "請逐項檢查標準答案中的數值、單位、名稱、條件與結論是否出現在實際答案。"
-        '輸出格式：{"score":2,"reason":"簡短理由"}。',
+        "You are a rigorous question-answer evaluator. Assign a score from 0 to 2 based on how completely "
+        "the response covers the essential content of the expected answer. Score 0 for an incorrect response "
+        "or one that omits the key fact; score 1 for a partially correct response that misses important details "
+        "or conditions; score 2 for a fully correct response that covers the required facts. An honest statement "
+        "of uncertainty, missing information, or insufficient evidence must not receive credit. Exact wording is "
+        "not required. Return JSON only.",
+        f"Question: {question}\nExpected answer: {expected_answer}\nActual answer: {actual_answer}\n"
+        "Check whether the response covers each relevant value, unit, name, condition, and conclusion in the expected answer. "
+        'Output format: {"score":2,"reason":"brief rationale"}.',
         validator=validate,
         reasoning_effort=reasoning_effort,
     )
@@ -413,13 +421,14 @@ def verify_evaluation_judgment(
         base_url,
         api_key,
         model,
-        "你是獨立的第二輪問答評測複核員。重新核對題目、標準答案和實際答案，"
-        "並檢查第一輪 0 到 2 分的判定及理由是否成立。不要因為第一輪已給結論就照單全收；"
-        "0=錯誤，1=部分正確，2=完整正確。拒答不能視為正確。只輸出 JSON。",
-        f"問題：{question}\n標準答案：{expected_answer}\n實際答案：{actual_answer}\n"
-        f"第一輪判定分數：{first_result}\n第一輪理由：{first_reason}\n"
-        "請重新獨立檢查；輸出最終 0 到 2 分及簡短理由，格式為 "
-        '{"score":2,"reason":"複核後理由"}。',
+        "You are an independent second-pass reviewer for a question-answer evaluation. Recheck the question, "
+        "expected answer, and actual answer, then verify whether the first-pass score (0–2) and rationale are justified. "
+        "Do not accept the first-pass conclusion without review. Score 0 means incorrect, 1 means partially correct, "
+        "and 2 means fully correct. An abstention is not correct. Return JSON only.",
+        f"Question: {question}\nExpected answer: {expected_answer}\nActual answer: {actual_answer}\n"
+        f"First-pass score: {first_result}\nFirst-pass rationale: {first_reason}\n"
+        "Review the answer independently and return the final score from 0 to 2 with a brief rationale. "
+        'Output format: {"score":2,"reason":"rationale after review"}.',
         validator=validate,
         reasoning_effort=reasoning_effort,
     )

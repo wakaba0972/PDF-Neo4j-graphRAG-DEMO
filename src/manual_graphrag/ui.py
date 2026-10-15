@@ -2498,6 +2498,7 @@ def _inline_group_updates(
             retrieval_choices.insert(0, (f"{strategy}（與目前圖譜模式不相容）", strategy))
         reranker_update, expansion_update = _postprocessing_control_updates(
             strategy, reranker, expansion, row_visible=visible,
+            graph_modes=graph_modes,
         )
         model_update = gr.update(value=item.get("answer_model"), visible=visible)
         answer_effort_model = item.get("answer_model")
@@ -2558,11 +2559,15 @@ def _strategy_dropdown_updates_for_graph_mode(
 def _postprocessing_control_updates(
     strategy: str | None, reranker: str | None, expansion: str | None,
     *, row_visible: bool = True,
+    graph_modes: list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> tuple[Any, Any]:
     try:
         spec = RETRIEVAL_STRATEGIES.get_spec(strategy_id_from_label(str(strategy or "")))
         supports_reranker = "reranker" in spec.postprocessors
         supports_expansion = "evidence_expansion" in spec.postprocessors
+        requested_modes = set(graph_modes or [])
+        if requested_modes and not requested_modes.issubset(set(spec.supported_graph_modes)):
+            supports_reranker = supports_expansion = False
     except ValueError:
         supports_reranker = supports_expansion = False
     return (
@@ -4164,7 +4169,9 @@ def generate_experiment_answers_for_ui(
             "question_set_name": question.get("question_set_name", "未分類題目集"),
             "question": question["question"], "expected_answer": question["expected_answer"],
             "document": question.get("document", ""), "actual_answer": actual,
-            "answer_status": status, **retrieval_metrics,
+            "answer_status": status,
+            "reason": "" if status.startswith("✅") else status,
+            **retrieval_metrics,
         }
 
     try:
@@ -4180,12 +4187,17 @@ def generate_experiment_answers_for_ui(
                 control.answer_generation_progress = (completed, len(tasks))
                 progress(completed / len(tasks), desc=f"已生成 {completed} / {len(tasks)} 個實驗題次回答")
         generated = [item for item in answers if item is not None]
+        failed = [item for item in generated if not str(item.get("answer_status", "")).startswith("✅")]
         project = load_project(project_id)
         previous = project.get("experiment") or {}
         saved_groups = [{key: value for key, value in group.items()
                          if key not in {"judge_model", "judge_reasoning_effort"}}
                         for group in groups]
-        status = f"✅ 已生成 {len(generated)} 個實驗題次回答並填入逐題表格；尚未評測。"
+        status_icon = "⚠️" if failed else "✅"
+        status = f"{status_icon} 已處理 {len(generated)} 個實驗題次；成功 {len(generated) - len(failed)}、失敗 {len(failed)}，尚未評測。"
+        if failed:
+            first_error = str(failed[0].get("answer_status") or "未知錯誤")
+            status += f" 首筆失敗原因：{first_error[:500]}"
         details = _single_experiment_detail_rows(generated)
         _save_experiment_data(project_id, {
             **previous, "questions": questions, "groups": saved_groups,
@@ -4740,7 +4752,9 @@ def generate_experiment_project_answers_for_ui(
             "question_set_name": question.get("question_set_name", "未分類題目集"),
             "question": question["question"], "expected_answer": question["expected_answer"],
             "document": question.get("document", ""), "actual_answer": actual,
-            "answer_status": status, **retrieval_metrics,
+            "answer_status": status,
+            "reason": "" if status.startswith("✅") else status,
+            **retrieval_metrics,
         }
 
     try:
@@ -4755,7 +4769,12 @@ def generate_experiment_project_answers_for_ui(
                 progress(completed / len(tasks), desc=f"已生成 {completed} / {len(tasks)} 個跨專案實驗題次回答")
         generated = [item for item in answers if item is not None]
         details = _experiment_project_detail_rows(generated)
-        status = f"✅ 已生成 {len(generated)} 個實驗題次回答並填入逐題表格；尚未評測。"
+        failed = [item for item in generated if not str(item.get("answer_status", "")).startswith("✅")]
+        status_icon = "⚠️" if failed else "✅"
+        status = f"{status_icon} 已處理 {len(generated)} 個實驗題次；成功 {len(generated) - len(failed)}、失敗 {len(failed)}，尚未評測。"
+        if failed:
+            first_error = str(failed[0].get("answer_status") or "未知錯誤")
+            status += f" 首筆失敗原因：{first_error[:500]}"
         updated = save_experiment_project(current["experiment_project_id"], {
             "pending_answers": generated, "results": [], "group_summary_rows": [],
             "summary_rows": [], "detail_rows": details,
@@ -5904,7 +5923,7 @@ def _build_graph_evidence(
                 "evidence_id": f"entity-{index}-{source_index}", "kind": "實體",
                 "document_id": document_id,
                 "name": item.get("name", ""), "source": "", "target": "",
-                "text": "實體：{}；類型：{}；說明：{}".format(
+                "text": "Entity: {}; Type: {}; Description: {}".format(
                     item.get("name", ""), item.get("type", ""), item.get("description", "")
                 ),
                 **sources,
@@ -5917,7 +5936,7 @@ def _build_graph_evidence(
                 "document_id": document_id,
                 "kind": "關係", "name": "",
                 "source": item.get("source", ""), "target": item.get("target", ""),
-                "text": "關係：{} -[{}]-> {}；說明：{}".format(
+                "text": "Relationship: {} -[{}]-> {}; Description: {}".format(
                     item.get("source", ""), item.get("type", ""),
                     item.get("target", ""), item.get("description", "")
                 ),
@@ -6552,6 +6571,15 @@ def build_app() -> gr.Blocks:
 
             with gr.Tab("1-2 建圖", interactive=False) as graph_tab:
                 gr.Markdown("### 從文件文本抽取知識圖譜")
+                graph_partition_mode = gr.Radio(
+                    choices=[
+                        ("所有文件合併為一張圖譜（現有模式）", "merged"),
+                        ("每份文件各自一張圖譜（以 document_id 分區）", "per_document"),
+                    ],
+                    value="merged",
+                    label="圖譜範圍",
+                    info="文件分區仍存於同一個專案資料庫；系統會依此選項顯示相容的檢索策略。",
+                )
                 with gr.Row():
                     pause_button = gr.Button("⏸ 暫停")
                     stop_button = gr.Button("⏹ 停止", variant="stop")
@@ -6577,19 +6605,6 @@ def build_app() -> gr.Blocks:
                     gr.Markdown(
                         "系統會直接閱讀已解析的文件文本並抽取實體與關係；不需要先規劃 Schema。"
                         "檢查結果後，再手動匯入 Neo4j。"
-                    )
-                    graph_partition_mode = gr.Radio(
-                        choices=[
-                            ("所有文件合併為一張圖譜（現有模式）", "merged"),
-                            ("每份文件各自一張圖譜（以 document_id 分區）", "per_document"),
-                        ],
-                        value="merged",
-                        label="圖譜範圍",
-                        info=(
-                            "文件分區仍存放在同一個專案 Neo4j 資料庫。選擇每份文件各自成圖時，"
-                            "會逐文件抽取；基本向量、混合與 Agentic Search 1／3 僅供合併圖譜，"
-                            "Multi-Agent Search 1 僅供文件分區圖譜。"
-                        ),
                     )
                     with gr.Row(equal_height=True):
                         extraction_llm_model = gr.Dropdown(

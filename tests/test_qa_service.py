@@ -1,3 +1,5 @@
+import pytest
+
 from manual_graphrag import qa_service
 
 
@@ -29,72 +31,29 @@ def test_answer_graph_question_omits_max_tokens(monkeypatch) -> None:
     assert captured["url"] == "http://models/v1/chat/completions"
     assert captured["api_key"] == "secret"
     assert "max_tokens" not in captured["payload"]
-    assert "目前專案" in captured["payload"]["messages"][0]["content"]
-    assert "只允許使用以下文件" not in captured["payload"]["messages"][0]["content"]
-    assert "每個編號項目前都要空一行" in captured["payload"]["messages"][0]["content"]
-    assert "優先使用檢索證據的主要語言作答" in captured["payload"]["messages"][0]["content"]
-    assert "一般純文字，不要使用 Markdown 格式" in captured["payload"]["messages"][0]["content"]
-    assert "粗體或斜體標記、項目符號、表格或程式碼區塊" in captured["payload"]["messages"][0]["content"]
+    system_prompt = captured["payload"]["messages"][0]["content"]
+    user_prompt = captured["payload"]["messages"][1]["content"]
+    assert system_prompt.startswith("You are a vehicle-document knowledge-graph QA assistant.")
+    assert "answer primarily in the language of the retrieved evidence" in system_prompt
+    assert "Use plain text, not Markdown" in system_prompt
+    assert "leave a blank line before each numbered item" in system_prompt
+    assert "Question: 問題" in user_prompt
+    assert "Evidence:" in user_prompt
 
 
-def test_multi_agent_answer_integrates_document_drafts_and_raw_evidence(monkeypatch) -> None:
-    captured = {}
-
-    def fake_post(_url, payload, _api_key, **_kwargs):
-        captured["payload"] = payload
-        return {"choices": [{"message": {"content": "整合答案"}}]}
-
-    monkeypatch.setattr(qa_service, "_post_json", fake_post)
-    evidence = [{
-        "evidence_id": "ev-1", "text": "原始證據", "document_id": "doc-1",
-        "document_agent_name": "manual.pdf", "document_agent_answer": "文件 Agent 答案",
-        "multi_agent_documents": ["manual.pdf", "other.pdf"],
-    }]
-
-    result = qa_service.answer_graph_question(
-        "http://models/v1", "secret", "model-a", "問題",
-        "multi_agent_search_1", evidence,
+def test_answer_graph_question_rejects_empty_model_completion(monkeypatch) -> None:
+    monkeypatch.setattr(
+        qa_service, "_post_json",
+        lambda *_args, **_kwargs: {
+            "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+        },
     )
 
-    prompt = captured["payload"]["messages"][0]["content"]
-    user_payload = captured["payload"]["messages"][1]["content"]
-    assert "主 Agent" in prompt
-    assert "manual.pdf" in user_payload and "文件 Agent 答案" in user_payload
-    assert "other.pdf" in user_payload
-    assert "原始證據" in user_payload
-    assert "document_agent_answer" not in user_payload
-    assert result["answer"] == "整合答案"
-    assert result["evidence"] == evidence
-
-
-def test_multi_agent_search_2_passes_chatroom_history_to_final_integrator(monkeypatch) -> None:
-    captured = {}
-
-    def fake_post(_url, payload, _api_key, **_kwargs):
-        captured["payload"] = payload
-        return {"choices": [{"message": {"content": "整合答案"}}]}
-
-    monkeypatch.setattr(qa_service, "_post_json", fake_post)
-    evidence = [{
-        "evidence_id": "ev-1", "text": "原始證據", "document_id": "doc-1",
-        "multi_agent_answers": {"manual.pdf": "查證後答案"},
-        "multi_agent_discussion": [{
-            "phase": "討論第 1 輪", "document": "manual.pdf", "message": "另一份文件有補充說明",
-        }],
-    }]
-
-    qa_service.answer_graph_question(
-        "http://models/v1", "secret", "model-a", "問題",
-        "multi_agent_search_2", evidence,
-    )
-
-    payload = captured["payload"]
-    prompt = payload["messages"][0]["content"]
-    user_content = payload["messages"][1]["content"]
-    assert "聊天室紀錄只代表討論過程" in prompt
-    assert "agent_discussion" in user_content and "討論第 1 輪" in user_content
-    assert "查證後答案" in user_content and "原始證據" in user_content
-    assert "multi_agent_discussion" not in user_content
+    with pytest.raises(ValueError, match="回答模型回傳空白內容.*finish_reason=length"):
+        qa_service.answer_graph_question(
+            "http://models/v1", "secret", "model-a", "問題", "agentic",
+            [{"evidence_id": "ev-1", "text": "來源證據"}],
+        )
 
 
 def test_luna_answer_uses_low_reasoning_without_temperature(monkeypatch) -> None:
@@ -172,6 +131,8 @@ def test_rerank_evidence_uses_model_ranking_and_marks_results(monkeypatch) -> No
     assert captured["api_key"] == "secret"
     prompt = captured["payload"]["messages"][1]["content"]
     assert "E01 怎麼處理？" in prompt
+    assert prompt.startswith("Question:")
+    assert "Candidate evidence:" in prompt
     assert '"expanded_from_graph": true' in prompt
 
 

@@ -101,18 +101,21 @@ class AgenticRetrievalStrategy:
                 {
                     "role": "system",
                     "content": (
-                        "你是知識圖譜檢索 Agent。根據問題，從提供的候選路徑中選出值得繼續探索的實體。"
-                        "優先選擇能補足問題所需資訊的直接關係；避免沿高連結度的泛化實體擴散。"
-                        "候選中的關係與描述是檢索線索，不是最終答案。不要生成 Cypher、不要杜撰選項。"
-                        "若現有線索已足夠或候選都無關，回傳空 expand 並設 stop=true。"
-                        "只輸出 JSON：{\"expand\":[候選 id ...],\"stop\":true或false}。"
+                        "You are a knowledge-graph retrieval agent. Given the question, select which "
+                        "entities in the candidate paths are worth exploring next. Prefer direct "
+                        "relationships that may supply information needed to answer the question; "
+                        "avoid expanding through generic, highly connected entities. Candidate "
+                        "relationships and descriptions are retrieval clues, not final answers. "
+                        "Do not write Cypher or invent candidate options. If the current evidence "
+                        "is sufficient or all candidates are irrelevant, return an empty expand list "
+                        "and set stop=true. Return JSON only: {\"expand\":[candidate ids],\"stop\":true or false}."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        f"問題：{question}\n本輪最多選 {max_branches} 個候選。\n"
-                        f"候選路徑：{json.dumps(options, ensure_ascii=False)}"
+                        f"Question: {question}\nSelect at most {max_branches} candidates in this round.\n"
+                        f"Candidate paths: {json.dumps(options, ensure_ascii=False)}"
                     ),
                 },
             ],

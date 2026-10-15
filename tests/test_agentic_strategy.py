@@ -117,6 +117,8 @@ def test_agentic_strategy_uses_llm_choices_and_real_graph_hops(monkeypatch):
     assert all("EXTRACTED_RELATION" in query for query, _params in driver.session_instance.queries
                if "MATCH (current:ExtractedEntity" in query)
     assert all("Cypher" in call[1]["messages"][0]["content"] for call in calls)
+    assert all("You are a knowledge-graph retrieval agent" in call[1]["messages"][0]["content"] for call in calls)
+    assert all("Question:" in call[1]["messages"][1]["content"] for call in calls)
 
 
 def test_agentic_strategy_invalid_llm_selection_stops_expansion(monkeypatch):
