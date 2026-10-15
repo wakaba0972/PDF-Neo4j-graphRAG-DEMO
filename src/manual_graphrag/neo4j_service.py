@@ -201,22 +201,8 @@ def load_latest_graph(
         .source_documents, .source_references_json
     }) AS entities
     OPTIONAL MATCH (source:ExtractedEntity)-[relation:EXTRACTED_RELATION]->(target:ExtractedEntity)
-    WHERE (
-        coalesce(
-            document.graph_partition_mode,
-            CASE WHEN coalesce(document.document_id, '') <> ''
-                 THEN 'per_document' ELSE 'merged' END
-        ) = 'merged'
-        AND (source)-[:IN_DOCUMENT]->(document)
-        AND (target)-[:IN_DOCUMENT]->(document)
-    ) OR (
-        coalesce(
-            document.graph_partition_mode,
-            CASE WHEN coalesce(document.document_id, '') <> ''
-                 THEN 'per_document' ELSE 'merged' END
-        ) = 'per_document'
-        AND relation.document_id = document.document_id
-    )
+    WHERE (source)-[:IN_DOCUMENT]->(document)
+      AND (target)-[:IN_DOCUMENT]->(document)
     RETURN document.file_name AS document,
            document.embedding_model AS embedding_model,
            document.embedding_dimensions AS embedding_dimensions,
@@ -341,43 +327,6 @@ def search_graph_evidence(
     """
     try:
         with _shared_driver(uri, username, password) as driver:
-            strategy_spec = RETRIEVAL_STRATEGIES.get_spec(config.strategy_id)
-            if len(strategy_spec.supported_graph_modes) < 2:
-                with driver.session(database=database.strip()) as session:
-                    def inspect_graph_mode():
-                        return session.run(
-                            """
-                            MATCH (document:GraphDocument)
-                            WITH count(document) AS document_count,
-                                 count(CASE WHEN coalesce(
-                                     document.graph_partition_mode,
-                                     CASE WHEN coalesce(document.document_id, '') <> ''
-                                          THEN 'per_document' ELSE 'merged' END
-                                 ) = 'per_document'
-                                            THEN 1 END) AS partitioned_count
-                            RETURN document_count, partitioned_count
-                            """
-                        ).single()
-
-                    graph_record = _retry_read(inspect_graph_mode)
-                document_count = int((graph_record or {}).get("document_count", 0))
-                partitioned_count = int((graph_record or {}).get("partitioned_count", 0))
-                graph_mode = "per_document" if partitioned_count else "merged"
-                if document_count and partitioned_count not in {0, document_count}:
-                    raise ValueError("圖譜內混有合併與文件分區的 GraphDocument，請重新匯入圖譜")
-                if graph_mode not in strategy_spec.supported_graph_modes:
-                    graph_mode_label = {
-                        "merged": "所有文件合併",
-                        "per_document": "每份文件分區",
-                    }.get(graph_mode, graph_mode)
-                    supported_labels = "、".join(
-                        "所有文件合併" if mode == "merged" else "每份文件分區"
-                        for mode in strategy_spec.supported_graph_modes
-                    )
-                    raise ValueError(
-                        f"檢索策略「{strategy_spec.label}」支援「{supported_labels}」圖譜；"
-                        f"目前專案是「{graph_mode_label}」圖譜，請改用相容策略。"
-                    )
             strategy = RETRIEVAL_STRATEGIES.get(config.strategy_id)
             context = RetrievalContext(
                 driver=driver, database=database.strip(),
@@ -626,7 +575,6 @@ def import_extraction_batched(
     evidence_batches: Iterable[list[dict[str, Any]]],
     total_evidence: int,
     progress=None,
-    graph_documents: list[dict[str, str]] | None = None,
 ) -> ImportSummary:
     """Write each already-embedded evidence batch in its own Neo4j transaction."""
     if not uri.strip():
@@ -699,8 +647,8 @@ def import_extraction_batched(
                     _execute_write_with_retry(
                         driver,
                         database.strip(),
-                        _create_graph_documents,
-                        graph_documents or [{"document_id": "", "file_name": document_name}],
+                        _create_graph_document,
+                        document_name,
                         llm_model,
                         embedding_model,
                         schema,
@@ -887,7 +835,6 @@ def _write_graph(
             document.embedding_dimensions = $embedding_dimensions,
             document.vector_index_name = $vector_index_name,
             document.schema_json = $schema_json,
-            document.graph_partition_mode = 'merged',
             document.import_status = $import_status,
             document.updated_at = datetime()
         """,
@@ -1022,53 +969,11 @@ def _create_graph_document(
             embedding_dimensions: $embedding_dimensions,
             vector_index_name: $vector_index,
             schema_json: $schema_json,
-            graph_partition_mode: 'merged',
             import_status: 'staging',
             updated_at: datetime()
         })
         """,
         document_name=document_name,
-        llm_model=llm_model,
-        embedding_model=embedding_model,
-        embedding_dimensions=embedding_dimensions,
-        vector_index=vector_index,
-        schema_json=json.dumps(schema, ensure_ascii=False),
-    ).consume()
-
-
-def _create_graph_documents(
-    transaction: Any,
-    documents: list[dict[str, str]],
-    llm_model: str,
-    embedding_model: str,
-    schema: dict[str, Any],
-    embedding_dimensions: int,
-    vector_index: str,
-) -> None:
-    transaction.run(
-        """
-        UNWIND $documents AS item
-        CREATE (document:GraphDocument {
-            file_name: item.file_name,
-            llm_model: $llm_model,
-            embedding_model: $embedding_model,
-            embedding_dimensions: $embedding_dimensions,
-            vector_index_name: $vector_index,
-            schema_json: $schema_json,
-            graph_partition_mode: coalesce(
-                item.graph_partition_mode,
-                CASE WHEN coalesce(item.document_id, '') <> ''
-                     THEN 'per_document' ELSE 'merged' END
-            ),
-            import_status: 'staging',
-            updated_at: datetime()
-        })
-        SET document.document_id = CASE
-            WHEN coalesce(item.document_id, '') = '' THEN null
-            ELSE item.document_id
-        END
-        """,
-        documents=documents,
         llm_model=llm_model,
         embedding_model=embedding_model,
         embedding_dimensions=embedding_dimensions,

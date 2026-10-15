@@ -15,7 +15,6 @@ from manual_graphrag.retrieval import (
     RETRIEVAL_STRATEGIES,
     register_retrieval_strategy,
     strategy_choices,
-    strategy_choices_for_graph_modes,
     strategy_id_from_label,
     strategy_label,
 )
@@ -99,19 +98,10 @@ def test_builtin_strategy_registry_loads_implementations_from_yaml() -> None:
     assert vector.__class__.__module__ == "strategies.implementations.vector.strategy"
     assert hybrid.__class__.__module__ == "strategies.implementations.hybrid.strategy"
     assert "agentic_search_2" not in RETRIEVAL_STRATEGIES.ids()
-    for strategy_id in ("vector", "hybrid", "agentic", "agentic_search_3"):
-        assert RETRIEVAL_STRATEGIES.get_spec(strategy_id).supported_graph_modes == ("merged",)
-
-
-def test_strategy_choices_respect_graph_mode_compatibility() -> None:
-    merged = strategy_choices_for_graph_modes("merged")
-    partitioned = strategy_choices_for_graph_modes("per_document")
-
-    assert set(merged) == {
+    assert not any("multi_agent" in item for item in RETRIEVAL_STRATEGIES.ids())
+    assert set(strategy_choices()) == {
         "基本向量檢索", "混合檢索", "Agentic Search", "Agentic Search 3",
     }
-    assert partitioned == []
-    assert strategy_choices_for_graph_modes({"merged", "per_document"}) == []
 
 
 @pytest.mark.parametrize("strategy_id", ["agentic", "agentic_search_3"])
@@ -185,7 +175,6 @@ def test_strategy_specs_load_yaml_and_implementation_from_strategy_directory(tmp
     spec = RETRIEVAL_STRATEGIES.get_spec("sample")
     assert spec.label == "測試策略"
     assert spec.parameters["beam_width"].default == 4
-    assert spec.supported_graph_modes == ("merged",)
     assert RETRIEVAL_STRATEGIES.get("sample").strategy_id == "sample"
 
 

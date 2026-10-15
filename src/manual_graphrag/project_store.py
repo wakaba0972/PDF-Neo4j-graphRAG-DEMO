@@ -38,13 +38,6 @@ def build_project_summary(project: dict[str, Any]) -> dict[str, Any]:
     """Return a compact, human-readable snapshot of the project's build metadata."""
     settings = project.get("settings") or {}
     graph_state = project.get("graph_state") or {}
-    graph_partition_mode = (
-        graph_state.get("graph_partition_mode")
-        or settings.get("graph_partition_mode")
-        or "merged"
-    )
-    if graph_partition_mode not in {"merged", "per_document"}:
-        graph_partition_mode = "merged"
     build_config = graph_state.get("build_config") or {}
     schema_granularity = build_config.get("schema_granularity")
     if schema_granularity is None and graph_state.get("schema"):
@@ -85,7 +78,6 @@ def build_project_summary(project: dict[str, Any]) -> dict[str, Any]:
         "chunk_size": build_config.get("chunk_size", settings.get("chunk_size")),
         "chunk_overlap": build_config.get("chunk_overlap", settings.get("chunk_overlap")),
         "schema_granularity": schema_granularity,
-        "graph_partition_mode": graph_partition_mode,
         "graph_built": bool(graph_state.get("document") or graph_state.get("graph_data_file")),
         "updated_at": project.get("updated_at", ""),
     }
@@ -106,11 +98,12 @@ def load_project_summary(
     summary_path = project_dir / "summary.json"
     if summary_path.is_file():
         summary = read_json(summary_path)
-        if "graph_partition_mode" in summary:
+        if "graph_partition_mode" not in summary:
             return summary
-        # Upgrade old compact summaries without loading large graph/chunk sidecars.
+        # Remove the obsolete per-document graph mode from old summaries.
         project = _read_project_metadata(project_id, root)
         summary = {**summary, **build_project_summary(project)}
+        summary.pop("graph_partition_mode", None)
         write_json(summary_path, summary)
         return summary
     # One-time compatibility path for projects created before summary.json
@@ -296,6 +289,11 @@ def load_project_metadata(
             project["graph_state"] = graph_state
         project_dir = Path(root) / project_id
         changed = False
+        settings = project.get("settings")
+        if isinstance(settings, dict) and settings.pop("graph_partition_mode", None) is not None:
+            changed = True
+        if graph_state.pop("graph_partition_mode", None) is not None:
+            changed = True
         if "run_id" in graph_state:
             graph_state.pop("run_id", None)
             changed = True

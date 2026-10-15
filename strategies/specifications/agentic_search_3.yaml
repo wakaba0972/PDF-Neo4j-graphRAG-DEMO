@@ -1,8 +1,6 @@
 id: agentic_search_3
 name: Agentic Search 3
 order: 50
-supported_graph_modes:
-  - merged
 implementation:
   file: agentic_search_3/strategy.py
   class: AgenticSearch3RetrievalStrategy

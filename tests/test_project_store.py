@@ -85,14 +85,13 @@ def test_project_summary_file_tracks_creator_documents_and_build_settings(tmp_pa
     save_project(project["project_id"], {
         "settings": {
             "chunk_size": 1500, "chunk_overlap": 200,
-            "schema_granularity": "詳細", "graph_partition_mode": "per_document",
+            "schema_granularity": "詳細",
         },
         "evaluation": {"questions": [{"number": 1}, {"number": 2}]},
         "documents_meta": [{"file_name": "guide.pdf"}, {"file_name": "parts.pdf"}],
         "chunks": [{"number": 1}, {"number": 2}, {"number": 3}],
         "graph_state": {
             "document": "guide.pdf",
-            "graph_partition_mode": "per_document",
             "schema": {"entity_types": [{"name": "DEVICE"}]},
             "build_config": {
                 "chunk_size": 1500,
@@ -113,11 +112,11 @@ def test_project_summary_file_tracks_creator_documents_and_build_settings(tmp_pa
     assert summary["chunk_size"] == 1500
     assert summary["chunk_overlap"] == 200
     assert summary["schema_granularity"] == "詳細"
-    assert summary["graph_partition_mode"] == "per_document"
+    assert "graph_partition_mode" not in summary
     assert summary["graph_built"] is True
 
 
-def test_existing_project_summary_is_upgraded_with_graph_partition_mode(tmp_path) -> None:
+def test_existing_project_summary_drops_obsolete_graph_partition_mode(tmp_path) -> None:
     project = create_project("舊摘要", tmp_path)
     save_project(project["project_id"], {
         "settings": {"graph_partition_mode": "per_document"},
@@ -125,20 +124,22 @@ def test_existing_project_summary_is_upgraded_with_graph_partition_mode(tmp_path
     }, root=tmp_path)
     summary_path = tmp_path / project["project_id"] / "summary.json"
     old_summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    old_summary.pop("graph_partition_mode")
+    old_summary["graph_partition_mode"] = "per_document"
     summary_path.write_text(json.dumps(old_summary), encoding="utf-8")
 
     upgraded = load_project_summary(project["project_id"], tmp_path)
 
-    assert upgraded["graph_partition_mode"] == "per_document"
-    assert json.loads(summary_path.read_text(encoding="utf-8"))["graph_partition_mode"] == "per_document"
+    assert "graph_partition_mode" not in upgraded
+    assert "graph_partition_mode" not in json.loads(summary_path.read_text(encoding="utf-8"))
 
 
 def test_loading_legacy_project_removes_graph_run_id(tmp_path) -> None:
     project = create_project("舊圖譜狀態", tmp_path)
     save_project(project["project_id"], {
+        "settings": {"graph_partition_mode": "per_document"},
         "graph_state": {
             "run_id": "legacy-graph-run",
+            "graph_partition_mode": "per_document",
             "document": "manual.pdf",
             "entity_count": 1,
         },
@@ -151,6 +152,10 @@ def test_loading_legacy_project_removes_graph_run_id(tmp_path) -> None:
 
     assert "run_id" not in loaded["graph_state"]
     assert "run_id" not in persisted["graph_state"]
+    assert "graph_partition_mode" not in loaded["graph_state"]
+    assert "graph_partition_mode" not in persisted["graph_state"]
+    assert "graph_partition_mode" not in loaded["settings"]
+    assert "graph_partition_mode" not in persisted["settings"]
 
 
 def test_graph_entities_and_relationships_are_stored_in_compressed_sidecar(tmp_path) -> None:

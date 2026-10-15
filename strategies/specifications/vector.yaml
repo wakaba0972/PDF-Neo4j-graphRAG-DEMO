@@ -1,8 +1,6 @@
 id: vector
 name: 基本向量檢索
 order: 10
-supported_graph_modes:
-  - merged
 postprocessors:
   - reranker
   - evidence_expansion

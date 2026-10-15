@@ -5,7 +5,7 @@ from importlib import import_module, util
 from pathlib import Path
 import sys
 from threading import RLock
-from typing import Any, Iterable, Protocol
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,6 @@ class RetrievalStrategySpec:
     strategy_id: str
     label: str
     parameters: dict[str, RetrievalParameterSpec] = field(default_factory=dict)
-    supported_graph_modes: tuple[str, ...] = ("merged",)
     postprocessors: tuple[str, ...] = ()
 
     def validate_params(self, params: dict[str, Any], top_k: int) -> None:
@@ -200,22 +199,6 @@ def strategy_label(strategy_id: str) -> str:
 def strategy_choices() -> list[str]:
     """UI labels in registration order; views should not maintain duplicates."""
     return [spec.label for spec in RETRIEVAL_STRATEGIES.specs.values()]
-
-
-def strategy_choices_for_graph_modes(graph_modes: Iterable[str] | str | None) -> list[str]:
-    """Return strategies compatible with every graph mode in the target scope."""
-    if graph_modes is None:
-        return strategy_choices()
-    modes = {graph_modes} if isinstance(graph_modes, str) else set(graph_modes)
-    if not modes:
-        return strategy_choices()
-    unknown = modes - {"merged", "per_document"}
-    if unknown:
-        raise ValueError(f"不支援的圖譜模式：{', '.join(sorted(unknown))}")
-    return [
-        spec.label for spec in RETRIEVAL_STRATEGIES.specs.values()
-        if modes.issubset(set(spec.supported_graph_modes))
-    ]
 
 
 @dataclass(frozen=True)

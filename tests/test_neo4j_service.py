@@ -214,20 +214,19 @@ def test_document_partition_writes_scope_nodes_and_relationship_endpoints() -> N
     assert relation_params["relationships"][0]["document_id"] == "doc-a"
 
 
-def test_merged_graph_document_uses_mode_without_empty_document_id() -> None:
+def test_graph_import_creates_single_merged_graph_document() -> None:
     transaction = FakeTransaction()
 
-    neo4j_service._create_graph_documents(
+    neo4j_service._create_graph_document(
         transaction,
-        [{"document_id": "", "file_name": "manual.pdf", "graph_partition_mode": "merged"}],
+        "manual.pdf",
         "llm", "embed", {}, 1536, "graph_evidence_embedding_1536",
     )
 
     query, parameters = transaction.calls[0]
-    assert "graph_partition_mode" in query
-    assert "SET document.document_id = CASE" in query
-    assert "THEN null" in query
-    assert parameters["documents"][0]["graph_partition_mode"] == "merged"
+    assert "CREATE (document:GraphDocument" in query
+    assert "graph_partition_mode" not in query
+    assert parameters["document_name"] == "manual.pdf"
 
 
 def test_load_latest_graph_metadata_does_not_collect_all_graph_nodes(monkeypatch) -> None:
