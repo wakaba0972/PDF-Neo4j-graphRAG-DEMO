@@ -3049,6 +3049,7 @@ def _evaluation_summary(results: list[dict[str, Any]], *, loaded: bool = False) 
     evidence_hit_rate = _mean_result_metric(results, "evidence_hit")
     evidence_recall = _mean_result_metric(results, "evidence_recall")
     evidence_precision = _mean_result_metric(results, "evidence_precision")
+    evidence_f1 = _mean_evidence_f1(results)
     document_hit_rate = _mean_result_metric(results, "document_hit")
 
     document_totals: dict[str, list[int]] = {}
@@ -3076,6 +3077,7 @@ def _evaluation_summary(results: list[dict[str, Any]], *, loaded: bool = False) 
         f"  \nEvidence Hit Rate：{percent(evidence_hit_rate)}"
         f"｜Evidence Recall：{percent(evidence_recall)}"
         f"｜Evidence Precision：{percent(evidence_precision)}"
+        f"｜Evidence F1：{percent(evidence_f1)}"
         f"｜Document Hit Rate：{percent(document_hit_rate)}"
     )
 
@@ -3190,6 +3192,7 @@ def _retrieval_metrics(
             "evidence_hit": None,
             "evidence_recall": None,
             "evidence_precision": None,
+            "evidence_f1": None,
             "document_hit": None,
         }
 
@@ -3207,14 +3210,38 @@ def _retrieval_metrics(
 
     matched_sources = retrieved_sources & gold_sources
     gold_documents = {source_identity for source_identity, _page in gold_sources}
+    evidence_recall = len(matched_sources) / len(gold_sources)
+    evidence_precision = len(matched_sources) / len(retrieved_sources) if retrieved_sources else 0.0
     return {
         "evidence_hit": bool(matched_sources),
-        "evidence_recall": len(matched_sources) / len(gold_sources),
-        "evidence_precision": (
-            len(matched_sources) / len(retrieved_sources) if retrieved_sources else 0.0
-        ),
+        "evidence_recall": evidence_recall,
+        "evidence_precision": evidence_precision,
+        "evidence_f1": _harmonic_f1(evidence_precision, evidence_recall),
         "document_hit": bool(gold_documents & retrieved_documents),
     }
+
+
+def _harmonic_f1(precision: float | None, recall: float | None) -> float | None:
+    if precision is None or recall is None:
+        return None
+    denominator = precision + recall
+    return 2 * precision * recall / denominator if denominator else 0.0
+
+
+def _mean_evidence_f1(results: list[dict[str, Any]]) -> float | None:
+    values = []
+    for item in results:
+        value = item.get("evidence_f1")
+        if value is None:
+            value = _harmonic_f1(
+                item.get("evidence_precision"), item.get("evidence_recall"),
+            )
+        if value is not None:
+            try:
+                values.append(float(value))
+            except (TypeError, ValueError, OverflowError):
+                continue
+    return sum(values) / len(values) if values else None
 
 
 def _mean_result_metric(results: list[dict[str, Any]], name: str) -> float | None:
@@ -3915,7 +3942,7 @@ def run_experiment_groups_for_ui(
                 "judge_reasoning_effort": effective_judge_effort,
                 "verification_enabled": bool(verification_enabled),
                 "results": completed_results, "summary_rows": summary_rows,
-                "retrieval_metrics_version": 2,
+                "retrieval_metrics_version": 3,
                 "detail_rows": detail_rows, "status": status,
             })
         except (OSError, ValueError) as exc:
@@ -3948,6 +3975,7 @@ def _single_experiment_summary_rows(
             hit_rate = _mean_result_metric(selected, "evidence_hit")
             evidence_recall = _mean_result_metric(selected, "evidence_recall")
             precision = _mean_result_metric(selected, "evidence_precision")
+            evidence_f1 = _mean_evidence_f1(selected)
             document_hit_rate = _mean_result_metric(selected, "document_hit")
             summaries.append([
                 group["name"], group["answer_model"], _group_reranker_mode(group),
@@ -3957,6 +3985,7 @@ def _single_experiment_summary_rows(
                 f"{hit_rate:.1%}" if hit_rate is not None else "—",
                 f"{evidence_recall:.1%}" if evidence_recall is not None else "—",
                 f"{precision:.1%}" if precision is not None else "—",
+                f"{evidence_f1:.1%}" if evidence_f1 is not None else "—",
                 f"{document_hit_rate:.1%}" if document_hit_rate is not None else "—",
                 source_project_name, set_name,
             ])
@@ -3997,6 +4026,7 @@ def _experiment_group_overall_summary_rows(
         hit_rate = _mean_result_metric(group_results, "evidence_hit")
         evidence_recall = _mean_result_metric(group_results, "evidence_recall")
         precision = _mean_result_metric(group_results, "evidence_precision")
+        evidence_f1 = _mean_evidence_f1(group_results)
         document_hit_rate = _mean_result_metric(group_results, "document_hit")
         row = [
             group.get("name", ""), group.get("answer_model", ""),
@@ -4006,6 +4036,7 @@ def _experiment_group_overall_summary_rows(
             f"{hit_rate:.1%}" if hit_rate is not None else "—",
             f"{evidence_recall:.1%}" if evidence_recall is not None else "—",
             f"{precision:.1%}" if precision is not None else "—",
+            f"{evidence_f1:.1%}" if evidence_f1 is not None else "—",
             f"{document_hit_rate:.1%}" if document_hit_rate is not None else "—",
         ]
         if include_project_count:
@@ -4334,7 +4365,7 @@ def export_experiment_results_for_ui(
         for row in summary_rows:
             if not row:
                 continue
-            if retrieval_metrics_version >= 2 and len(row) >= 13:
+            if retrieval_metrics_version >= 3 and len(row) >= 16:
                 summaries[str(row[0])] = {
                     "answer_model": row[1], "judge_model": row[4],
                     "question_count": row[5], "correct_total": row[6],
@@ -4342,6 +4373,18 @@ def export_experiment_results_for_ui(
                     "evidence_hit_rate": row[9],
                     "evidence_recall_rate": row[10],
                     "evidence_precision": row[11],
+                    "evidence_f1": row[12],
+                    "document_hit_rate": row[13],
+                }
+            elif retrieval_metrics_version >= 2 and len(row) >= 15:
+                summaries[str(row[0])] = {
+                    "answer_model": row[1], "judge_model": row[4],
+                    "question_count": row[5], "correct_total": row[6],
+                    "partial_count": row[7], "accuracy": row[8],
+                    "evidence_hit_rate": row[9],
+                    "evidence_recall_rate": row[10],
+                    "evidence_precision": row[11],
+                    "evidence_f1": None,
                     "document_hit_rate": row[12],
                 }
             elif len(row) >= 12:
@@ -4352,6 +4395,7 @@ def export_experiment_results_for_ui(
                     "evidence_hit_rate": row[9] if retrieval_metrics_version else None,
                     "evidence_recall_rate": None,
                     "evidence_precision": row[10] if retrieval_metrics_version else None,
+                    "evidence_f1": None,
                     "document_hit_rate": row[11] if retrieval_metrics_version else None,
                 }
             elif len(row) >= 11:
@@ -4360,7 +4404,8 @@ def export_experiment_results_for_ui(
                     "question_count": row[5], "correct_total": row[6],
                     "accuracy": row[7], "evidence_hit_rate": None,
                     "evidence_recall_rate": None,
-                    "evidence_precision": None, "document_hit_rate": None,
+                    "evidence_precision": None, "evidence_f1": None,
+                    "document_hit_rate": None,
                 }
             elif len(row) >= 9:
                 summaries[str(row[0])] = {
@@ -4368,7 +4413,8 @@ def export_experiment_results_for_ui(
                     "question_count": row[3], "correct_total": row[4],
                     "accuracy": row[5], "evidence_hit_rate": None,
                     "evidence_recall_rate": None,
-                    "evidence_precision": None, "document_hit_rate": None,
+                    "evidence_precision": None, "evidence_f1": None,
+                    "document_hit_rate": None,
                 }
             else:
                 summaries[str(row[0])] = {
@@ -4379,12 +4425,13 @@ def export_experiment_results_for_ui(
                     "evidence_hit_rate": None,
                     "evidence_recall_rate": None,
                     "evidence_precision": None,
+                    "evidence_f1": None,
                     "document_hit_rate": None,
                 }
         result_fields = (
             "number", "question", "document", "expected_answer", "actual_answer",
             "answer_model", "judge_model", "score", "passed", "reason",
-            "evidence_hit", "evidence_recall", "evidence_precision", "document_hit",
+            "evidence_hit", "evidence_recall", "evidence_precision", "evidence_f1", "document_hit",
             "answer_reasoning_effort", "judge_reasoning_effort",
             "manual_judgment", "verification_enabled", "first_passed", "first_reason",
             "verification_passed", "verification_reason", "verification_changed",
@@ -4396,6 +4443,9 @@ def export_experiment_results_for_ui(
             group_results = [
                 {
                     **{key: result.get(key) for key in result_fields if key in result},
+                    "evidence_f1": _harmonic_f1(
+                        result.get("evidence_precision"), result.get("evidence_recall"),
+                    ) if result.get("evidence_f1") is None else result.get("evidence_f1"),
                     "score": _result_score(result),
                     "passed": _result_score(result) == 2,
                     "manual_judgment": bool(result.get("manual_judgment", False)),
@@ -4413,6 +4463,7 @@ def export_experiment_results_for_ui(
                 evidence_hit_rate = _mean_result_metric(group_results, "evidence_hit")
                 evidence_recall_rate = _mean_result_metric(group_results, "evidence_recall")
                 evidence_precision = _mean_result_metric(group_results, "evidence_precision")
+                evidence_f1 = _mean_evidence_f1(group_results)
                 document_hit_rate = _mean_result_metric(group_results, "document_hit")
             else:
                 question_count = int(saved_summary.get("question_count", 0) or 0)
@@ -4440,6 +4491,7 @@ def export_experiment_results_for_ui(
                 evidence_hit_rate = rate(saved_summary.get("evidence_hit_rate"))
                 evidence_recall_rate = rate(saved_summary.get("evidence_recall_rate"))
                 evidence_precision = rate(saved_summary.get("evidence_precision"))
+                evidence_f1 = rate(saved_summary.get("evidence_f1"))
                 document_hit_rate = rate(saved_summary.get("document_hit_rate"))
             summary = {
                 "answer_model": saved_summary.get("answer_model") or group.get("answer_model"),
@@ -4455,6 +4507,7 @@ def export_experiment_results_for_ui(
                 "evidence_hit_rate": evidence_hit_rate,
                 "evidence_recall_rate": evidence_recall_rate,
                 "evidence_precision": evidence_precision,
+                "evidence_f1": evidence_f1,
                 "document_hit_rate": document_hit_rate,
             }
             parameters = {
@@ -4493,10 +4546,11 @@ def export_experiment_results_for_ui(
             "evidence_hit_rate": weighted_metric("evidence_hit_rate"),
             "evidence_recall_rate": weighted_metric("evidence_recall_rate"),
             "evidence_precision": weighted_metric("evidence_precision"),
+            "evidence_f1": _mean_evidence_f1(results),
             "document_hit_rate": weighted_metric("document_hit_rate"),
         }
         payload = {
-            "schema_version": 6,
+            "schema_version": 7,
             "project": {"project_id": project_id, "name": project.get("name", "")},
             "max_concurrent_requests": experiment.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
             "evaluation": {
@@ -4518,7 +4572,7 @@ def export_experiment_results_for_ui(
             payload,
         )
         compact_payload = {
-            "schema_version": 4,
+            "schema_version": 5,
             "format": "manual-graphrag-experiment-summary",
             "project": {"project_id": project_id, "name": project.get("name", "")},
             "max_concurrent_requests": experiment.get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
@@ -5430,11 +5484,16 @@ def human_review_results_for_ui(
             group_items = bucket["items"]
             row: list[Any] = [bucket["name"], len(group_items)]
             for source_name in (
-                "evidence_hit", "evidence_recall", "evidence_precision", "document_hit",
+                "evidence_hit", "evidence_recall", "evidence_precision", "evidence_f1", "document_hit",
             ):
                 values: list[float] = []
                 for item in group_items:
-                    value = item.get(source_name)
+                    value = (
+                        item.get("evidence_f1")
+                        if item.get("evidence_f1") is not None else _harmonic_f1(
+                            item.get("evidence_precision"), item.get("evidence_recall"),
+                        )
+                    ) if source_name == "evidence_f1" else item.get(source_name)
                     if value is not None:
                         try:
                             values.append(float(value))
@@ -6801,7 +6860,7 @@ def build_app() -> gr.Blocks:
                 gr.Markdown(
                     "使用「0 系統設定」或 1-4 存成並綁定到目前專案的題目集；建立一個或多個不同回答／檢索設定的實驗組，"
                     "先生成各組回答，再獨立評測並比較答案正確率、Evidence Hit Rate、"
-                    "Evidence Recall、Evidence Precision 與 Document Hit Rate。"
+                    "Evidence Recall、Evidence Precision、Evidence F1 與 Document Hit Rate。"
                 )
                 experiment_questions_state = gr.State([])
                 experiment_groups_state = gr.State([])
@@ -6922,12 +6981,12 @@ def build_app() -> gr.Blocks:
                 with gr.Accordion("④ 實驗結果", open=True, visible=False) as experiment_results_accordion:
                     gr.Markdown("#### 實驗組總覽（跨題目集合併）")
                     experiment_group_overall_summary_table = gr.Dataframe(
-                        headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Document Hit Rate", "題目集數"],
+                        headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Evidence F1", "Document Hit Rate", "題目集數"],
                         interactive=False, wrap=True,
                     )
                     gr.Markdown("#### 實驗組摘要（依題目集）")
                     experiment_summary_table = gr.Dataframe(
-                        headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
+                        headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Evidence F1", "Document Hit Rate", "成員專案", "題目集"],
                         interactive=False, wrap=True,
                     )
                     gr.Markdown("#### 逐題結果")
@@ -7127,12 +7186,12 @@ def build_app() -> gr.Blocks:
                     with gr.Accordion("⑥ 實驗結果", open=True, visible=False) as experiment_project_results_accordion:
                         gr.Markdown("#### 實驗組總覽（跨成員專案與題目集合併）")
                         experiment_project_group_summary_table = gr.Dataframe(
-                            headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Document Hit Rate", "成員專案數", "題目集數"],
+                            headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Evidence F1", "Document Hit Rate", "成員專案數", "題目集數"],
                             interactive=False, wrap=True,
                         )
                         gr.Markdown("#### 各成員專案／題目集統計")
                         experiment_project_summary_table = gr.Dataframe(
-                            headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Document Hit Rate", "成員專案", "題目集"],
+                            headers=["實驗組", "回答模型", "Reranker", "證據擴展", "評測模型", "題數", "全對 / 總題數", "部分正確數", "得分正確率", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Evidence F1", "Document Hit Rate", "成員專案", "題目集"],
                             interactive=False, wrap=True,
                         )
                         gr.Markdown("#### 逐題結果")
@@ -7237,7 +7296,7 @@ def build_app() -> gr.Blocks:
                     with gr.Accordion("② 檢索指標", open=True):
                         gr.Markdown("依該次執行中各實驗組的全部題目計算，不限人工抽樣題。")
                         human_review_retrieval_summary_table = gr.Dataframe(
-                            headers=["實驗組", "總測試題數", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Document Hit Rate"],
+                            headers=["實驗組", "總測試題數", "Evidence Hit Rate", "Evidence Recall", "Evidence Precision", "Evidence F1", "Document Hit Rate"],
                             interactive=False, wrap=True,
                         )
                     with gr.Accordion("③ AI／人工評分對照", open=True):

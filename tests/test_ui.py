@@ -1732,7 +1732,7 @@ def test_retrieval_metrics_match_gold_document_page_even_when_chunk_differs() ->
 
     assert ui._retrieval_metrics(question, rows) == {
         "evidence_hit": True, "evidence_recall": 1.0,
-        "evidence_precision": 0.5, "document_hit": True,
+        "evidence_precision": 0.5, "evidence_f1": 2 / 3, "document_hit": True,
     }
 
 
@@ -1742,7 +1742,7 @@ def test_retrieval_precision_is_unavailable_for_gold_document_without_pages() ->
 
     assert ui._retrieval_metrics(question, rows) == {
         "evidence_hit": None, "evidence_recall": None,
-        "evidence_precision": None, "document_hit": None,
+        "evidence_precision": None, "evidence_f1": None, "document_hit": None,
     }
 
 
@@ -1752,7 +1752,7 @@ def test_retrieval_metrics_are_unavailable_without_gold_record() -> None:
 
     assert ui._retrieval_metrics(question, rows) == {
         "evidence_hit": None, "evidence_recall": None,
-        "evidence_precision": None, "document_hit": None,
+        "evidence_precision": None, "evidence_f1": None, "document_hit": None,
     }
 
 
@@ -1770,7 +1770,7 @@ def test_question_set_import_allows_no_gold_as_empty_source_list() -> None:
     assert questions[0]["answer_sources"] == []
     assert ui._retrieval_metrics(questions[0], []) == {
         "evidence_hit": None, "evidence_recall": None,
-        "evidence_precision": None, "document_hit": None,
+        "evidence_precision": None, "evidence_f1": None, "document_hit": None,
     }
 
 
@@ -1784,7 +1784,7 @@ def test_retrieval_metrics_count_unique_document_pages() -> None:
 
     assert ui._retrieval_metrics(question, rows) == {
         "evidence_hit": True, "evidence_recall": 1.0,
-        "evidence_precision": 0.5, "document_hit": True,
+        "evidence_precision": 0.5, "evidence_f1": 2 / 3, "document_hit": True,
     }
 
 
@@ -1794,7 +1794,7 @@ def test_document_hit_does_not_require_exact_gold_page() -> None:
 
     assert ui._retrieval_metrics(question, rows) == {
         "evidence_hit": False, "evidence_recall": 0.0,
-        "evidence_precision": 0.0, "document_hit": True,
+        "evidence_precision": 0.0, "evidence_f1": 0.0, "document_hit": True,
     }
 
 
@@ -1805,7 +1805,7 @@ def test_retrieval_metrics_map_source_name_to_document_id() -> None:
     assert ui._retrieval_metrics(
         question, rows, {"manual.pdf": "stable-document-id"},
     ) == {"evidence_hit": True, "evidence_recall": 1.0,
-          "evidence_precision": 1.0, "document_hit": True}
+          "evidence_precision": 1.0, "evidence_f1": 1.0, "document_hit": True}
 
 
 def test_evidence_recall_is_retrieved_gold_pages_over_unique_gold_pages() -> None:
@@ -1821,6 +1821,19 @@ def test_evidence_recall_is_retrieved_gold_pages_over_unique_gold_pages() -> Non
 
     assert metrics["evidence_recall"] == 2 / 3
     assert metrics["evidence_precision"] == 2 / 3
+    assert metrics["evidence_f1"] == 2 / 3
+
+
+def test_evidence_f1_is_macro_average_of_per_question_f1_with_legacy_fallback() -> None:
+    # Per-question F1 values are 1 and 0, so macro F1 is 0.5 (not the
+    # harmonic mean of the across-question precision and recall averages).
+    results = [
+        {"evidence_precision": 1.0, "evidence_recall": 1.0},
+        {"evidence_precision": 0.0, "evidence_recall": 1.0},
+        {"evidence_precision": None, "evidence_recall": None},
+    ]
+
+    assert ui._mean_evidence_f1(results) == 0.5
 
 
 def test_run_evaluation_for_ui_judges_and_saves(monkeypatch) -> None:
@@ -2055,15 +2068,15 @@ def test_experiment_summaries_report_each_question_set_separately() -> None:
         (1, "100.0%", "手冊題"), (1, "0.0%", "故障題"),
     ]
     assert len(group_summaries) == 1
-    assert group_summaries[0][5:15] == [
-        2, "1 / 2", 0, "50.0%", "50.0%", "50.0%", "50.0%", "50.0%", 0, 2,
+    assert group_summaries[0][5:16] == [
+        2, "1 / 2", 0, "50.0%", "50.0%", "50.0%", "50.0%", "50.0%", "50.0%", 0, 2,
     ]
     single_project_summary = ui._experiment_group_overall_summary_rows(
         groups, results, "judge", include_project_count=False,
     )
     assert len(single_project_summary) == 1
-    assert single_project_summary[0][5:14] == [
-        2, "1 / 2", 0, "50.0%", "50.0%", "50.0%", "50.0%", "50.0%", 2,
+    assert single_project_summary[0][5:15] == [
+        2, "1 / 2", 0, "50.0%", "50.0%", "50.0%", "50.0%", "50.0%", "50.0%", 2,
     ]
 
 
@@ -2413,18 +2426,18 @@ def test_import_and_roundtrip_cross_document_provenance(tmp_path) -> None:
         ["原文", "命中答案來源", "", "0.8", "part-b.pdf：7, 8", "part-b.pdf：9", "part-b.pdf"],
     ], {"part-b.pdf": sources[1]["document_id"], "other.pdf": "other-id"})
     assert metrics == {"evidence_hit": True, "evidence_recall": 1.0,
-                       "evidence_precision": 2 / 3, "document_hit": True}
+                       "evidence_precision": 2 / 3, "evidence_f1": 0.8, "document_hit": True}
     renamed_metrics = ui._retrieval_metrics(
         reparsed[0], [["原文", "相同內容的新檔名", "", "0.9", "renamed.pdf：7, 8", "renamed.pdf：9", "renamed.pdf"]],
         {"renamed.pdf": sources[1]["document_id"]},
     )
     assert renamed_metrics == {"evidence_hit": True, "evidence_recall": 1.0,
-                               "evidence_precision": 1.0, "document_hit": True}
+                               "evidence_precision": 1.0, "evidence_f1": 1.0, "document_hit": True}
     assert ui._retrieval_metrics(
         reparsed[0], [["原文", "不同文件但同名", "", "0.9", "part-b.pdf：7, 8", "part-b.pdf：9", "part-b.pdf"]],
         {"part-b.pdf": "different-document-id"},
     ) == {"evidence_hit": False, "evidence_recall": 0.0,
-          "evidence_precision": 0.0, "document_hit": False}
+          "evidence_precision": 0.0, "evidence_f1": 0.0, "document_hit": False}
 
     csv_file = tmp_path / "cross-document.csv"
     with csv_file.open("w", encoding="utf-8", newline="") as handle:
@@ -3321,7 +3334,7 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
     compact = json.loads(Path(compact_file_path).read_text(encoding="utf-8"))
 
     assert status.startswith("✅ 已匯出 1 個實驗組；總答對 1 / 1")
-    assert payload["schema_version"] == 6
+    assert payload["schema_version"] == 7
     assert "status" not in payload
     assert payload["project"] == {
         "project_id": project["project_id"], "name": "experiment-export",
@@ -3333,7 +3346,7 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
     assert payload["summary"] == {
         "question_count": 1, "correct_count": 1, "partial_count": 0, "correct_total": "1 / 1",
         "accuracy": 1.0, "evidence_hit_rate": 1.0, "evidence_recall_rate": 1.0,
-        "evidence_precision": 1.0, "document_hit_rate": 1.0,
+        "evidence_precision": 1.0, "evidence_f1": 1.0, "document_hit_rate": 1.0,
     }
     assert payload["groups"][0] == {
         "name": "向量組",
@@ -3347,12 +3360,12 @@ def test_export_experiment_results_includes_group_parameters_summary_and_details
             "answer_model": "model-a", "judge_model": "judge-a",
             "question_count": 1, "correct_count": 1, "partial_count": 0, "correct_total": "1 / 1",
             "accuracy": 1.0, "evidence_hit_rate": 1.0, "evidence_recall_rate": 1.0,
-            "evidence_precision": 1.0, "document_hit_rate": 1.0,
+            "evidence_precision": 1.0, "evidence_f1": 1.0, "document_hit_rate": 1.0,
         },
         "results": [{
             key: value for key, value in result.items()
             if key not in {"group_index", "group_name"}
-        } | {"score": 2, "passed": True, "manual_judgment": False}],
+    } | {"score": 2, "passed": True, "manual_judgment": False, "evidence_f1": 1.0}],
     }
     assert compact["format"] == "manual-graphrag-experiment-summary"
     assert compact["summary"] == payload["summary"]
@@ -3400,13 +3413,13 @@ def test_export_experiment_results_syncs_latest_manual_judgment(tmp_path, monkey
         "answer_model": "model-a", "judge_model": "judge-a",
         "question_count": 1, "correct_count": 0, "partial_count": 1, "correct_total": "0 / 1",
         "accuracy": 0.5, "evidence_hit_rate": 1.0, "evidence_recall_rate": None,
-        "evidence_precision": 1.0, "document_hit_rate": 1.0,
+        "evidence_precision": 1.0, "evidence_f1": None, "document_hit_rate": 1.0,
     }
     assert exported["summary"]["correct_total"] == "0 / 1"
     assert exported["summary"]["partial_count"] == 1
     assert exported["summary"]["accuracy"] == 0.5
     assert compact["summary"]["correct_total"] == "0 / 1"
-    assert compact["schema_version"] == 4
+    assert compact["schema_version"] == 5
     assert compact["summary"]["accuracy"] == 0.5
     assert compact["groups"][0]["summary"]["correct_total"] == "0 / 1"
     _second_status, second_file_path, second_compact_file_path = ui.export_experiment_results_for_ui(
@@ -3459,8 +3472,8 @@ def test_run_experiment_groups_outputs_each_group_summary_and_details(monkeypatc
 
     assert status.startswith("✅ 已完成 2 個實驗組")
     assert summaries == [
-        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
-        ["混合擴展", "model-b", "Reranker", "證據擴展", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
+        ["向量", "model-a", "停用", "停用", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
+        ["混合擴展", "model-b", "Reranker", "證據擴展", "judge-x", 2, "2 / 2", 0, "100.0%", "100.0%", "100.0%", "100.0%", "100.0%", "100.0%", "", "未分類題目集"],
     ]
     assert len(details) == len(results) == 4
     assert captured["workers"] == 2
@@ -4853,7 +4866,7 @@ def test_saved_experiment_run_is_sampled_distributed_and_compared_with_human_sco
     assert summaries[0][4] == "0.80"
     assert summaries[0][5] == "1.20"
     # Fixture results carry no Evidence Recall data, so the column shows "—".
-    assert retrieval_summaries == [["向量組", 5, "40.0%", "—", "37.0%", "60.0%"]]
+    assert retrieval_summaries == [["向量組", 5, "40.0%", "—", "37.0%", "—", "60.0%"]]
     assert len(details) == 5
     assert {row[12] for row in details} == set(ui.KNOWN_USERS)
     assert {row[13] for row in details} == set(ui.KNOWN_USERS)
@@ -4925,8 +4938,8 @@ def test_human_review_results_show_retrieval_metrics_for_each_experiment_group(t
 
     assert [row[0] for row in human_summaries] == ["向量組", "混合組"]
     assert retrieval_summaries == [
-        ["向量組", 2, "50.0%", "—", "75.0%", "100.0%"],
-        ["混合組", 1, "0.0%", "—", "25.0%", "100.0%"],
+        ["向量組", 2, "50.0%", "—", "75.0%", "—", "100.0%"],
+        ["混合組", 1, "0.0%", "—", "25.0%", "—", "100.0%"],
     ]
 
 
