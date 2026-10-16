@@ -39,9 +39,6 @@ def build_project_summary(project: dict[str, Any]) -> dict[str, Any]:
     settings = project.get("settings") or {}
     graph_state = project.get("graph_state") or {}
     build_config = graph_state.get("build_config") or {}
-    schema_granularity = build_config.get("schema_granularity")
-    if schema_granularity is None and graph_state.get("schema"):
-        schema_granularity = settings.get("schema_granularity")
     documents = project.get("documents_meta") or project.get("documents") or []
     document_names = {
         str(item.get("file_name") or item.get("name") or "")
@@ -77,7 +74,6 @@ def build_project_summary(project: dict[str, Any]) -> dict[str, Any]:
         ),
         "chunk_size": build_config.get("chunk_size", settings.get("chunk_size")),
         "chunk_overlap": build_config.get("chunk_overlap", settings.get("chunk_overlap")),
-        "schema_granularity": schema_granularity,
         "graph_built": bool(graph_state.get("document") or graph_state.get("graph_data_file")),
         "updated_at": project.get("updated_at", ""),
     }
@@ -292,8 +288,17 @@ def load_project_metadata(
         settings = project.get("settings")
         if isinstance(settings, dict) and settings.pop("graph_partition_mode", None) is not None:
             changed = True
+        if isinstance(settings, dict):
+            for obsolete_key in ("schema_granularity", "schema_text"):
+                if obsolete_key in settings:
+                    settings.pop(obsolete_key, None)
+                    changed = True
         if graph_state.pop("graph_partition_mode", None) is not None:
             changed = True
+        for obsolete_key in ("schema", "schema_json", "schema_granularity"):
+            if obsolete_key in graph_state:
+                graph_state.pop(obsolete_key, None)
+                changed = True
         if "run_id" in graph_state:
             graph_state.pop("run_id", None)
             changed = True
@@ -584,10 +589,18 @@ def _save_project_unlocked(
                 by_name[source.name] = len(documents)
                 documents.append(record)
     payload_for_storage = dict(payload)
+    incoming_settings = payload_for_storage.get("settings")
+    if isinstance(incoming_settings, dict):
+        incoming_settings = dict(incoming_settings)
+        incoming_settings.pop("schema_granularity", None)
+        incoming_settings.pop("schema_text", None)
+        payload_for_storage["settings"] = incoming_settings
     incoming_graph_state = payload_for_storage.get("graph_state")
-    if isinstance(incoming_graph_state, dict) and "run_id" in incoming_graph_state:
+    if isinstance(incoming_graph_state, dict):
         incoming_graph_state = dict(incoming_graph_state)
         incoming_graph_state.pop("run_id", None)
+        for obsolete_key in ("schema", "schema_json", "schema_granularity"):
+            incoming_graph_state.pop(obsolete_key, None)
         payload_for_storage["graph_state"] = incoming_graph_state
     graph_state_for_chunks = payload_for_storage.get("graph_state")
     has_graph_chunks = isinstance(graph_state_for_chunks, dict) and "chunks" in graph_state_for_chunks

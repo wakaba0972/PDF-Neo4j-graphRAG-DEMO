@@ -85,18 +85,15 @@ def test_project_summary_file_tracks_creator_documents_and_build_settings(tmp_pa
     save_project(project["project_id"], {
         "settings": {
             "chunk_size": 1500, "chunk_overlap": 200,
-            "schema_granularity": "詳細",
         },
         "evaluation": {"questions": [{"number": 1}, {"number": 2}]},
         "documents_meta": [{"file_name": "guide.pdf"}, {"file_name": "parts.pdf"}],
         "chunks": [{"number": 1}, {"number": 2}, {"number": 3}],
         "graph_state": {
             "document": "guide.pdf",
-            "schema": {"entity_types": [{"name": "DEVICE"}]},
             "build_config": {
                 "chunk_size": 1500,
                 "chunk_overlap": 200,
-                "schema_granularity": "詳細",
             },
         },
     }, root=tmp_path)
@@ -111,9 +108,26 @@ def test_project_summary_file_tracks_creator_documents_and_build_settings(tmp_pa
     assert summary["question_count"] == 2
     assert summary["chunk_size"] == 1500
     assert summary["chunk_overlap"] == 200
-    assert summary["schema_granularity"] == "詳細"
+    assert "schema_granularity" not in summary
     assert "graph_partition_mode" not in summary
     assert summary["graph_built"] is True
+
+
+def test_legacy_schema_fields_are_removed_from_saved_project(tmp_path) -> None:
+    project = create_project("schema migration", tmp_path)
+    save_project(project["project_id"], {
+        "settings": {"schema_text": "{}", "schema_granularity": "詳細"},
+        "graph_state": {
+            "schema": {"entity_types": []}, "schema_json": "{}",
+            "schema_granularity": "詳細", "document": "manual.pdf",
+        },
+    }, root=tmp_path)
+
+    loaded = load_project(project["project_id"], tmp_path)
+
+    assert "schema_text" not in loaded["settings"]
+    assert "schema_granularity" not in loaded["settings"]
+    assert not ({"schema", "schema_json", "schema_granularity"} & loaded["graph_state"].keys())
 
 
 def test_existing_project_summary_drops_obsolete_graph_partition_mode(tmp_path) -> None:

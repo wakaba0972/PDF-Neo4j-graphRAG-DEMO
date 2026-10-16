@@ -39,6 +39,7 @@ from .evaluation_service import (
     sample_random_page_context,
     verify_evaluation_judgment,
 )
+from .extraction_methods import EXTRACTION_METHODS
 from .graph_service import (
     GPT_6_LUNA_MODEL,
     GPT_6_LUNA_REASONING_EFFORTS,
@@ -46,7 +47,6 @@ from .graph_service import (
     RunControl,
     check_model_connection,
     extract_graph,
-    validate_schema,
 )
 from .human_review import (
     create_human_review,
@@ -1161,10 +1161,9 @@ def _project_name_for_build(
         return None
     try:
         base_name = str(project.get("base_name") or project.get("name") or "")
-        granularity = build_config.get("schema_granularity") or "None"
         return (
             f"{base_name} | {int(build_config['chunk_size'])}-"
-            f"{int(build_config['chunk_overlap'])}-{granularity}"
+            f"{int(build_config['chunk_overlap'])}"
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -1178,10 +1177,10 @@ def save_project_for_ui(
     graph_embedding_model: str, answer_model: str,
     chunk_size: int, chunk_overlap: int,
     graph_temperature: float,
-    schema_granularity: str,
+    extraction_method_id: str,
     max_concurrent_requests: int, extraction_llm_model: str,
     extraction_max_concurrent_requests: int,
-    retrieval_mode: str, top_k: int, schema_text: str,
+    retrieval_mode: str, top_k: int,
     extraction_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     answer_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     retrieval_strategy_params_json: Any = None,
@@ -1195,7 +1194,7 @@ def save_project_for_ui(
         "answer_model": answer_model,
         "chunk_size": int(chunk_size), "chunk_overlap": int(chunk_overlap),
         "graph_temperature": float(graph_temperature),
-        "schema_granularity": None,
+        "extraction_method_id": extraction_method_id,
         "max_concurrent_requests": int(max_concurrent_requests),
         "extraction_llm_model": extraction_llm_model,
         "extraction_max_concurrent_requests": int(extraction_max_concurrent_requests),
@@ -1203,7 +1202,6 @@ def save_project_for_ui(
             retrieval_mode, int(top_k), "停用", "停用",
             retrieval_strategy_params_json,
         ).to_dict(),
-        "schema_text": schema_text or "",
         "extraction_reasoning_effort": extraction_reasoning_effort or DEFAULT_REASONING_EFFORT,
         "answer_reasoning_effort": answer_reasoning_effort or DEFAULT_REASONING_EFFORT,
     }
@@ -1286,7 +1284,10 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
             value=get("graph_temperature", 0),
             visible=str(get("extraction_llm_model", DEFAULT_LLM_MODEL) or "").casefold() != GPT_6_LUNA_MODEL,
         ),
-        get("schema_granularity", "平衡"),
+        gr.update(
+            choices=[(spec.label, spec.method_id) for spec in EXTRACTION_METHODS.specs.values()],
+            value=get("extraction_method_id", graph.get("extraction_method_id", "typed_name")),
+        ),
         get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         get("extraction_llm_model", DEFAULT_LLM_MODEL),
         get("extraction_max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
@@ -2096,7 +2097,6 @@ def _experiment_member_summary_row(project_id: str, connection_result: str = EXP
         question_count,
         summary.get("chunk_size") if summary.get("chunk_size") is not None else "",
         summary.get("chunk_overlap") if summary.get("chunk_overlap") is not None else "",
-        summary.get("schema_granularity") or "None",
         member.get("neo4j_database", ""),
         connection_result,
     ]
@@ -5716,12 +5716,11 @@ def extract_graph_for_ui(
     temperature: float,
     max_concurrent_requests: int,
     chunks: list[TextChunk],
-    schema_text: str,
+    extraction_method_id: str,
     documents: list[dict[str, Any]],
     run_control: RunControl,
     chunk_size: int = 0,
     chunk_overlap: int = 0,
-    schema_granularity: str = "平衡",
     reasoning_effort: str | None = None,
     progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], list[list[object]], dict[str, Any]]:
@@ -5729,19 +5728,13 @@ def extract_graph_for_ui(
         return "❌ 請先勾選並選擇知識圖譜抽取 LLM。", [], [], {}
     run_control.reset()
     try:
-        schema = None
-        if str(schema_text or "").strip():
-            raw_schema = json.loads(schema_text)
-            if not isinstance(raw_schema, dict):
-                raise ValueError("schema 必須是 JSON 物件")
-            schema = validate_schema(raw_schema)
         extraction_progress = lambda value, description: progress(value, desc=description)
         extraction = extract_graph(
             model_endpoint,
             api_key,
             llm_model,
             chunks,
-            schema,
+            extraction_method_id,
             float(temperature),
             int(max_concurrent_requests),
             extraction_progress,
@@ -5750,15 +5743,13 @@ def extract_graph_for_ui(
         )
     except RunCancelled:
         return "⏹ 已停止（使用者中止抽取）。", [], [], {}
-    except json.JSONDecodeError:
-        return "❌ schema 不是有效 JSON。", [], [], {}
     except (ValueError, RuntimeError) as exc:
         return f"❌ {exc}", [], [], {}
 
     entity_rows = [
         [
             item["name"],
-            item["type"],
+            item.get("type", ""),
             item["description"],
             *_source_display(item),
         ]
@@ -5767,7 +5758,7 @@ def extract_graph_for_ui(
     relationship_rows = [
         [
             item["source"],
-            item["type"],
+            item.get("type", ""),
             item["target"],
             item["description"],
             *_source_display(item),
@@ -5778,13 +5769,12 @@ def extract_graph_for_ui(
     graph_state = {
         "document": document_name,
         "llm_model": llm_model,
+        "extraction_method_id": extraction.extraction_method_id,
         "temperature": float(temperature),
         "max_concurrent_requests": int(max_concurrent_requests),
-        "schema": schema,
         "build_config": {
             "chunk_size": int(chunk_size),
             "chunk_overlap": int(chunk_overlap),
-            "schema_granularity": schema_granularity if schema is not None else None,
         },
         "entities": extraction.entities,
         "relationships": extraction.relationships,
@@ -5801,7 +5791,9 @@ def extract_graph_for_ui(
     status = (
         f"✅ 已處理 {extraction.processed_chunks} 個 chunk，抽取 "
         f"{len(extraction.entities)} 個實體與 "
-        f"{len(extraction.relationships)} 筆關係（所有來源文件共用一張圖譜；"
+        f"{len(extraction.relationships)} 筆關係；抽取方法："
+        f"{EXTRACTION_METHODS.get_spec(extraction.extraction_method_id).label}"
+        f"（所有來源文件共用一張圖譜；"
         f"最大並行請求數：{int(max_concurrent_requests)}）。請確認結果後進行 Embedding 並匯入 Neo4j。"
     )
     return status, entity_rows, relationship_rows, graph_state
@@ -5868,6 +5860,7 @@ def _build_graph_evidence(
             evidence.append({
                 "evidence_id": f"entity-{index}-{source_index}", "kind": "實體",
                 "document_id": document_id,
+                "entity_id": item.get("entity_id", ""),
                 "name": item.get("name", ""), "source": "", "target": "",
                 "text": "Entity: {}; Type: {}; Description: {}".format(
                     item.get("name", ""), item.get("type", ""), item.get("description", "")
@@ -5881,6 +5874,9 @@ def _build_graph_evidence(
                 "evidence_id": f"relationship-{index}-{source_index}",
                 "document_id": document_id,
                 "kind": "關係", "name": "",
+                "relationship_id": item.get("relationship_id", ""),
+                "source_entity_id": item.get("source_entity_id", ""),
+                "target_entity_id": item.get("target_entity_id", ""),
                 "source": item.get("source", ""), "target": item.get("target", ""),
                 "text": "Relationship: {} -[{}]-> {}; Description: {}".format(
                     item.get("source", ""), item.get("type", ""),
@@ -5889,6 +5885,28 @@ def _build_graph_evidence(
                 **sources,
             })
     return evidence
+
+
+def _ensure_graph_ids(graph_state: dict[str, Any]) -> dict[str, Any]:
+    """Assign stable program-generated IDs and reconnect legacy relationship endpoints."""
+    entities = graph_state.get("entities") or []
+    relationships = graph_state.get("relationships") or []
+    by_name: dict[str, str] = {}
+    for entity in entities:
+        entity_id = str(entity.get("entity_id") or uuid4().hex)
+        entity["entity_id"] = entity_id
+        by_name.setdefault(str(entity.get("name", "")).casefold(), entity_id)
+    for relationship in relationships:
+        relationship["relationship_id"] = str(
+            relationship.get("relationship_id") or uuid4().hex
+        )
+        relationship.setdefault(
+            "source_entity_id", by_name.get(str(relationship.get("source", "")).casefold(), "")
+        )
+        relationship.setdefault(
+            "target_entity_id", by_name.get(str(relationship.get("target", "")).casefold(), "")
+        )
+    return graph_state
 
 
 def _embedded_evidence_batches(
@@ -5976,6 +5994,7 @@ def import_graph_for_ui(
     if not (embedding_model or "").strip():
         return "❌ 請選擇 Embedding 模型。", graph_state
     updated_state = deepcopy(graph_state)
+    _ensure_graph_ids(updated_state)
     updated_state["embedding_model"] = embedding_model.strip()
     try:
         progress(0, desc="準備向量證據…")
@@ -6004,7 +6023,6 @@ def import_graph_for_ui(
             updated_state.get("document", ""),
             updated_state.get("llm_model", ""),
             updated_state.get("embedding_model", ""),
-            updated_state["schema"],
             updated_state["entities"],
             updated_state["relationships"],
             _embedded_evidence_batches(
@@ -6474,13 +6492,8 @@ def build_app() -> gr.Blocks:
                     "執行中都可使用：暫停只會停止送出新批次（已送出的批次仍會跑完）；"
                     "停止會盡快中止整個流程。"
                 )
-                # Retain old project-setting slots for loading/saving compatibility.
-                # Schema planning has been removed; extraction uses the model below.
                 graph_llm_model = gr.Dropdown(
                     choices=llm_choices, value=preferred_llm, visible=False,
-                )
-                schema_granularity = gr.Radio(
-                    ["粗略", "平衡", "詳細"], value="平衡", visible=False,
                 )
                 max_concurrent_requests = gr.Number(
                     value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1,
@@ -6489,10 +6502,17 @@ def build_app() -> gr.Blocks:
                 with gr.Group(elem_classes="graph-step-group"):
                     gr.Markdown("#### ① 抽取實體與關係")
                     gr.Markdown(
-                        "系統會直接閱讀已解析的文件文本並抽取實體與關係；不需要先規劃 Schema。"
-                        "檢查結果後，再手動匯入 Neo4j。"
+                        "選擇抽取方法後，系統會逐 chunk 抽取實體與關係；頁碼、Chunk 編號及各項 ID 均由程式依來源記錄或產生，"
+                        "不會交由 LLM 生成。抽取完成後再檢查結果並手動匯入 Neo4j。"
                     )
                     with gr.Row(equal_height=True):
+                        extraction_method = gr.Dropdown(
+                            choices=[(spec.label, spec.method_id)
+                                     for spec in EXTRACTION_METHODS.specs.values()],
+                            value="typed_name",
+                            label="抽取方法",
+                            info="類型＋名稱合併：同名且實體類型相同才合併。僅名稱合併：不抽實體類型，同名實體直接合併。",
+                        )
                         extraction_llm_model = gr.Dropdown(
                             choices=llm_choices,
                             value=preferred_llm,
@@ -6514,26 +6534,6 @@ def build_app() -> gr.Blocks:
                             precision=0,
                             label="最大並行請求數",
                         )
-                    gr.HTML(
-                        """
-                        <style>
-                        .schema-scroll-editor .cm-content {
-                            font-size: 17px;
-                            line-height: 1.6;
-                        }
-                        </style>
-                        """,
-                        padding=False,
-                    )
-                    schema_editor = gr.Code(
-                        label="自訂 Schema 約束（選填 JSON；留白時直接依文本抽取）",
-                        language="json",
-                        interactive=True,
-                        lines=18,
-                        max_lines=18,
-                        wrap_lines=False,
-                        elem_classes="schema-scroll-editor",
-                    )
                     generate_graph_button = gr.Button(
                         "抽取實體與關係", variant="primary"
                     )
@@ -6546,7 +6546,7 @@ def build_app() -> gr.Blocks:
                     with gr.Column(visible=False) as extraction_results_section:
                         gr.Markdown("##### 抽取結果")
                         entity_table = gr.Dataframe(
-                            headers=["實體", "類型", "說明", "來源 Chunks", "來源頁碼", "來源文件"],
+                            headers=["實體", "類型（依抽取方法）", "說明", "來源 Chunks", "來源頁碼", "來源文件"],
                             interactive=False,
                             wrap=True,
                         )
@@ -7050,9 +7050,9 @@ def build_app() -> gr.Blocks:
                         experiment_project_members_table = gr.Dataframe(
                             headers=[
                                 "專案", "專案 ID", "建立者", "文件數", "Chunk 數", "問題集題數",
-                                "Chunk Size", "Overlap", "Schema 粒度", "Neo4j Database", "連線結果",
+                                "Chunk Size", "Overlap", "Neo4j Database", "連線結果",
                             ],
-                            datatype=["str", "str", "str", "number", "str", "number", "number", "number", "number", "str", "str", "str"],
+                            datatype=["str", "str", "str", "number", "str", "number", "number", "number", "str", "str"],
                             interactive=False, wrap=True,
                         )
                 with gr.Accordion("③ 成員專案連線測試", open=True):
@@ -7299,8 +7299,8 @@ def build_app() -> gr.Blocks:
                             interactive=False, wrap=True,
                         )
 
-        schema_model_endpoint = gr.State(initial_llm_credentials[0][0])
-        schema_model_key = gr.State(initial_llm_credentials[0][1])
+        graph_model_endpoint = gr.State(initial_llm_credentials[0][0])
+        graph_model_key = gr.State(initial_llm_credentials[0][1])
         extraction_model_endpoint = gr.State(initial_llm_credentials[1][0])
         extraction_model_key = gr.State(initial_llm_credentials[1][1])
         generation_model_endpoint = gr.State(initial_llm_credentials[2][0])
@@ -8165,11 +8165,11 @@ def build_app() -> gr.Blocks:
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
             model_endpoint, api_key, graph_llm_model, graph_embedding_model,
             answer_model, chunk_size, chunk_overlap,
-            graph_temperature, schema_granularity,
+            graph_temperature, extraction_method,
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor,
+            top_k,
             extraction_reasoning_effort, answer_reasoning_effort,
             retrieval_strategy_params_state,
         ]
@@ -8178,11 +8178,11 @@ def build_app() -> gr.Blocks:
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
             model_endpoint, api_key, graph_llm_model, graph_embedding_model,
             answer_model, chunk_size, chunk_overlap,
-            graph_temperature, schema_granularity,
+            graph_temperature, extraction_method,
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor,
+            top_k,
             documents_state, chunk_state, graph_state,
             active_preview_state, active_chunks_state,
             documents_table, remove_document_selector,
@@ -8351,11 +8351,11 @@ def build_app() -> gr.Blocks:
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
             graph_llm_model, graph_embedding_model,
             answer_model, chunk_size, chunk_overlap,
-            graph_temperature, schema_granularity,
+            graph_temperature, extraction_method,
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor,
+            top_k,
         ]
         for component in auto_save_components:
             component.input(
@@ -8411,7 +8411,7 @@ def build_app() -> gr.Blocks:
             graph_embedding_model,
         ]
         credential_refresh_outputs = [
-            schema_model_endpoint, schema_model_key,
+            graph_model_endpoint, graph_model_key,
             extraction_model_endpoint, extraction_model_key,
             generation_model_endpoint, generation_model_key,
             evaluation_model_endpoint, evaluation_model_key,
@@ -8471,7 +8471,7 @@ def build_app() -> gr.Blocks:
                 show_progress="hidden",
             )
         for field, endpoint_state, key_state in [
-            (graph_llm_model, schema_model_endpoint, schema_model_key),
+            (graph_llm_model, graph_model_endpoint, graph_model_key),
             (extraction_llm_model, extraction_model_endpoint, extraction_model_key),
             (evaluation_generation_model, generation_model_endpoint, generation_model_key),
             (evaluation_test_model, evaluation_model_endpoint, evaluation_model_key),
@@ -8614,12 +8614,11 @@ def build_app() -> gr.Blocks:
                 graph_temperature,
                 extraction_max_concurrent_requests,
                 chunk_state,
-                schema_editor,
+                extraction_method,
                 documents_state,
                 run_control_state,
                 chunk_size,
                 chunk_overlap,
-                schema_granularity,
                 extraction_reasoning_effort,
             ],
             outputs=[build_status, entity_table, relationship_table, graph_state],

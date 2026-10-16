@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import RLock
 from typing import Any, Iterable
+from uuid import uuid4
 
 from neo4j import GraphDatabase
 from neo4j.exceptions import (
@@ -22,6 +23,31 @@ from .retrieval import (
 _DRIVER_LOCK = RLock()
 _DRIVER_CACHE: dict[tuple[Any, ...], Any] = {}
 GRAPH_WRITE_BATCH_SIZE = 200
+
+
+def _ensure_graph_ids(
+    entities: list[dict[str, Any]], relationships: list[dict[str, Any]],
+) -> None:
+    """Assign missing graph IDs in code and resolve legacy name-based endpoints."""
+    entity_ids_by_name: dict[str, str] = {}
+    for entity in entities:
+        entity["entity_id"] = str(entity.get("entity_id") or uuid4().hex)
+        normalized_name = " ".join(str(entity.get("name", "")).casefold().split())
+        entity_ids_by_name.setdefault(normalized_name, entity["entity_id"])
+    for relationship in relationships:
+        relationship["relationship_id"] = str(relationship.get("relationship_id") or uuid4().hex)
+        relationship["source_entity_id"] = str(
+            relationship.get("source_entity_id")
+            or entity_ids_by_name.get(
+                " ".join(str(relationship.get("source", "")).casefold().split()), ""
+            )
+        )
+        relationship["target_entity_id"] = str(
+            relationship.get("target_entity_id")
+            or entity_ids_by_name.get(
+                " ".join(str(relationship.get("target", "")).casefold().split()), ""
+            )
+        )
 
 
 def _driver_for(uri: str, username: str, password: str) -> Any:
@@ -197,7 +223,7 @@ def load_latest_graph(
     WITH document ORDER BY document.updated_at DESC LIMIT 1
     OPTIONAL MATCH (entity:ExtractedEntity)-[:IN_DOCUMENT]->(document)
     WITH document, collect(DISTINCT entity {
-        .name, .type, .description, .source_chunk_numbers, .source_pages,
+        .entity_id, .name, .type, .description, .source_chunk_numbers, .source_pages,
         .source_documents, .source_references_json
     }) AS entities
     OPTIONAL MATCH (source:ExtractedEntity)-[relation:EXTRACTED_RELATION]->(target:ExtractedEntity)
@@ -208,7 +234,9 @@ def load_latest_graph(
            document.embedding_dimensions AS embedding_dimensions,
            document.vector_index_name AS vector_index_name, entities,
            collect(DISTINCT relation {
-               source: source.name, target: target.name, .type, .description,
+               source: source.name, target: target.name,
+               source_entity_id: source.entity_id, target_entity_id: target.entity_id,
+               .relationship_id, .type, .description,
                .source_chunk_numbers, .source_pages, .source_documents,
                .source_references_json
            }) AS relationships
@@ -322,6 +350,7 @@ def search_graph_evidence(
     WITH node, score
     RETURN node {
         .evidence_id, .kind, .name, .source, .target, .text, .source_pages,
+        .entity_id, .relationship_id, .source_entity_id, .target_entity_id,
         .source_chunk_numbers, .source_documents, .source_references_json, .document_id
     } AS evidence, score
     """
@@ -495,11 +524,11 @@ def import_extraction(
     document_name: str,
     llm_model: str,
     embedding_model: str,
-    schema: dict[str, Any],
     entities: list[dict[str, Any]],
     relationships: list[dict[str, Any]],
     evidence: list[dict[str, Any]],
 ) -> ImportSummary:
+    _ensure_graph_ids(entities, relationships)
     if not uri.strip():
         raise ValueError("請先填寫 Neo4j URI")
     if not database.strip():
@@ -547,7 +576,6 @@ def import_extraction(
                     document_name,
                     llm_model,
                     embedding_model,
-                    schema,
                     entities,
                     relationships,
                     evidence,
@@ -569,7 +597,6 @@ def import_extraction_batched(
     document_name: str,
     llm_model: str,
     embedding_model: str,
-    schema: dict[str, Any],
     entities: list[dict[str, Any]],
     relationships: list[dict[str, Any]],
     evidence_batches: Iterable[list[dict[str, Any]]],
@@ -577,6 +604,7 @@ def import_extraction_batched(
     progress=None,
 ) -> ImportSummary:
     """Write each already-embedded evidence batch in its own Neo4j transaction."""
+    _ensure_graph_ids(entities, relationships)
     if not uri.strip():
         raise ValueError("請先填寫 Neo4j URI")
     if not database.strip():
@@ -651,7 +679,6 @@ def import_extraction_batched(
                         document_name,
                         llm_model,
                         embedding_model,
-                        schema,
                         dimensions,
                         index_name,
                     )
@@ -680,11 +707,9 @@ def import_extraction_batched(
                             except (TypeError, ValueError):
                                 continue
                             document_id = str(entity.get("document_id", ""))
-                            entities_by_chunk.setdefault((document_id, normalized_chunk_number), []).append({
-                                "name": str(entity.get("name", "")),
-                                "type": str(entity.get("type", "")),
-                                "document_id": document_id,
-                            })
+                            entities_by_chunk.setdefault(
+                                (document_id, normalized_chunk_number), []
+                            ).append({"entity_id": str(entity.get("entity_id", ""))})
 
                     _execute_write_with_retry(
                         driver,
@@ -795,7 +820,6 @@ def _write_graph(
     document_name: str,
     llm_model: str,
     embedding_model: str,
-    schema: dict[str, Any],
     entities: list[dict[str, Any]],
     relationships: list[dict[str, Any]],
     evidence: list[dict[str, Any]],
@@ -834,7 +858,6 @@ def _write_graph(
             document.embedding_model = $embedding_model,
             document.embedding_dimensions = $embedding_dimensions,
             document.vector_index_name = $vector_index_name,
-            document.schema_json = $schema_json,
             document.import_status = $import_status,
             document.updated_at = datetime()
         """,
@@ -843,19 +866,17 @@ def _write_graph(
         embedding_model=embedding_model,
         embedding_dimensions=embedding_dimensions,
         vector_index_name=vector_index,
-        schema_json=json.dumps(schema, ensure_ascii=False),
         import_status=import_status,
     ).consume()
     entity_result = transaction.run(
         """
         MATCH (document:GraphDocument)
         UNWIND $entities AS item
-        MERGE (entity:ExtractedEntity {
-            document_id: item.document_id,
-            type: item.type,
-            name: item.name
-        })
-        SET entity.description = item.description,
+        MERGE (entity:ExtractedEntity {entity_id: item.entity_id})
+        SET entity.name = item.name,
+            entity.type = item.type,
+            entity.description = item.description,
+            entity.document_id = item.document_id,
             entity.source_chunk_numbers = item.source_chunk_numbers,
             entity.source_pages = item.source_pages,
             entity.source_documents = item.source_documents,
@@ -868,13 +889,13 @@ def _write_graph(
     relationship_result = transaction.run(
         """
         UNWIND $relationships AS item
-        MATCH (source:ExtractedEntity {name: item.source})
-        MATCH (target:ExtractedEntity {name: item.target})
-        WITH item, head(collect(source)) AS source, head(collect(target)) AS target
+        MATCH (source:ExtractedEntity {entity_id: item.source_entity_id})
+        MATCH (target:ExtractedEntity {entity_id: item.target_entity_id})
         MERGE (source)-[relation:EXTRACTED_RELATION {
-            type: item.type
+            relationship_id: item.relationship_id
         }]->(target)
-        SET relation.description = item.description,
+        SET relation.type = item.type,
+            relation.description = item.description,
             relation.document_id = item.document_id,
             relation.source_chunk_numbers = item.source_chunk_numbers,
             relation.source_pages = item.source_pages,
@@ -890,6 +911,10 @@ def _write_graph(
         UNWIND $evidence AS item
         MERGE (evidence:GraphEvidence {evidence_id: item.evidence_id})
         SET evidence.kind = item.kind, evidence.name = item.name,
+            evidence.entity_id = item.entity_id,
+            evidence.relationship_id = item.relationship_id,
+            evidence.source_entity_id = item.source_entity_id,
+            evidence.target_entity_id = item.target_entity_id,
             evidence.source = item.source, evidence.target = item.target,
             evidence.text = item.text, evidence.source_pages = item.source_pages,
             evidence.source_chunk_numbers = item.source_chunk_numbers,
@@ -904,15 +929,15 @@ def _write_graph(
     transaction.run(
         """
         MATCH (evidence:GraphEvidence {kind: '實體'})
-        MATCH (entity:ExtractedEntity {name: evidence.name})
+        MATCH (entity:ExtractedEntity {entity_id: evidence.entity_id})
         MERGE (evidence)-[:REPRESENTS]->(entity)
         """,
     ).consume()
     transaction.run(
         """
         MATCH (evidence:GraphEvidence {kind: '關係'})
-        MATCH (source:ExtractedEntity {name: evidence.source})
-        MATCH (target:ExtractedEntity {name: evidence.target})
+        MATCH (source:ExtractedEntity {entity_id: evidence.source_entity_id})
+        MATCH (target:ExtractedEntity {entity_id: evidence.target_entity_id})
         MERGE (evidence)-[:EVIDENCE_SOURCE]->(source)
         MERGE (evidence)-[:EVIDENCE_TARGET]->(target)
         """,
@@ -956,7 +981,6 @@ def _create_graph_document(
     document_name: str,
     llm_model: str,
     embedding_model: str,
-    schema: dict[str, Any],
     embedding_dimensions: int,
     vector_index: str,
 ) -> None:
@@ -968,7 +992,6 @@ def _create_graph_document(
             embedding_model: $embedding_model,
             embedding_dimensions: $embedding_dimensions,
             vector_index_name: $vector_index,
-            schema_json: $schema_json,
             import_status: 'staging',
             updated_at: datetime()
         })
@@ -978,7 +1001,6 @@ def _create_graph_document(
         embedding_model=embedding_model,
         embedding_dimensions=embedding_dimensions,
         vector_index=vector_index,
-        schema_json=json.dumps(schema, ensure_ascii=False),
     ).consume()
 
 
@@ -1003,13 +1025,11 @@ def _write_entity_batch(
         """
         UNWIND $entities AS item
         MATCH (document:GraphDocument)
-        WHERE coalesce(document.document_id, '') = item.document_id
-        MERGE (entity:ExtractedEntity {
-            document_id: item.document_id,
-            type: item.type,
-            name: item.name
-        })
-        SET entity.description = item.description,
+        MERGE (entity:ExtractedEntity {entity_id: item.entity_id})
+        SET entity.name = item.name,
+            entity.type = item.type,
+            entity.document_id = item.document_id,
+            entity.description = item.description,
             entity.source_chunk_numbers = item.source_chunk_numbers,
             entity.source_pages = item.source_pages,
             entity.source_documents = item.source_documents,
@@ -1029,13 +1049,13 @@ def _write_relationship_batch(
     result = transaction.run(
         """
         UNWIND $relationships AS item
-        MATCH (source:ExtractedEntity {document_id: item.document_id, name: item.source})
-        MATCH (target:ExtractedEntity {document_id: item.document_id, name: item.target})
-        WITH item, head(collect(source)) AS source, head(collect(target)) AS target
+        MATCH (source:ExtractedEntity {entity_id: item.source_entity_id})
+        MATCH (target:ExtractedEntity {entity_id: item.target_entity_id})
         MERGE (source)-[relation:EXTRACTED_RELATION {
-            type: item.type
+            relationship_id: item.relationship_id
         }]->(target)
-        SET relation.description = item.description,
+        SET relation.type = item.type,
+            relation.description = item.description,
             relation.document_id = item.document_id,
             relation.source_chunk_numbers = item.source_chunk_numbers,
             relation.source_pages = item.source_pages,
@@ -1057,9 +1077,12 @@ def _write_evidence_batch(
         """
         UNWIND $evidence AS item
         MATCH (document:GraphDocument)
-        WHERE coalesce(document.document_id, '') = item.document_id
         MERGE (evidence:GraphEvidence {evidence_id: item.evidence_id})
         SET evidence.kind = item.kind, evidence.name = item.name,
+            evidence.entity_id = item.entity_id,
+            evidence.relationship_id = item.relationship_id,
+            evidence.source_entity_id = item.source_entity_id,
+            evidence.target_entity_id = item.target_entity_id,
             evidence.source = item.source, evidence.target = item.target,
             evidence.text = item.text, evidence.source_pages = item.source_pages,
             evidence.source_chunk_numbers = item.source_chunk_numbers,
@@ -1079,8 +1102,7 @@ def _link_evidence_batch(
     entities_by_chunk: dict[tuple[str, int], list[dict[str, str]]],
 ) -> None:
     entity_links = [
-        {"evidence_id": item["evidence_id"], "name": item.get("name", ""),
-         "document_id": item.get("document_id", "")}
+        {"evidence_id": item["evidence_id"], "entity_id": item.get("entity_id", "")}
         for item in evidence
         if item.get("kind") == "實體"
     ]
@@ -1089,8 +1111,7 @@ def _link_evidence_batch(
             """
             UNWIND $items AS item
             MATCH (evidence:GraphEvidence {evidence_id: item.evidence_id})
-            MATCH (entity:ExtractedEntity {document_id: item.document_id, name: item.name})
-            WITH evidence, head(collect(entity)) AS entity
+            MATCH (entity:ExtractedEntity {entity_id: item.entity_id})
             MERGE (evidence)-[:REPRESENTS]->(entity)
             """,
             items=entity_links,
@@ -1099,9 +1120,8 @@ def _link_evidence_batch(
     relationship_links = [
         {
             "evidence_id": item["evidence_id"],
-            "source": item.get("source", ""),
-            "target": item.get("target", ""),
-            "document_id": item.get("document_id", ""),
+            "source_entity_id": item.get("source_entity_id", ""),
+            "target_entity_id": item.get("target_entity_id", ""),
         }
         for item in evidence
         if item.get("kind") == "關係"
@@ -1111,10 +1131,8 @@ def _link_evidence_batch(
             """
             UNWIND $items AS item
             MATCH (evidence:GraphEvidence {evidence_id: item.evidence_id})
-            MATCH (source:ExtractedEntity {document_id: item.document_id, name: item.source})
-            WITH evidence, item, head(collect(source)) AS source
-            MATCH (target:ExtractedEntity {document_id: item.document_id, name: item.target})
-            WITH evidence, source, head(collect(target)) AS target
+            MATCH (source:ExtractedEntity {entity_id: item.source_entity_id})
+            MATCH (target:ExtractedEntity {entity_id: item.target_entity_id})
             MERGE (evidence)-[:EVIDENCE_SOURCE]->(source)
             MERGE (evidence)-[:EVIDENCE_TARGET]->(target)
             """,
@@ -1135,18 +1153,14 @@ def _link_evidence_batch(
             for entity in linked_entities:
                 mention_links.append({
                     "evidence_id": item["evidence_id"],
-                    "name": entity["name"],
-                    "type": entity["type"],
-                    "document_id": entity["document_id"],
+                    "entity_id": entity["entity_id"],
                 })
     if mention_links:
         transaction.run(
             """
             UNWIND $items AS item
             MATCH (chunk:GraphEvidence {evidence_id: item.evidence_id})
-            MATCH (entity:ExtractedEntity {
-                document_id: item.document_id, name: item.name, type: item.type
-            })
+            MATCH (entity:ExtractedEntity {entity_id: item.entity_id})
             MERGE (chunk)-[:MENTIONS_ENTITY]->(entity)
             """,
             items=mention_links,

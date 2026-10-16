@@ -10,8 +10,10 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Callable
+from uuid import uuid4
 
 from .chunking import TextChunk
+from .extraction_methods import EXTRACTION_METHODS
 
 SCHEMA_CONTEXT_LIMIT = 30_000
 SCHEMA_MERGE_LIMIT = 12_000
@@ -27,7 +29,7 @@ CHAT_COMPLETION_TIMEOUT_SECONDS = 600
 
 
 class RunCancelled(Exception):
-    """Raised when a user stops a running schema-planning or extraction job."""
+    """Raised when a user stops a running extraction job."""
 
 
 class RunControl:
@@ -98,6 +100,7 @@ class GraphExtraction:
     entities: list[dict[str, Any]]
     relationships: list[dict[str, Any]]
     processed_chunks: int
+    extraction_method_id: str = "typed_name"
 
 
 def _api_url(base_url: str, resource: str) -> str:
@@ -650,7 +653,7 @@ def extract_graph(
     api_key: str,
     llm_model: str,
     chunks: list[TextChunk],
-    schema: dict[str, Any] | None,
+    extraction_method_id: str = "typed_name",
     temperature: float = 0,
     max_concurrent_requests: int = 10,
     progress_callback: Callable[[float | None, str], None] | None = None,
@@ -662,16 +665,9 @@ def extract_graph(
     if int(max_concurrent_requests) < 1:
         raise ValueError("最大並行請求數必須至少為 1")
     max_concurrent_requests = int(max_concurrent_requests)
-    schema = validate_schema(schema) if schema is not None else None
-    allowed_entity_types = (
-        {str(item["name"]).casefold() for item in schema["entity_types"]}
-        if schema else None
-    )
-    allowed_relationship_types = (
-        {str(item["name"]).casefold() for item in schema["relationship_types"]}
-        if schema else None
-    )
-    entities: dict[tuple[str, str], dict[str, Any]] = {}
+    method_id = extraction_method_id or "typed_name"
+    method = EXTRACTION_METHODS.get(method_id)
+    entities: dict[tuple[str, ...], dict[str, Any]] = {}
     relationships: dict[tuple[str, str, str], dict[str, Any]] = {}
     chunk_lookup = {chunk.number: chunk for chunk in chunks}
 
@@ -695,19 +691,10 @@ def extract_graph(
                 )
 
         extraction_instructions = (
-            "Extract entities and relationships according to the schema. entity.type and "
-            "relationship.type must exactly match values from the schema; "
-            f"schema:\n{json.dumps(schema, ensure_ascii=False)}\n\n"
-            if schema else
-            "Extract important entities and explicit relationships directly from the document. "
-            "Assign concise, consistent types to entities and relationships; use the same type "
-            "for the same concept across chunks. Do not invent extra items or infer unsupported facts.\n\n"
-        )
-        extraction_instructions += (
-            "Keep entity names, relationship types, and descriptions in the source language. "
-            "For English source text, write these fields in English and preserve original names "
-            "and terminology; do not translate them into Chinese. Use exact entity names in "
-            "relationship source and target fields.\n\n"
+            method.extraction_instructions()
+            + " Use exact entity names in relationship source and target fields. "
+            "Source page, chunk, document, and entity identifiers are assigned by the program; "
+            "never generate or return identifiers or source-location fields.\n\n"
         )
         return _chat_json(
             base_url,
@@ -716,12 +703,11 @@ def extract_graph(
             "You are a knowledge-graph information extraction system. Extract only facts supported "
             "by the provided document and do not hallucinate. Return JSON only.",
             extraction_instructions
-            + "Use entity names for relationship source and target. Source chunk provenance is "
-            "recorded by the program for this request; do not output source identifiers. "
-            "Return this JSON shape: {\"entities\":[{\"name\":\"...\",\"type\":\"...\","
-            "\"description\":\"...\"}],"
-            "\"relationships\":[{\"source\":\"...\",\"target\":\"...\","
-            "\"type\":\"...\",\"description\":\"...\"}]} .\n\n"
+            + "Use entity names for relationship source and target. Source chunk provenance and "
+            "all entity/relationship identifiers are assigned by the program; do not output them. "
+            "Return this JSON shape exactly: "
+            + method.output_shape()
+            + ".\n\n"
             f"Document:\n{context}",
             temperature,
             on_retry=report_retry,
@@ -765,20 +751,14 @@ def extract_graph(
                 continue
             name = str(item.get("name", "")).strip()
             entity_type = str(item.get("type", "")).strip()
-            if (
-                not name
-                or not entity_type
-                or (allowed_entity_types is not None and entity_type.casefold() not in allowed_entity_types)
-            ):
+            if not name or (method.requires_entity_type and not entity_type):
                 continue
             numbers = [source_chunk_number]
-            key = (entity_type.casefold(), name.casefold())
+            key = method.entity_key(name, entity_type)
             current = entities.setdefault(
                 key,
                 {
-                    "name": name,
-                    "type": entity_type,
-                    "description": str(item.get("description", "")).strip(),
+                    **method.make_entity(item, name),
                     "source_chunk_numbers": [],
                     "source_pages": [],
                     "source_documents": [],
@@ -792,12 +772,7 @@ def extract_graph(
             source = str(item.get("source", "")).strip()
             target = str(item.get("target", "")).strip()
             relation_type = str(item.get("type", "")).strip()
-            if (
-                not source
-                or not target
-                or not relation_type
-                or (allowed_relationship_types is not None and relation_type.casefold() not in allowed_relationship_types)
-            ):
+            if not source or not target or not relation_type:
                 continue
             numbers = [source_chunk_number]
             key = (source.casefold(), relation_type.casefold(), target.casefold())
@@ -815,8 +790,23 @@ def extract_graph(
                 },
             )
             _merge_sources(current, numbers, chunk_lookup)
+    entity_values = list(entities.values())
+    entity_ids_by_name: dict[str, str] = {}
+    for entity in entity_values:
+        entity["entity_id"] = uuid4().hex
+        normalized_name = " ".join(str(entity["name"]).casefold().split())
+        entity_ids_by_name.setdefault(normalized_name, entity["entity_id"])
+    relationship_values = list(relationships.values())
+    for relationship in relationship_values:
+        relationship["relationship_id"] = uuid4().hex
+        relationship["source_entity_id"] = entity_ids_by_name.get(
+            " ".join(str(relationship["source"]).casefold().split()), ""
+        )
+        relationship["target_entity_id"] = entity_ids_by_name.get(
+            " ".join(str(relationship["target"]).casefold().split()), ""
+        )
     return GraphExtraction(
-        list(entities.values()), list(relationships.values()), len(chunks)
+        entity_values, relationship_values, len(chunks), method_id
     )
 
 

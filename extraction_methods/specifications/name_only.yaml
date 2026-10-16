@@ -1,0 +1,7 @@
+id: name_only
+name: 僅名稱合併
+order: 20
+description: Do not extract entity types; merge entities when normalized names match.
+implementation:
+  file: name_only/method.py
+  class: NameOnlyExtractionMethod

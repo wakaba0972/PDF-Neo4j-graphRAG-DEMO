@@ -124,7 +124,6 @@ def test_experiment_member_summary_does_not_show_graph_partition_mode(monkeypatc
     monkeypatch.setattr(ui, "load_project_summary", lambda _project_id: {
         "created_by": "57", "document_count": 2, "chunk_count": 10,
         "question_count": 0, "chunk_size": 1500, "chunk_overlap": 200,
-        "schema_granularity": None,
     })
     monkeypatch.setattr(ui, "migrate_project_question_sets", lambda _project_id: [])
 
@@ -132,7 +131,7 @@ def test_experiment_member_summary_does_not_show_graph_partition_mode(monkeypatc
 
     assert row[0] == "車型 A"
     assert row[4] == 10
-    assert len(row) == 11
+    assert len(row) == 10
 
 
 def test_current_project_banner_reflects_project_name() -> None:
@@ -419,7 +418,7 @@ def test_schema_planner_is_removed_from_graph_build_ui() -> None:
     assert "Schema 規劃 LLM" not in labels
     assert "用於規劃 Schema 的 PDF" not in labels
     assert "分析文件並規劃 Schema（可選）" not in values
-    assert "自訂 Schema 約束（選填 JSON；留白時直接依文本抽取）" in labels
+    assert "抽取方法" in labels
 
 
 def test_project_page_uses_automatic_refresh_and_save() -> None:
@@ -1359,8 +1358,8 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
         },
         "bolt://db", "neo4j", "user", "pass", "http://models", "key",
         "build", "embed", "answer", 1200, 100, 0.2,
-        "詳細", 2, "extract", 2,
-        "混合檢索", 6, '{"entity_types": []}',
+        "typed_name", 2, "extract", 2,
+        "混合檢索", 6,
         ui.DEFAULT_REASONING_EFFORT,
         ui.DEFAULT_REASONING_EFFORT, '{"effective_search_ratio": 6}',
     ]
@@ -3756,11 +3755,9 @@ def test_extract_graph_for_ui_reports_stopped_status(monkeypatch) -> None:
         ui, "extract_graph",
         lambda *args, **kwargs: (_ for _ in ()).throw(ui.RunCancelled("stopped")),
     )
-    schema = {"entity_types": [{"name": "DEVICE"}], "relationship_types": [{"name": "USES"}]}
-
     result = ui.extract_graph_for_ui(
         "http://models/v1", "key", "llm", 0.2, 3,
-        [TextChunk(1, "text", (1,))], json.dumps(schema), {}, ui.RunControl(),
+        [TextChunk(1, "text", (1,))], "typed_name", {}, ui.RunControl(),
     )
 
     assert result == ("⏹ 已停止（使用者中止抽取）。", [], [], {})
@@ -3802,11 +3799,6 @@ def test_extract_graph_for_ui_formats_tables_and_state(monkeypatch) -> None:
         "import_extraction",
         lambda *args: (_ for _ in ()).throw(AssertionError("抽取時不應匯入 Neo4j")),
     )
-    schema = {
-        "entity_types": [{"name": "DEVICE"}],
-        "relationship_types": [{"name": "USES"}],
-    }
-
     status, entities, relationships, state = ui.extract_graph_for_ui(
         "http://models/v1",
         "key",
@@ -3814,7 +3806,7 @@ def test_extract_graph_for_ui_formats_tables_and_state(monkeypatch) -> None:
         0.2,
         3,
         [TextChunk(1, "text", (3,))],
-        json.dumps(schema),
+        "typed_name",
         [{"file_name": "manual.pdf"}],
         ui.RunControl(),
     )
@@ -3847,16 +3839,15 @@ def test_extract_graph_for_ui_defaults_to_direct_text_extraction(monkeypatch) ->
 
     status, _, _, state = ui.extract_graph_for_ui(
         "https://api.openai.com/v1", "key", "model", 0, 2,
-        [TextChunk(1, "manual text", (1,), "manual.pdf")], "", [], ui.RunControl(),
-        1500, 200, "詳細",
+        [TextChunk(1, "manual text", (1,), "manual.pdf")], "typed_name", [], ui.RunControl(),
+        1500, 200, "low",
     )
 
     assert status.startswith("✅")
-    assert captured["schema"] is None
+    assert captured["schema"] == "typed_name"
     assert state["build_config"] == {
         "chunk_size": 1500,
         "chunk_overlap": 200,
-        "schema_granularity": None,
     }
 
 
@@ -3876,7 +3867,7 @@ def test_extract_graph_for_ui_extracts_all_documents_into_one_graph(monkeypatch)
             TextChunk(1, "a1", (1,), "a.pdf", "doc-a"),
             TextChunk(2, "a2", (2,), "a.pdf", "doc-a"),
             TextChunk(3, "b1", (1,), "b.pdf", "doc-b"),
-        ], "", [], ui.RunControl(),
+        ], "typed_name", [], ui.RunControl(),
     )
 
     assert status.startswith("✅")
@@ -3891,16 +3882,14 @@ def test_project_name_suffix_uses_build_settings_and_planned_granularity() -> No
         "build_config": {
             "chunk_size": 1500,
             "chunk_overlap": 200,
-            "schema_granularity": None,
         }
-    }) == "61 | s25 | 1500-200-None"
+    }) == "61 | s25 | 1500-200"
     assert ui._project_name_for_build(project, {
         "build_config": {
             "chunk_size": 1000,
             "chunk_overlap": 100,
-            "schema_granularity": "粗略",
         }
-    }) == "61 | s25 | 1000-100-粗略"
+    }) == "61 | s25 | 1000-100"
 
 
 def test_graph_evidence_separates_merged_sources_by_pdf() -> None:
@@ -3932,12 +3921,19 @@ def test_graph_evidence_separates_merged_sources_by_pdf() -> None:
     assert all(len(item["source_references"]) == 1 for item in evidence)
 
 
-def test_extract_graph_for_ui_rejects_invalid_schema() -> None:
+def test_extract_graph_for_ui_accepts_registered_extraction_method(monkeypatch) -> None:
+    from manual_graphrag.graph_service import GraphExtraction
+
+    monkeypatch.setattr(
+        ui, "extract_graph",
+        lambda *args, **kwargs: GraphExtraction([], [], 1, args[4]),
+    )
     result = ui.extract_graph_for_ui(
-        "http://models/v1", "", "llm", 0.2, 3, [], "not-json", {}, ui.RunControl()
+        "http://models/v1", "", "llm", 0.2, 3,
+        [TextChunk(1, "text", (1,))], "typed_name", {}, ui.RunControl()
     )
 
-    assert result == ("❌ schema 不是有效 JSON。", [], [], {})
+    assert result[0].startswith("✅")
 
 
 def _importable_graph_state() -> dict:
@@ -3972,7 +3968,7 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
 
     def fake_import(*args, **kwargs):
         captured["args"] = args
-        captured["batches"] = list(args[10])
+        captured["batches"] = list(args[9])
         captured["progress"] = kwargs.get("progress")
         return ImportSummary(2, 1, 1)
 
@@ -4000,8 +3996,8 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
     assert state["vector_index_name"] == "graph_evidence_embedding_1"
     assert provisioned == [("bolt://db", "neo4j", "user", "password")]
     assert captured["args"][4] == "manual.pdf"
-    assert captured["args"][8][0]["document_id"] == ""
-    assert captured["args"][8][0]["source_references"][0]["document_id"] == "doc-a"
+    assert captured["args"][7][0]["document_id"] == ""
+    assert captured["args"][7][0]["source_references"][0]["document_id"] == "doc-a"
     assert captured["batches"][0][0]["source_references"][0]["document_id"] == "doc-a"
     assert [len(batch) for batch in captured["batches"]] == [2]
     assert all("embedding" in item for batch in captured["batches"] for item in batch)
@@ -4014,8 +4010,8 @@ def test_import_graph_for_ui_merges_entities_across_documents(monkeypatch) -> No
     captured = {}
 
     def fake_import(*args, **kwargs):
-        captured["entities"] = args[8]
-        captured["evidence"] = [item for batch in args[10] for item in batch]
+        captured["entities"] = args[7]
+        captured["evidence"] = [item for batch in args[9] for item in batch]
         return ImportSummary(2, 0, 1)
 
     graph_state = {
@@ -4486,7 +4482,7 @@ def test_experiment_project_members_require_existing_built_graphs(tmp_path, monk
     assert state["members"] == [built["project_id"]]
     assert rows == [[
         "已建圖車型", built["project_id"], "未知", 1, 1, 0,
-        1500, 200, "粗略", built["neo4j_database"], "未測試",
+        1500, 200, built["neo4j_database"], "未測試",
     ]]
     summary_file = tmp_path / "data" / "projects" / built["project_id"] / "summary.json"
     assert summary_file.is_file()

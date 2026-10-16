@@ -1,0 +1,7 @@
+id: typed_name
+name: 類型＋名稱合併
+order: 10
+description: Extract entity types and merge entities when normalized name and type match.
+implementation:
+  file: typed_name/method.py
+  class: TypedNameExtractionMethod
