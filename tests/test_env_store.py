@@ -87,3 +87,80 @@ def test_save_env_removes_legacy_model_and_profile_keys(tmp_path) -> None:
     assert "BUILD_MODEL" not in content
     assert "MODEL_SERVICE_PROFILES" not in content
     assert 'MODEL_OPENAI_API_KEY="new"' in content
+
+
+BASE_ENV = (
+    'NEO4J_URI="bolt://db:7687"\nNEO4J_USERNAME="neo4j"\nNEO4J_PASSWORD="pw"\n'
+    'MODEL_OPENAI_API_BASE="https://api.openai.com/v1"\nMODEL_OPENAI_API_KEY="sk-test"\n'
+)
+
+
+def test_load_env_reads_utf8_bom_first_key(tmp_path) -> None:
+    path = tmp_path / ".env"
+    path.write_bytes(b"\xef\xbb\xbf" + BASE_ENV.replace("\n", "\r\n").encode())
+
+    assert load_env(path)["NEO4J_URI"] == "bolt://db:7687"
+
+
+def test_load_env_reads_powershell_utf16(tmp_path) -> None:
+    path = tmp_path / ".env"
+    path.write_bytes(BASE_ENV.encode("utf-16"))
+
+    values = load_env(path)
+
+    assert values["NEO4J_URI"] == "bolt://db:7687"
+    assert values["MODEL_OPENAI_API_KEY"] == "sk-test"
+
+
+def test_load_env_accepts_export_prefix_and_trailing_comment(tmp_path) -> None:
+    path = tmp_path / ".env"
+    path.write_text(
+        "export NEO4J_URI=bolt://db:7687\n"
+        "MODEL_OPENAI_API_KEY=sk-test  # team key\n"
+        'NEO4J_PASSWORD="p#ss # inside quotes"\n',
+        encoding="utf-8",
+    )
+
+    values = load_env(path)
+
+    assert values["NEO4J_URI"] == "bolt://db:7687"
+    assert values["MODEL_OPENAI_API_KEY"] == "sk-test"
+    assert values["NEO4J_PASSWORD"] == "p#ss # inside quotes"
+
+
+def test_save_env_rewrites_utf16_file_as_utf8(tmp_path) -> None:
+    path = tmp_path / ".env"
+    path.write_bytes(BASE_ENV.encode("utf-16"))
+
+    save_env({"MODEL_OPENAI_API_KEY": "sk-new"}, path)
+
+    assert path.read_bytes().decode("utf-8").count("MODEL_OPENAI_API_KEY") == 1
+    assert load_env(path)["MODEL_OPENAI_API_KEY"] == "sk-new"
+    assert load_env(path)["NEO4J_URI"] == "bolt://db:7687"
+
+
+def test_save_env_falls_back_when_bind_mount_rejects_rename(tmp_path, monkeypatch) -> None:
+    import errno
+    import os
+
+    path = tmp_path / ".env"
+    path.write_text(BASE_ENV, encoding="utf-8")
+
+    def busy_replace(_source, _target):
+        raise OSError(errno.EBUSY, "Device or resource busy")
+
+    monkeypatch.setattr(os, "replace", busy_replace)
+    save_env({"MODEL_OPENAI_API_KEY": "sk-new"}, path)
+
+    assert load_env(path)["MODEL_OPENAI_API_KEY"] == "sk-new"
+    assert not list(tmp_path.glob(".env.*.tmp"))
+
+
+def test_load_env_explains_docker_directory_mount(tmp_path) -> None:
+    import pytest
+
+    path = tmp_path / ".env"
+    path.mkdir()
+
+    with pytest.raises(IsADirectoryError, match="cp .env.example .env"):
+        load_env(path)

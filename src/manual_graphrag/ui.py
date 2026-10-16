@@ -46,7 +46,6 @@ from .graph_service import (
     RunControl,
     check_model_connection,
     extract_graph,
-    validate_schema,
 )
 from .human_review import (
     create_human_review,
@@ -528,6 +527,24 @@ def reload_env_with_services_for_ui() -> tuple[Any, ...]:
     )
 
 
+def refresh_env_on_page_load_for_ui(
+    experiment_llm_state: dict[str, Any],
+) -> tuple[Any, ...]:
+    """Re-read .env on every page (re)load.
+
+    build_app() bakes .env values into component defaults once at server start,
+    so after a key was saved a browser refresh used to show the stale startup
+    values, and the next autosave wrote them back over the saved ones.
+    """
+    *values, _global_status, _env_status = reload_env_with_services_for_ui()
+    env = load_env()
+    experiment = capture_service_settings(
+        experiment_llm_state, env["MODEL_OPENAI_API_BASE"], env["MODEL_OPENAI_API_KEY"], [],
+        list(experiment_llm_state["profiles"]["OpenAI"]["models"]),
+    )
+    return (*values, experiment)
+
+
 def persist_env_settings(
     neo4j_uri: str,
     neo4j_username: str,
@@ -601,9 +618,10 @@ def workflow_tabs_for_ui(
     workspace_mode: str = "single",
     project: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], ...]:
-    # Connection checks are diagnostic only. Only one project workspace is
-    # active at a time; loading an experiment workspace locks the single-project tabs.
-    enabled = bool(project_id) and workspace_mode == "single"
+    # Connection checks are diagnostic only. The single-project tabs follow the
+    # loaded project (project_state), not the dropdown value or the 2-0 workspace:
+    # 2-0 keeps its own experiment_project_state, so visiting it must not lock 1-1～1-5.
+    enabled = bool((project or {}).get("project_id"))
     return tuple(_tab_update(enabled) for _ in range(5))
 
 
@@ -1037,16 +1055,35 @@ def _single_strategy_parameter_updates(config: RetrievalConfig) -> tuple[Any, ..
     )
 
 
+def _strategy_params_from_controls(strategy: str, *values: Any) -> dict[str, Any]:
+    """Collect the active strategy's parameter values without touching the controls.
+
+    Parameter boxes must not have their own value written back on every edit:
+    with queued events, an older reply (e.g. the empty value while retyping)
+    overwrites the newer one, and on .change listeners that write-back fires
+    another .change, so two values ping-pong forever and keep autosaving.
+    """
+    strategy_id = strategy_id_from_label(strategy)
+    return {
+        name: value
+        for (entry_strategy_id, name, _spec), value in zip(_strategy_parameter_entries(), values)
+        if entry_strategy_id == strategy_id
+    }
+
+
+def _experiment_strategy_params_from_controls(
+    strategy: str, _group_name: str, *values: Any,
+) -> dict[str, Any]:
+    return _strategy_params_from_controls(strategy, *values)
+
+
 def _sync_experiment_strategy_parameter_controls(
     strategy: str, group_name: str, *values: Any,
 ) -> tuple[Any, ...]:
+    """Re-show the controls for the selected strategy (strategy or group-name change only)."""
     strategy_id = strategy_id_from_label(strategy)
     entries = _strategy_parameter_entries()
-    params = {
-        name: value
-        for (entry_strategy_id, name, _spec), value in zip(entries, values)
-        if entry_strategy_id == strategy_id
-    }
+    params = _strategy_params_from_controls(strategy, *values)
     visible = bool(str(group_name or "").strip())
     updates = [
         gr.update(
@@ -1061,14 +1098,10 @@ def _sync_experiment_strategy_parameter_controls(
 def _sync_single_strategy_parameter_controls(
     strategy: str, *values: Any,
 ) -> tuple[Any, ...]:
-    """Sync the single-project evaluation controls using the strategy catalog."""
+    """Re-show the single-project controls for the selected strategy (strategy change only)."""
     strategy_id = strategy_id_from_label(strategy)
     entries = _strategy_parameter_entries()
-    params = {
-        name: value
-        for (entry_strategy_id, name, _spec), value in zip(entries, values)
-        if entry_strategy_id == strategy_id
-    }
+    params = _strategy_params_from_controls(strategy, *values)
     updates = [
         gr.update(
             value=params.get(name, spec.default) if entry_strategy_id == strategy_id else spec.default,
@@ -1181,7 +1214,7 @@ def save_project_for_ui(
     schema_granularity: str,
     max_concurrent_requests: int, extraction_llm_model: str,
     extraction_max_concurrent_requests: int,
-    retrieval_mode: str, top_k: int, schema_text: str,
+    retrieval_mode: str, top_k: int,
     extraction_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     answer_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     retrieval_strategy_params_json: Any = None,
@@ -1203,7 +1236,6 @@ def save_project_for_ui(
             retrieval_mode, int(top_k), "停用", "停用",
             retrieval_strategy_params_json,
         ).to_dict(),
-        "schema_text": schema_text or "",
         "extraction_reasoning_effort": extraction_reasoning_effort or DEFAULT_REASONING_EFFORT,
         "answer_reasoning_effort": answer_reasoning_effort or DEFAULT_REASONING_EFFORT,
     }
@@ -1290,7 +1322,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         get("extraction_llm_model", DEFAULT_LLM_MODEL),
         get("extraction_max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
-        gr.update(choices=strategy_choices(), value=selected_strategy), project_retrieval.top_k, "",
+        gr.update(choices=strategy_choices(), value=selected_strategy), project_retrieval.top_k,
         documents, chunks, graph, active_preview, active_chunks,
         _document_rows(documents), _document_choices(documents),
         _chunk_rows(active_chunks), document_status,
@@ -3011,15 +3043,39 @@ def manual_result_editability_for_ui(enabled: bool) -> dict[str, Any]:
     return gr.update(static_columns=locked_columns if enabled else list(range(8)))
 
 
+SINGLE_EXPERIMENT_DETAIL_COLUMNS = 10
+SINGLE_EXPERIMENT_SCORE_COLUMN = 7
+CROSS_EXPERIMENT_DETAIL_COLUMNS = 11
+CROSS_EXPERIMENT_SCORE_COLUMN = 8
+
+
+def _locked_columns(column_count: int, score_column: int, enabled: bool) -> list[int]:
+    return [column for column in range(column_count) if not enabled or column != score_column]
+
+
 def experiment_table_editability_for_ui(enabled: bool) -> dict[str, Any]:
-    """Unlock only the answer-score cell; other columns remain static."""
-    return gr.update(interactive=bool(enabled))
+    """Unlock only the 1-5 answer-score column.
+
+    The table stays interactive=True and is locked via static_columns: Gradio 5.50
+    marks cells editable but never opens the cell editor when a Dataframe created
+    with interactive=False is later updated to interactive=True.
+    """
+    return gr.update(static_columns=_locked_columns(
+        SINGLE_EXPERIMENT_DETAIL_COLUMNS, SINGLE_EXPERIMENT_SCORE_COLUMN, bool(enabled),
+    ))
+
+
+def experiment_project_table_editability_for_ui(enabled: bool) -> dict[str, Any]:
+    """Unlock only the 2-0 answer-score column (see experiment_table_editability_for_ui)."""
+    return gr.update(static_columns=_locked_columns(
+        CROSS_EXPERIMENT_DETAIL_COLUMNS, CROSS_EXPERIMENT_SCORE_COLUMN, bool(enabled),
+    ))
 
 
 def reset_manual_result_editability_for_ui() -> tuple[dict[str, Any], ...]:
     return (
         gr.update(value=False), gr.update(static_columns=list(range(8))),
-        gr.update(value=False), gr.update(interactive=False),
+        gr.update(value=False), experiment_table_editability_for_ui(False),
     )
 
 
@@ -3347,6 +3403,7 @@ def generate_evaluation_for_ui(
     expand_evidence: str = "停用",
     reasoning_effort: str | None = None,
     strategy_params_json: Any = None,
+    progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], dict[str, Any], list[list[object]]]:
     if not project_id:
         return "❌ 請先建立或載入專案。", [], {}, []
@@ -3365,6 +3422,8 @@ def generate_evaluation_for_ui(
         existing_evaluation = dict(load_project(project_id).get("evaluation") or {})
         accepted_questions: list[dict[str, Any]] = []
         accepted_lock = Lock()
+        total_questions = count * len(document_chunks)
+        progress(0, desc=f"已生成 0 / {total_questions} 題")
 
         def generate_for_document(
             document: str,
@@ -3410,6 +3469,11 @@ def generate_evaluation_for_ui(
                             continue
                         accepted_questions.append(question)
                         accepted.append(question)
+                        completed = len(accepted_questions)
+                        progress(
+                            completed / total_questions,
+                            desc=f"已生成 {completed} / {total_questions} 題",
+                        )
                         break
             if len(accepted) < count:
                 detail = f"；最後錯誤：{last_error}" if last_error else ""
@@ -5716,7 +5780,6 @@ def extract_graph_for_ui(
     temperature: float,
     max_concurrent_requests: int,
     chunks: list[TextChunk],
-    schema_text: str,
     documents: list[dict[str, Any]],
     run_control: RunControl,
     chunk_size: int = 0,
@@ -5729,19 +5792,13 @@ def extract_graph_for_ui(
         return "❌ 請先勾選並選擇知識圖譜抽取 LLM。", [], [], {}
     run_control.reset()
     try:
-        schema = None
-        if str(schema_text or "").strip():
-            raw_schema = json.loads(schema_text)
-            if not isinstance(raw_schema, dict):
-                raise ValueError("schema 必須是 JSON 物件")
-            schema = validate_schema(raw_schema)
         extraction_progress = lambda value, description: progress(value, desc=description)
         extraction = extract_graph(
             model_endpoint,
             api_key,
             llm_model,
             chunks,
-            schema,
+            None,
             float(temperature),
             int(max_concurrent_requests),
             extraction_progress,
@@ -5750,8 +5807,6 @@ def extract_graph_for_ui(
         )
     except RunCancelled:
         return "⏹ 已停止（使用者中止抽取）。", [], [], {}
-    except json.JSONDecodeError:
-        return "❌ schema 不是有效 JSON。", [], [], {}
     except (ValueError, RuntimeError) as exc:
         return f"❌ {exc}", [], [], {}
 
@@ -5780,11 +5835,11 @@ def extract_graph_for_ui(
         "llm_model": llm_model,
         "temperature": float(temperature),
         "max_concurrent_requests": int(max_concurrent_requests),
-        "schema": schema,
+        "schema": None,
         "build_config": {
             "chunk_size": int(chunk_size),
             "chunk_overlap": int(chunk_overlap),
-            "schema_granularity": schema_granularity if schema is not None else None,
+            "schema_granularity": None,
         },
         "entities": extraction.entities,
         "relationships": extraction.relationships,
@@ -6189,6 +6244,11 @@ def build_app() -> gr.Blocks:
         .graph-step-group button.primary, .graph-step-group button.secondary,
         .graph-step-group button.stop {border-radius:var(--page-button-radius) !important;
             margin:var(--spacing-md) var(--spacing-lg); width:auto !important;}
+        .extraction-results {gap:8px !important; padding:var(--spacing-lg) !important;}
+        .extraction-result-heading h6 {font-size:16px !important; font-weight:600 !important;
+            color:var(--body-text-color) !important; margin:0 !important;}
+        .block.extraction-result-separated {margin-top:20px !important; padding-top:20px !important;
+            border-top:1px solid var(--border-color-primary) !important;}
         .generated-set-save-row > .column {flex:1 1 0 !important; min-width:0 !important;}
         .generated-set-save-row .generated-set-save-button {flex:1 1 auto !important; height:100% !important;}
         .project-workspace-action {align-self:flex-end !important;}
@@ -6417,7 +6477,10 @@ def build_app() -> gr.Blocks:
                 with gr.Accordion("Neo4j 連線設定", open=True):
                     with gr.Row():
                         neo4j_uri = gr.Textbox(label="URI", value=env["NEO4J_URI"])
-                        neo4j_database = gr.Textbox(label="專案專屬 Neo4j Database（匯入圖譜時自動建立）", value="", interactive=False)
+                        neo4j_database = gr.Textbox(
+                            label="專案專屬 Neo4j Database（匯入圖譜時自動建立）", value="",
+                            placeholder="請先載入專案，系統會自動帶入", interactive=False,
+                        )
                     with gr.Row():
                         neo4j_username = gr.Textbox(label="Username", value=env["NEO4J_USERNAME"])
                         neo4j_password = gr.Textbox(label="Password", value=env["NEO4J_PASSWORD"], type="password")
@@ -6514,26 +6577,6 @@ def build_app() -> gr.Blocks:
                             precision=0,
                             label="最大並行請求數",
                         )
-                    gr.HTML(
-                        """
-                        <style>
-                        .schema-scroll-editor .cm-content {
-                            font-size: 17px;
-                            line-height: 1.6;
-                        }
-                        </style>
-                        """,
-                        padding=False,
-                    )
-                    schema_editor = gr.Code(
-                        label="自訂 Schema 約束（選填 JSON；留白時直接依文本抽取）",
-                        language="json",
-                        interactive=True,
-                        lines=18,
-                        max_lines=18,
-                        wrap_lines=False,
-                        elem_classes="schema-scroll-editor",
-                    )
                     generate_graph_button = gr.Button(
                         "抽取實體與關係", variant="primary"
                     )
@@ -6543,12 +6586,17 @@ def build_app() -> gr.Blocks:
                         "若尚未顯示抽取結果，按此按鈕載入專案中已保存的圖譜明細。"
                     )
                     # Result tables stay hidden until extraction (or loading) produces rows.
-                    with gr.Column(visible=False) as extraction_results_section:
+                    with gr.Column(visible=False, elem_classes="extraction-results") as extraction_results_section:
                         gr.Markdown("##### 抽取結果")
+                        gr.Markdown("###### 實體", elem_classes="extraction-result-heading")
                         entity_table = gr.Dataframe(
                             headers=["實體", "類型", "說明", "來源 Chunks", "來源頁碼", "來源文件"],
                             interactive=False,
                             wrap=True,
+                        )
+                        gr.Markdown(
+                            "###### 關係",
+                            elem_classes=["extraction-result-heading", "extraction-result-separated"],
                         )
                         relationship_table = gr.Dataframe(
                             headers=["來源實體", "關係", "目標實體", "說明", "來源 Chunks", "來源頁碼", "來源文件"],
@@ -6986,7 +7034,8 @@ def build_app() -> gr.Blocks:
                             "複核後判定有變更", "評判理由",
                         ],
                         datatype=["str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
-                        type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 8, 9],
+                        type="array", interactive=True,
+                        static_columns=list(range(SINGLE_EXPERIMENT_DETAIL_COLUMNS)),
                         column_widths=[90, 60, 140, 160, 420, 380, 300, 150, 220, 120],
                         wrap=True, elem_classes=["evaluation-table", "evaluation-results-table"],
                     )
@@ -7189,7 +7238,8 @@ def build_app() -> gr.Blocks:
                         experiment_project_details_table = gr.Dataframe(
                             headers=["實驗組", "成員專案", "題號", "來源文件", "題目集", "題目", "正確答案", "實際答案", "答案判定（0錯誤／1部分正確／2全對）", "複核後判定有變更", "評判理由"],
                             datatype=["str", "str", "number", "str", "str", "str", "str", "str", "number", "bool", "str"],
-                            type="array", interactive=False, static_columns=[0, 1, 2, 3, 4, 5, 6, 7, 9, 10],
+                            type="array", interactive=True,
+                            static_columns=list(range(CROSS_EXPERIMENT_DETAIL_COLUMNS)),
                             column_widths=[90, 120, 60, 140, 160, 380, 360, 300, 150, 220, 120],
                             wrap=True,
                         )
@@ -7462,11 +7512,15 @@ def build_app() -> gr.Blocks:
             evaluation_retrieval_mode, *evaluation_strategy_parameter_controls,
         ]
         for component in evaluation_strategy_controls:
+            # Only a strategy switch re-renders the parameter boxes; edits just update the state.
+            is_strategy = component is evaluation_retrieval_mode
             component.input(
-                _sync_single_strategy_parameter_controls,
+                _sync_single_strategy_parameter_controls if is_strategy else _strategy_params_from_controls,
                 inputs=evaluation_strategy_controls,
-                outputs=[evaluation_strategy_params_state,
-                         *evaluation_strategy_parameter_controls],
+                outputs=(
+                    [evaluation_strategy_params_state, *evaluation_strategy_parameter_controls]
+                    if is_strategy else evaluation_strategy_params_state
+                ),
                 show_progress="hidden",
             ).then(
                 save_evaluation_preferences_for_ui,
@@ -7583,11 +7637,19 @@ def build_app() -> gr.Blocks:
             parameter_controls = row[EXPERIMENT_GROUP_FIELDS:-1]
             parameter_sync_inputs = [row[3], row[0], *parameter_controls]
             parameter_sync_outputs = [parameter_state, *parameter_controls]
-            for trigger in [row[0], row[3], *parameter_controls]:
+            for trigger in [row[0], row[3]]:
                 trigger.change(
                     _sync_experiment_strategy_parameter_controls,
                     inputs=parameter_sync_inputs,
                     outputs=parameter_sync_outputs,
+                    show_progress="hidden",
+                )
+            for parameter_control in parameter_controls:
+                # User edits only update the state; never write back into the box being typed in.
+                parameter_control.input(
+                    _experiment_strategy_params_from_controls,
+                    inputs=parameter_sync_inputs,
+                    outputs=parameter_state,
                     show_progress="hidden",
                 )
             for parameter_control in parameter_controls:
@@ -7909,11 +7971,19 @@ def build_app() -> gr.Blocks:
             parameter_controls = row[EXPERIMENT_GROUP_FIELDS:-1]
             parameter_sync_inputs = [row[3], row[0], *parameter_controls]
             parameter_sync_outputs = [parameter_state, *parameter_controls]
-            for trigger in [row[0], row[3], *parameter_controls]:
+            for trigger in [row[0], row[3]]:
                 trigger.change(
                     _sync_experiment_strategy_parameter_controls,
                     inputs=parameter_sync_inputs,
                     outputs=parameter_sync_outputs,
+                    show_progress="hidden",
+                )
+            for parameter_control in parameter_controls:
+                # User edits only update the state; never write back into the box being typed in.
+                parameter_control.input(
+                    _experiment_strategy_params_from_controls,
+                    inputs=parameter_sync_inputs,
+                    outputs=parameter_state,
                     show_progress="hidden",
                 )
             parameter_state.change(
@@ -8003,7 +8073,7 @@ def build_app() -> gr.Blocks:
             outputs=[save_experiment_run_status, experiment_project_state],
         )
         experiment_project_manual_edit.input(
-            experiment_table_editability_for_ui,
+            experiment_project_table_editability_for_ui,
             inputs=experiment_project_manual_edit, outputs=experiment_project_details_table,
             show_progress="hidden",
         )
@@ -8169,7 +8239,7 @@ def build_app() -> gr.Blocks:
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor,
+            top_k,
             extraction_reasoning_effort, answer_reasoning_effort,
             retrieval_strategy_params_state,
         ]
@@ -8182,7 +8252,7 @@ def build_app() -> gr.Blocks:
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor,
+            top_k,
             documents_state, chunk_state, graph_state,
             active_preview_state, active_chunks_state,
             documents_table, remove_document_selector,
@@ -8199,10 +8269,15 @@ def build_app() -> gr.Blocks:
             )
         qa_strategy_parameter_inputs = [retrieval_mode, *retrieval_strategy_parameter_controls]
         for retrieval_control in qa_strategy_parameter_inputs:
+            # Only a strategy switch re-renders the parameter boxes; edits just update the state.
+            is_strategy = retrieval_control is retrieval_mode
             retrieval_control.input(
-                _sync_single_strategy_parameter_controls,
+                _sync_single_strategy_parameter_controls if is_strategy else _strategy_params_from_controls,
                 inputs=qa_strategy_parameter_inputs,
-                outputs=[retrieval_strategy_params_state, *retrieval_strategy_parameter_controls],
+                outputs=(
+                    [retrieval_strategy_params_state, *retrieval_strategy_parameter_controls]
+                    if is_strategy else retrieval_strategy_params_state
+                ),
                 show_progress="hidden",
             ).then(
                 save_project_for_ui, inputs=project_setting_inputs,
@@ -8355,7 +8430,7 @@ def build_app() -> gr.Blocks:
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor,
+            top_k,
         ]
         for component in auto_save_components:
             component.input(
@@ -8537,6 +8612,22 @@ def build_app() -> gr.Blocks:
                      global_api_endpoint, global_api_key,
                      global_api_status, env_status],
         )
+        page_load_env_event = app.load(
+            refresh_env_on_page_load_for_ui,
+            inputs=experiment_llm_service_state,
+            outputs=[neo4j_uri, neo4j_username, neo4j_password,
+                     llm_provider, *llm_service_outputs,
+                     embedding_provider, *embedding_service_outputs,
+                     global_api_endpoint, global_api_key,
+                     experiment_llm_service_state],
+            show_progress="hidden",
+        )
+        page_load_env_event.then(
+            refresh_model_credentials_for_ui,
+            inputs=credential_refresh_inputs,
+            outputs=credential_refresh_outputs,
+            show_progress="hidden",
+        )
         reload_reset_event = reload_event.then(
             lambda: False, outputs=neo4j_connected_state, show_progress="hidden",
         )
@@ -8614,7 +8705,6 @@ def build_app() -> gr.Blocks:
                 graph_temperature,
                 extraction_max_concurrent_requests,
                 chunk_state,
-                schema_editor,
                 documents_state,
                 run_control_state,
                 chunk_size,
