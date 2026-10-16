@@ -913,3 +913,39 @@ def test_ensure_project_database_creates_then_checks_database(monkeypatch) -> No
 def test_ensure_project_database_rejects_unsafe_name():
     with pytest.raises(ValueError, match="名稱格式無效"):
         neo4j_service.ensure_project_database("bolt://db", "x` DROP DATABASE neo4j", "u", "p")
+
+
+def test_ensure_project_database_requires_loaded_project():
+    with pytest.raises(ValueError, match="請先載入專案"):
+        neo4j_service.ensure_project_database("bolt://db", "  ", "u", "p")
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (neo4j_service.ServiceUnavailable("refused"), "無法連線至 Neo4j"),
+        (neo4j_service.AuthError("unauthorized"), "帳號或密碼錯誤"),
+        (
+            neo4j_service.Neo4jError._hydrate_neo4j(
+                code="Neo.ClientError.Security.AuthenticationRateLimit", message="too many"
+            ),
+            "密碼錯誤次數過多",
+        ),
+    ],
+)
+def test_ensure_project_database_reports_connection_errors(monkeypatch, error, message):
+    class Driver:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def verify_connectivity(self):
+            raise error
+
+    monkeypatch.setattr(neo4j_service.GraphDatabase, "driver", lambda *args, **kwargs: Driver())
+
+    with pytest.raises(ValueError, match=message) as caught:
+        neo4j_service.ensure_project_database("bolt://db", "vehicle-123abc", "u", "p")
+    assert "Enterprise" not in str(caught.value)

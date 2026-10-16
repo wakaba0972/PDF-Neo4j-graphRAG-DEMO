@@ -25,3 +25,10 @@ def test_launch_settings_ignore_server_environment_overrides(monkeypatch) -> Non
     assert settings["server_name"] == "0.0.0.0"
     assert settings["server_port"] == 8080
     assert settings["inbrowser"] is False
+
+
+def test_project_root_contains_env_example_and_data_paths() -> None:
+    from app import PROJECT_ROOT
+
+    assert (PROJECT_ROOT / ".env.example").is_file()
+    assert (PROJECT_ROOT / "src" / "app.py").is_file()

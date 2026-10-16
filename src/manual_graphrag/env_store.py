@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import tempfile
@@ -43,7 +44,35 @@ def _decode_value(raw: str) -> str:
         except (json.JSONDecodeError, TypeError):
             if len(value) >= 2 and value[-1] == value[0]:
                 return value[1:-1]
+        return value
+    # Unquoted values may carry a shell-style trailing comment: KEY=value  # note
+    for marker in (" #", "\t#"):
+        if marker in value:
+            value = value.split(marker, 1)[0].rstrip()
     return value
+
+
+def _read_env_text(target: Path) -> str:
+    """Decode .env files saved by Windows editors as well as plain UTF-8.
+
+    Notepad may add a UTF-8 BOM (which would hide the first key) and
+    PowerShell 5 ``>``/``Out-File`` writes UTF-16 with a BOM.
+    """
+    if target.is_dir():
+        raise IsADirectoryError(
+            f"{target} 是資料夾而不是檔案；Docker 掛載前請先在主機建立 .env（cp .env.example .env）"
+        )
+    data = target.read_bytes()
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16")
+    return data.decode("utf-8-sig")
+
+
+def _env_key(raw_key: str) -> str:
+    key = raw_key.strip()
+    if key.startswith("export "):
+        key = key[len("export "):].strip()
+    return key
 
 
 def load_env(path: str | Path = ".env") -> dict[str, str]:
@@ -53,12 +82,12 @@ def load_env(path: str | Path = ".env") -> dict[str, str]:
         return values
     legacy_embedding_values: dict[str, str] = {}
     present_keys: set[str] = set()
-    for raw_line in target.read_text(encoding="utf-8").splitlines():
+    for raw_line in _read_env_text(target).splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, raw_value = line.split("=", 1)
-        key = key.strip()
+        key = _env_key(key)
         present_keys.add(key)
         if key in ENV_KEYS:
             values[key] = _decode_value(raw_value)
@@ -81,7 +110,7 @@ def save_env(values: dict[str, object], path: str | Path = ".env") -> Path:
 def _save_env(values: dict[str, object], path: str | Path) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    current_lines = target.read_text(encoding="utf-8").splitlines() if target.exists() else []
+    current_lines = _read_env_text(target).splitlines() if target.exists() else []
     current = load_env(target)
     current.update({key: str(value) for key, value in values.items() if key in ENV_KEYS})
     written: set[str] = set()
@@ -89,7 +118,7 @@ def _save_env(values: dict[str, object], path: str | Path) -> Path:
     for line in current_lines:
         stripped = line.strip()
         if stripped and not stripped.startswith("#") and "=" in stripped:
-            key = stripped.split("=", 1)[0].strip()
+            key = _env_key(stripped.split("=", 1)[0])
             if key in LEGACY_ENV_KEYS:
                 continue
             if key in ENV_KEYS:
@@ -102,13 +131,25 @@ def _save_env(values: dict[str, object], path: str | Path) -> Path:
     for key in ENV_KEYS:
         if key not in written:
             output.append(f"{key}={json.dumps(current[key], ensure_ascii=False)}")
+    text = "\n".join(output).rstrip() + "\n"
     descriptor, temporary_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(output).rstrip() + "\n")
+            handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_name, target)
+        try:
+            os.replace(temporary_name, target)
+        except OSError as exc:
+            # Docker single-file bind mounts (-v ./.env:/app/.env) cannot be
+            # replaced by rename (EBUSY/EXDEV); fall back to rewriting in place.
+            if exc.errno not in {errno.EBUSY, errno.EXDEV, errno.EPERM}:
+                raise
+            Path(temporary_name).unlink(missing_ok=True)
+            with target.open("w", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
     except Exception:
         Path(temporary_name).unlink(missing_ok=True)
         raise

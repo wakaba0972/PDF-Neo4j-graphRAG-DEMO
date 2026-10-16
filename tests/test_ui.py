@@ -419,7 +419,7 @@ def test_schema_planner_is_removed_from_graph_build_ui() -> None:
     assert "Schema 規劃 LLM" not in labels
     assert "用於規劃 Schema 的 PDF" not in labels
     assert "分析文件並規劃 Schema（可選）" not in values
-    assert "自訂 Schema 約束（選填 JSON；留白時直接依文本抽取）" in labels
+    assert "自訂 Schema 約束（選填 JSON；留白時直接依文本抽取）" not in labels
 
 
 def test_project_page_uses_automatic_refresh_and_save() -> None:
@@ -610,12 +610,16 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
     assert all(tab["props"]["interactive"] is False for tab in tabs)
     llm = settings.load_service_settings("llm")
     embedding = settings.load_service_settings("embedding")
+    loaded = {"project_id": "project"}
     assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("", False, llm, embedding, "single"))
     llm["profiles"]["OpenAI"]["connected"] = True
     embedding["profiles"]["OpenAI"]["connected"] = True
-    assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", False, llm, embedding, "single"))
-    assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", True, llm, embedding, "single"))
-    assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("project", False, llm, embedding, "experiment"))
+    assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", False, llm, embedding, "single", loaded))
+    assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", True, llm, embedding, "single", loaded))
+    # Visiting 2-0 (experiment workspace) keeps the loaded single project usable.
+    assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", False, llm, embedding, "experiment", loaded))
+    # A dropdown value alone (project not loaded yet) does not unlock the tabs.
+    assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("project", False, llm, embedding, "single", {}))
     experiment = {"experiment_project_id": "exp-1", "members": ["p1", "p2"]}
     mode, statuses = ui.activate_workspace_for_ui("experiment", {"name": "試驗"})
     assert mode == "experiment" and statuses == {}
@@ -651,9 +655,24 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
 def test_workflow_gate_requires_project_but_not_connection_tests(monkeypatch) -> None:
     llm = settings.load_service_settings("llm")
     embedding = settings.load_service_settings("embedding")
+    loaded = {"project_id": "project"}
     assert all(update["interactive"] is False for update in ui.workflow_tabs_for_ui("", False, llm, embedding))
-    assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", False, llm, embedding))
-    assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", True, llm, embedding))
+    assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", False, llm, embedding, "single", loaded))
+    assert all(update["interactive"] is True for update in ui.workflow_tabs_for_ui("project", True, llm, embedding, "single", loaded))
+
+
+def test_page_load_rereads_env_saved_after_server_start(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    experiment_state = settings.load_service_settings("experiment_llm")
+    (tmp_path / ".env").write_text(
+        'NEO4J_URI="bolt://saved:7687"\nMODEL_OPENAI_API_KEY="sk-saved"\n', encoding="utf-8",
+    )
+
+    values = ui.refresh_env_on_page_load_for_ui(experiment_state)
+
+    assert values[0] == "bolt://saved:7687"
+    assert "sk-saved" in values
+    assert values[-1]["profiles"]["OpenAI"]["api_key"] == "sk-saved"
 
 
 def test_openai_models_are_selectable_without_current_connection_test(tmp_path, monkeypatch) -> None:
@@ -1360,7 +1379,7 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
         "bolt://db", "neo4j", "user", "pass", "http://models", "key",
         "build", "embed", "answer", 1200, 100, 0.2,
         "詳細", 2, "extract", 2,
-        "混合檢索", 6, '{"entity_types": []}',
+        "混合檢索", 6,
         ui.DEFAULT_REASONING_EFFORT,
         ui.DEFAULT_REASONING_EFFORT, '{"effective_search_ratio": 6}',
     ]
@@ -1370,8 +1389,8 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert Path(saved["documents"][0]["path"]).read_bytes() == b"pdf"
     assert loaded[0]["project_id"] == created["project_id"]
     assert loaded[11:13] == (1200, 100)
-    assert loaded[22][0].text == "內容"
-    assert loaded[36] == {"effective_search_ratio": 6}
+    assert loaded[21][0].text == "內容"
+    assert loaded[35] == {"effective_search_ratio": 6}
     parameter_entries = ui._strategy_parameter_entries()
     hybrid_ratio = next(
         update for (strategy_id, name, _spec), update
@@ -1385,12 +1404,12 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert "graph_partition_mode" not in stored_project["settings"]
     assert stored_project["graph_state"]["entities"][0]["name"] == "設備"
     assert stored_project["graph_state"]["relationships"][0]["type"] == "USES"
-    assert loaded[30] == [] and loaded[31] == []
+    assert loaded[29] == [] and loaded[30] == []
     entity_rows, relationship_rows = ui.render_graph_tables_for_ui(stored_project["graph_state"])
     assert entity_rows[0][:2] == ["設備", "DEVICE"]
     assert relationship_rows[0][:3] == ["設備", "USES", "零件"]
-    assert "1 個實體、1 筆關係" in loaded[32]
-    assert "已匯入 Neo4j" in loaded[33]
+    assert "1 個實體、1 筆關係" in loaded[31]
+    assert "已匯入 Neo4j" in loaded[32]
 
 
 def test_saved_graph_details_load_only_after_explicit_request(tmp_path, monkeypatch) -> None:
@@ -1473,6 +1492,34 @@ def test_project_answer_appends_project_history_without_separate_archive(monkeyp
     assert captured["retrieval_config"]["top_k"] == 8
     assert captured["retrieval_config"]["expansion"]["id"] == "legacy_name_chunk"
     assert result[0].endswith("✅ 問答紀錄已加入目前專案。")
+
+
+def test_generate_evaluation_for_ui_reports_question_progress(monkeypatch) -> None:
+    counter = iter(range(100))
+
+    def fake_generate(*_args, **_kwargs):
+        number = next(counter)
+        return [{"question": f"Q{number}", "expected_answer": f"A{number}", "source_pages": [1]}]
+
+    sampled_chunks = [TextChunk(1, "page", (1,), "a.pdf")]
+    monkeypatch.setattr(ui, "sample_random_page_context", lambda _chunks: (1, sampled_chunks))
+    monkeypatch.setattr(ui, "expand_page_context_until_complete", lambda *args: sampled_chunks)
+    monkeypatch.setattr(ui, "generate_evaluation_questions", fake_generate)
+    monkeypatch.setattr(ui, "evaluation_questions_are_similar", lambda *_: False)
+    monkeypatch.setattr(ui, "load_project", lambda *_: {"evaluation": {}})
+    monkeypatch.setattr(ui, "save_project", lambda *_: {})
+    calls = []
+
+    status, *_ = ui.generate_evaluation_for_ui(
+        "project", "endpoint", "key", "generation-model", "test-model", 2, "混合檢索", 8,
+        [TextChunk(1, "a", (1,), "a.pdf"), TextChunk(2, "b", (1,), "b.pdf")],
+        progress=lambda value, desc: calls.append((value, desc)),
+    )
+
+    assert status.startswith("✅")
+    assert calls[0] == (0, "已生成 0 / 4 題")
+    assert calls[-1] == (1, "已生成 4 / 4 題")
+    assert len(calls) == 5
 
 
 def test_generate_evaluation_for_ui_saves_questions(monkeypatch) -> None:
@@ -2577,6 +2624,34 @@ def test_experiment_strategy_controls_show_only_selected_strategy_parameters() -
     ]
 
 
+def test_strategy_params_from_controls_reads_only_active_strategy() -> None:
+    entries = ui._strategy_parameter_entries()
+    values = [6 if strategy_id == "vector" else spec.default
+              for strategy_id, _name, spec in entries]
+
+    assert ui._strategy_params_from_controls("基本向量檢索", *values) == {"effective_search_ratio": 6}
+    assert ui._experiment_strategy_params_from_controls(
+        "基本向量檢索", "向量實驗組", *values,
+    ) == {"effective_search_ratio": 6}
+
+
+def test_no_change_listener_writes_back_into_its_own_trigger() -> None:
+    # A .change listener on a typed-into box that outputs to that box re-fires
+    # itself; with queued keystroke events two values ping-pong forever (the
+    # experiment-group parameter jitter).
+    app = build_app()
+    typed_boxes = {
+        component["id"] for component in app.config["components"]
+        if component.get("type") in {"number", "slider", "textbox"}
+    }
+    for dependency in app.config["dependencies"]:
+        outputs = set(dependency["outputs"])
+        for target_id, event in dependency["targets"]:
+            assert not (
+                event == "change" and target_id in typed_boxes and target_id in outputs
+            ), dependency.get("api_name")
+
+
 def test_single_evaluation_strategy_controls_sync_active_parameters() -> None:
     entries = ui._strategy_parameter_entries()
     values = [6 if strategy_id == "vector" else spec.default
@@ -3170,16 +3245,22 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         )
     ]
     assert len(experiment_tables) == 2
-    assert experiment_tables[0]["props"]["interactive"] is False
-    assert 7 not in experiment_tables[0]["props"]["static_columns"]
+    # interactive=True from the start; locking is done via static_columns because
+    # Gradio 5.50 never opens the cell editor after an interactive False→True update.
+    assert experiment_tables[0]["props"]["interactive"] is True
+    assert experiment_tables[0]["props"]["static_columns"] == list(range(10))
     single_widths = experiment_tables[0]["props"]["column_widths"]
     assert single_widths[3] < single_widths[6]
-    assert experiment_tables[1]["props"]["interactive"] is False
-    assert 8 not in experiment_tables[1]["props"]["static_columns"]
+    assert experiment_tables[1]["props"]["interactive"] is True
+    assert experiment_tables[1]["props"]["static_columns"] == list(range(11))
     cross_widths = experiment_tables[1]["props"]["column_widths"]
     assert cross_widths[4] < cross_widths[7]
-    assert ui.experiment_table_editability_for_ui(True)["interactive"] is True
-    assert ui.experiment_table_editability_for_ui(False)["interactive"] is False
+    assert ui.experiment_table_editability_for_ui(True)["static_columns"] == [0, 1, 2, 3, 4, 5, 6, 8, 9]
+    assert ui.experiment_table_editability_for_ui(False)["static_columns"] == list(range(10))
+    assert ui.experiment_project_table_editability_for_ui(True)["static_columns"] == [
+        0, 1, 2, 3, 4, 5, 6, 7, 9, 10,
+    ]
+    assert ui.experiment_project_table_editability_for_ui(False)["static_columns"] == list(range(11))
     answer_heading = next(
         item for item in components
         if item.get("props", {}).get("label") == "② 實驗組與生成回答"
@@ -3202,7 +3283,7 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
         item for item in components
         if item.get("props", {}).get("headers", [None, None])[0:2] == ["實驗組", "題號"]
     )
-    assert result_table["props"]["interactive"] is False
+    assert result_table["props"]["static_columns"] == list(range(10))
     assert result_table["props"]["datatype"][7] == "number"
     assert "回答模型" not in result_table["props"]["headers"]
     assert "評測模型" not in result_table["props"]["headers"]
@@ -3214,7 +3295,6 @@ def test_experiment_ui_uses_inline_dropdowns_and_no_group_dataframe() -> None:
     assert column_widths[1] < column_widths[4] and column_widths[1] < column_widths[5]
     assert column_widths[2] < column_widths[4] and column_widths[2] < column_widths[5]
     assert column_widths[6] < column_widths[4] and column_widths[6] < column_widths[5]
-    assert 7 not in result_table["props"]["static_columns"]
     experiment_project_table = next(
         item for item in components
         if item.get("props", {}).get("headers", [])[:3] == ["實驗組", "成員專案", "題號"]
@@ -3756,11 +3836,9 @@ def test_extract_graph_for_ui_reports_stopped_status(monkeypatch) -> None:
         ui, "extract_graph",
         lambda *args, **kwargs: (_ for _ in ()).throw(ui.RunCancelled("stopped")),
     )
-    schema = {"entity_types": [{"name": "DEVICE"}], "relationship_types": [{"name": "USES"}]}
-
     result = ui.extract_graph_for_ui(
         "http://models/v1", "key", "llm", 0.2, 3,
-        [TextChunk(1, "text", (1,))], json.dumps(schema), {}, ui.RunControl(),
+        [TextChunk(1, "text", (1,))], {}, ui.RunControl(),
     )
 
     assert result == ("⏹ 已停止（使用者中止抽取）。", [], [], {})
@@ -3802,11 +3880,6 @@ def test_extract_graph_for_ui_formats_tables_and_state(monkeypatch) -> None:
         "import_extraction",
         lambda *args: (_ for _ in ()).throw(AssertionError("抽取時不應匯入 Neo4j")),
     )
-    schema = {
-        "entity_types": [{"name": "DEVICE"}],
-        "relationship_types": [{"name": "USES"}],
-    }
-
     status, entities, relationships, state = ui.extract_graph_for_ui(
         "http://models/v1",
         "key",
@@ -3814,7 +3887,6 @@ def test_extract_graph_for_ui_formats_tables_and_state(monkeypatch) -> None:
         0.2,
         3,
         [TextChunk(1, "text", (3,))],
-        json.dumps(schema),
         [{"file_name": "manual.pdf"}],
         ui.RunControl(),
     )
@@ -3847,7 +3919,7 @@ def test_extract_graph_for_ui_defaults_to_direct_text_extraction(monkeypatch) ->
 
     status, _, _, state = ui.extract_graph_for_ui(
         "https://api.openai.com/v1", "key", "model", 0, 2,
-        [TextChunk(1, "manual text", (1,), "manual.pdf")], "", [], ui.RunControl(),
+        [TextChunk(1, "manual text", (1,), "manual.pdf")], [], ui.RunControl(),
         1500, 200, "詳細",
     )
 
@@ -3876,7 +3948,7 @@ def test_extract_graph_for_ui_extracts_all_documents_into_one_graph(monkeypatch)
             TextChunk(1, "a1", (1,), "a.pdf", "doc-a"),
             TextChunk(2, "a2", (2,), "a.pdf", "doc-a"),
             TextChunk(3, "b1", (1,), "b.pdf", "doc-b"),
-        ], "", [], ui.RunControl(),
+        ], [], ui.RunControl(),
     )
 
     assert status.startswith("✅")
@@ -3930,14 +4002,6 @@ def test_graph_evidence_separates_merged_sources_by_pdf() -> None:
     assert evidence[0]["text"] == "Entity: 共用設備; Type: DEVICE; Description: 設備"
     assert evidence[2]["text"] == "Relationship: 共用設備 -[USES]-> 配件; Description: 使用"
     assert all(len(item["source_references"]) == 1 for item in evidence)
-
-
-def test_extract_graph_for_ui_rejects_invalid_schema() -> None:
-    result = ui.extract_graph_for_ui(
-        "http://models/v1", "", "llm", 0.2, 3, [], "not-json", {}, ui.RunControl()
-    )
-
-    assert result == ("❌ schema 不是有效 JSON。", [], [], {})
 
 
 def _importable_graph_state() -> dict:

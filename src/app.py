@@ -1,6 +1,10 @@
 import os
+from pathlib import Path
 
 from manual_graphrag.ui import build_app
+
+# .env, config/ and data/ are all resolved relative to the working directory.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def launch_settings() -> dict[str, object]:
@@ -18,4 +22,7 @@ def launch_settings() -> dict[str, object]:
 
 
 if __name__ == "__main__":
+    # Launching from another directory (e.g. `python PDF-.../src/app.py`) would
+    # otherwise silently miss .env and fall back to empty API keys.
+    os.chdir(PROJECT_ROOT)
     build_app().queue(default_concurrency_limit=1).launch(**launch_settings())
