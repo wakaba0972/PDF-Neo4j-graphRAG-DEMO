@@ -11,7 +11,7 @@ from typing import Any, Iterable
 
 from neo4j import GraphDatabase
 from neo4j.exceptions import (
-    DriverError, Neo4jError, ServiceUnavailable, SessionExpired,
+    AuthError, DriverError, Neo4jError, ServiceUnavailable, SessionExpired,
 )
 from neo4j_graphrag.exceptions import Neo4jGraphRagError
 from .retrieval import (
@@ -163,6 +163,8 @@ def check_neo4j_connection(
 
 def ensure_project_database(uri: str, database: str, username: str, password: str) -> None:
     """Create the project database when supported, then verify it is usable."""
+    if not database.strip():
+        raise ValueError("請先載入專案，系統會自動帶入專案專屬 Neo4j Database")
     if not re.fullmatch(r"[a-z][a-z0-9.-]*", database.strip()):
         raise ValueError("專案 Neo4j Database 名稱格式無效")
     try:
@@ -172,7 +174,22 @@ def ensure_project_database(uri: str, database: str, username: str, password: st
                 session.run(
                     f"CREATE DATABASE `{database.strip()}` IF NOT EXISTS WAIT 30 SECONDS"
                 ).consume()
-    except (DriverError, Neo4jError, OSError, ValueError) as exc:
+    except AuthError as exc:
+        raise ValueError(f"Neo4j 帳號或密碼錯誤：{exc}") from exc
+    except Neo4jError as exc:
+        if exc.code != "Neo.ClientError.Security.AuthenticationRateLimit":
+            raise ValueError(
+                "無法建立專案專屬 Neo4j Database；此功能需要支援多資料庫的 Neo4j Enterprise "
+                f"及管理權限（Neo4j Community／Aura 不支援）：{exc}"
+            ) from exc
+        raise ValueError(
+            "Neo4j 密碼錯誤次數過多，已暫時鎖定；請確認 Username／Password 正確後稍候再試"
+        ) from exc
+    except (ServiceUnavailable, OSError) as exc:
+        raise ValueError(
+            f"無法連線至 Neo4j（{uri}），請確認 URI、Neo4j 是否已啟動及網路／防火牆設定：{exc}"
+        ) from exc
+    except (DriverError, ValueError) as exc:
         raise ValueError(
             "無法建立專案專屬 Neo4j Database；此功能需要支援多資料庫的 Neo4j Enterprise "
             f"及管理權限（Neo4j Community／Aura 不支援）：{exc}"
