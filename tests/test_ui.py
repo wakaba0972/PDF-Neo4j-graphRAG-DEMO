@@ -1369,8 +1369,8 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert Path(saved["documents"][0]["path"]).read_bytes() == b"pdf"
     assert loaded[0]["project_id"] == created["project_id"]
     assert loaded[11:13] == (1200, 100)
-    assert loaded[22][0].text == "內容"
-    assert loaded[36] == {"effective_search_ratio": 6}
+    assert loaded[21][0].text == "內容"
+    assert loaded[35] == {"effective_search_ratio": 6}
     parameter_entries = ui._strategy_parameter_entries()
     hybrid_ratio = next(
         update for (strategy_id, name, _spec), update
@@ -1384,12 +1384,12 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert "graph_partition_mode" not in stored_project["settings"]
     assert stored_project["graph_state"]["entities"][0]["name"] == "設備"
     assert stored_project["graph_state"]["relationships"][0]["type"] == "USES"
-    assert loaded[30] == [] and loaded[31] == []
+    assert loaded[29] == [] and loaded[30] == []
     entity_rows, relationship_rows = ui.render_graph_tables_for_ui(stored_project["graph_state"])
     assert entity_rows[0][:2] == ["設備", "DEVICE"]
     assert relationship_rows[0][:3] == ["設備", "USES", "零件"]
-    assert "1 個實體、1 筆關係" in loaded[32]
-    assert "已匯入 Neo4j" in loaded[33]
+    assert "1 個實體、1 筆關係" in loaded[31]
+    assert "已匯入 Neo4j" in loaded[32]
 
 
 def test_saved_graph_details_load_only_after_explicit_request(tmp_path, monkeypatch) -> None:

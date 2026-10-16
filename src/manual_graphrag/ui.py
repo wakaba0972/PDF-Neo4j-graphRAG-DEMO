@@ -1291,7 +1291,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         get("extraction_llm_model", DEFAULT_LLM_MODEL),
         get("extraction_max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
-        gr.update(choices=strategy_choices(), value=selected_strategy), project_retrieval.top_k, "",
+        gr.update(choices=strategy_choices(), value=selected_strategy), project_retrieval.top_k,
         documents, chunks, graph, active_preview, active_chunks,
         _document_rows(documents), _document_choices(documents),
         _chunk_rows(active_chunks), document_status,
