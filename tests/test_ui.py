@@ -10,6 +10,7 @@ from manual_graphrag import service_settings as settings
 from manual_graphrag import ui
 from manual_graphrag.audit import actor_context
 from manual_graphrag.chunking import PageText, TextChunk
+from manual_graphrag.pdf_service import PdfExtraction
 from manual_graphrag.retrieval import RetrievalParameterSpec, RetrievalStrategySpec
 from manual_graphrag.ui import build_app, connection_summary, persist_env_settings
 
@@ -373,37 +374,32 @@ def test_luna_evaluation_reasoning_effort_defaults_to_medium() -> None:
 
 def test_pause_and_stop_buttons_bypass_the_queue() -> None:
     app = build_app()
-    pause_button = next(
-        component for component in app.config["components"]
-        if component.get("props", {}).get("value") == "⏸ 暫停"
-    )
-    stop_button = next(
-        component for component in app.config["components"]
-        if component.get("props", {}).get("value") == "⏹ 停止"
-    )
-    pause_dependency = next(
-        item for item in app.config["dependencies"]
-        if str(item.get("api_name", "")).startswith("toggle_pause_for_ui")
-    )
-    stop_dependencies = [
-        item for item in app.config["dependencies"]
-        if str(item.get("api_name", "")).startswith("request_stop_for_ui")
-    ]
-    assert stop_button["props"]["variant"] == "stop"
-    assert pause_dependency["queue"] is False
-    assert all(dependency["queue"] is False for dependency in stop_dependencies)
-    assert len(stop_dependencies) == 1
-    assert any(target[0] == pause_button["id"] for target in pause_dependency["targets"])
-    assert any(
-        target[0] == stop_button["id"]
-        for dependency in stop_dependencies for target in dependency["targets"]
-    )
+    buttons = {
+        label: [
+            component for component in app.config["components"]
+            if component.get("type") == "button" and component.get("props", {}).get("value") == label
+        ]
+        for label in ("⏸ 暫停", "⏹ 停止")
+    }
+    # 1-1 PDF parsing and 1-2 graph extraction each have their own pair.
+    assert len(buttons["⏸ 暫停"]) == 2 and len(buttons["⏹ 停止"]) == 2
+    assert all(button["props"]["variant"] == "stop" for button in buttons["⏹ 停止"])
+    for button in [*buttons["⏸ 暫停"], *buttons["⏹ 停止"]]:
+        dependencies = [
+            item for item in app.config["dependencies"]
+            if any(target[0] == button["id"] for target in item["targets"])
+        ]
+        assert len(dependencies) == 1
+        assert dependencies[0]["queue"] is False
+    handlers = {str(item.get("api_name", "")) for item in app.config["dependencies"]}
+    for name in ("toggle_pause_for_ui", "request_stop_for_ui",
+                 "toggle_pdf_pause_for_ui", "request_pdf_stop_for_ui"):
+        assert any(handler.startswith(name) for handler in handlers)
     assert "停止實驗" not in {
         component.get("props", {}).get("value")
         for component in app.config["components"]
         if component.get("type") == "button"
     }
-    assert any(target[0] == stop_button["id"] for target in stop_dependencies[0]["targets"])
 
 
 def test_schema_planner_is_removed_from_graph_build_ui() -> None:
@@ -1327,6 +1323,19 @@ def test_login_reveals_app_and_names_audited_projects(tmp_path, monkeypatch) -> 
     assert experiment_event["action"] == "create_experiment_project_for_ui"
 
 
+def test_pdf_parsing_shows_a_single_progress_bar() -> None:
+    app = build_app()
+    components = {component["id"]: component for component in app.config["components"]}
+    parse = next(
+        dependency for dependency in app.config["dependencies"]
+        if components.get(dependency["targets"][0][0], {}).get("props", {}).get("value") == "解析並加入專案"
+    )
+
+    progress_targets = [components[target] for target in parse["show_progress_on"]]
+    assert len(progress_targets) == 1
+    assert progress_targets[0]["type"] == "markdown"
+
+
 def test_answer_display_is_plain_text_not_markdown() -> None:
     app = build_app()
     answer = next(
@@ -1363,6 +1372,7 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
         "混合檢索", 6, '{"entity_types": []}',
         ui.DEFAULT_REASONING_EFFORT,
         ui.DEFAULT_REASONING_EFFORT, '{"effective_search_ratio": 6}',
+        ui.PDF_VISION_DISABLED,
     ]
     saved, save_status = ui.save_project_for_ui(*values)
     loaded = ui.load_project_for_ui(created["project_id"])
@@ -1372,6 +1382,8 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert loaded[11:13] == (1200, 100)
     assert loaded[22][0].text == "內容"
     assert loaded[36] == {"effective_search_ratio": 6}
+    assert loaded[37]["value"] == ui.PDF_VISION_DISABLED
+    assert ui.PDF_VISION_DISABLED in [value for _, value in loaded[37]["choices"]]
     parameter_entries = ui._strategy_parameter_entries()
     hybrid_ratio = next(
         update for (strategy_id, name, _spec), update
@@ -3544,7 +3556,13 @@ def test_add_document_for_ui_initializes_active_document(tmp_path, monkeypatch) 
         TextChunk(1, "two", (2,), "manual.pdf"),
         TextChunk(2, "three", (3,), "manual.pdf"),
     ]
-    monkeypatch.setattr(ui, "extract_pdf", lambda path: (pages, []))
+    calls = []
+
+    def fake_extract(path, **kwargs):
+        calls.append(kwargs["vision_model"])
+        return PdfExtraction(pages, [], vision_model=kwargs["vision_model"], vision_pages=[2, 3])
+
+    monkeypatch.setattr(ui, "extract_pdf_with_report", fake_extract)
     monkeypatch.setattr(
         ui, "chunk_pages",
         lambda *args, **kwargs: [
@@ -3560,6 +3578,10 @@ def test_add_document_for_ui_initializes_active_document(tmp_path, monkeypatch) 
     ) = result
 
     assert status.startswith("✅「manual.pdf」第 2–3 頁，產生 2 個 chunk")
+    assert "Vision（gpt-6-luna）解析 2 頁" in status
+    assert calls == [ui.DEFAULT_PDF_VISION_MODEL]
+    assert documents[0]["vision_model"] == ui.DEFAULT_PDF_VISION_MODEL
+    assert documents[0]["vision_fallback_pages"] == []
     assert [row[0] for row in rows] == [1, 2]
     assert documents[0]["file_name"] == "manual.pdf"
     assert documents[0]["page_count"] == 2
@@ -3577,7 +3599,8 @@ def test_add_document_for_ui_initializes_active_document(tmp_path, monkeypatch) 
 
 def test_add_document_for_ui_rejects_duplicate_document_name(monkeypatch) -> None:
     monkeypatch.setattr(
-        ui, "extract_pdf", lambda path: ((_ for _ in ()).throw(AssertionError()))
+        ui, "extract_pdf_with_report",
+        lambda path, **kwargs: ((_ for _ in ()).throw(AssertionError())),
     )
     existing = [{"file_name": "manual.pdf"}]
 
@@ -3701,11 +3724,11 @@ def test_add_document_for_ui_accepts_multiple_files_at_once(tmp_path, monkeypatc
     paths = [tmp_path / "a.pdf", tmp_path / "b.pdf"]
     for path in paths:
         path.write_bytes(path.name.encode())
-    def fake_extract_pdf(path):
+    def fake_extract_pdf(path, **kwargs):
         name = Path(path).stem
-        return [PageText(1, name)], []
+        return PdfExtraction([PageText(1, name)], [], vision_model=kwargs["vision_model"])
 
-    monkeypatch.setattr(ui, "extract_pdf", fake_extract_pdf)
+    monkeypatch.setattr(ui, "extract_pdf_with_report", fake_extract_pdf)
 
     result = ui.add_document_for_ui(
         [str(path) for path in paths], 1500, 200, [], []
@@ -3725,6 +3748,100 @@ def test_add_document_for_ui_accepts_multiple_files_at_once(tmp_path, monkeypatc
     assert status.count("- ✅") == 2
     assert status.splitlines()[0].startswith("- ✅「a.pdf」")
     assert status.splitlines()[1].startswith("- ✅「b.pdf」")
+
+
+def test_add_document_for_ui_reports_progress_and_vision_fallbacks(tmp_path, monkeypatch) -> None:
+    paths = [tmp_path / "a.pdf", tmp_path / "b.pdf"]
+    for path in paths:
+        path.write_bytes(path.name.encode())
+    seen_models = []
+
+    def fake_extract_pdf(path, **kwargs):
+        seen_models.append(kwargs["vision_model"])
+        kwargs["progress_callback"](0.5, "已解析 1 / 2 頁")
+        return PdfExtraction(
+            [PageText(1, "one"), PageText(2, "two")], [], vision_model=kwargs["vision_model"],
+            vision_pages=[1], fallback_pages={2: "模型 API 回傳 HTTP 500：boom"},
+        )
+
+    progress_calls = []
+
+    def fake_progress(fraction, desc=None):
+        progress_calls.append((fraction, desc))
+
+    monkeypatch.setattr(ui, "extract_pdf_with_report", fake_extract_pdf)
+
+    status, *_rest = ui.add_document_for_ui(
+        [str(path) for path in paths], 1500, 200, [], [], "gpt-4.1-mini",
+        progress=fake_progress,
+    )
+    documents = _rest[1]
+
+    assert seen_models == ["gpt-4.1-mini", "gpt-4.1-mini"]
+    assert (0.25, "a.pdf（1/2）：已解析 1 / 2 頁") in progress_calls
+    assert (0.75, "b.pdf（2/2）：已解析 1 / 2 頁") in progress_calls
+    assert "1 頁改用文字層擷取（第 2 頁，例：模型 API 回傳 HTTP 500：boom）" in status
+    assert documents[0]["vision_fallback_pages"] == [2]
+
+
+def test_add_document_for_ui_stop_discards_current_and_remaining_files(tmp_path, monkeypatch) -> None:
+    paths = [tmp_path / name for name in ("a.pdf", "b.pdf", "c.pdf")]
+    for path in paths:
+        path.write_bytes(path.name.encode())
+    parsed = []
+    control = ui.RunControl()
+    control.request_stop()  # A stale stop from an earlier run must be cleared.
+
+    def fake_extract_pdf(path, **kwargs):
+        assert kwargs["control"] is control
+        parsed.append(Path(path).name)
+        if Path(path).name == "b.pdf":
+            raise ui.RunCancelled("使用者已停止")
+        kwargs["control"].check()
+        return PdfExtraction([PageText(1, "text")], [], vision_model=kwargs["vision_model"])
+
+    monkeypatch.setattr(ui, "extract_pdf_with_report", fake_extract_pdf)
+
+    status, _rows, documents, *_ = ui.add_document_for_ui(
+        [str(path) for path in paths], 1500, 200, [], [], "gpt-6-luna", control,
+    )
+
+    assert parsed == ["a.pdf", "b.pdf"]
+    assert [doc["file_name"] for doc in documents] == ["a.pdf"]
+    assert "⏹「b.pdf」已停止解析，未加入專案。" in status
+    assert "⏹「c.pdf」未解析。" in status
+
+
+def test_pdf_pause_and_stop_buttons_update_control() -> None:
+    control = ui.RunControl()
+
+    message, button = ui.toggle_pdf_pause_for_ui(control)
+    assert control.is_paused and button["value"] == "▶ 繼續" and "已暫停" in message
+    message, button = ui.toggle_pdf_pause_for_ui(control)
+    assert not control.is_paused and button["value"] == "⏸ 暫停"
+
+    assert "停止" in ui.request_pdf_stop_for_ui(control)
+    with pytest.raises(ui.RunCancelled):
+        control.check()
+
+
+def test_add_document_for_ui_disabled_vision_passes_no_model(tmp_path, monkeypatch) -> None:
+    pdf_path = tmp_path / "manual.pdf"
+    pdf_path.write_bytes(b"pdf")
+    seen_models = []
+
+    def fake_extract_pdf(path, **kwargs):
+        seen_models.append(kwargs["vision_model"])
+        return PdfExtraction([PageText(1, "text")], [], vision_model=kwargs["vision_model"])
+
+    monkeypatch.setattr(ui, "extract_pdf_with_report", fake_extract_pdf)
+
+    status, *_ = ui.add_document_for_ui(
+        str(pdf_path), 1500, 200, [], [], ui.PDF_VISION_DISABLED,
+    )
+
+    assert seen_models == [None]
+    assert "未使用 Vision，僅擷取文字層。" in status
 
 
 def test_request_stop_for_ui_sets_flag_on_shared_control() -> None:

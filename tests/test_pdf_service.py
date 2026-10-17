@@ -3,6 +3,9 @@ from __future__ import annotations
 import base64
 import struct
 from pathlib import Path
+from threading import Barrier, Thread
+import time
+import urllib.error
 
 import pytest
 
@@ -114,12 +117,12 @@ def test_extract_pdf_uses_vision_result(
         "MODEL_OPENAI_API_BASE": "https://models.example/v1",
         "MODEL_OPENAI_API_KEY": "secret",
     })
-    calls: list[tuple[str, int, str, str]] = []
+    calls: list[tuple[str, int, str, str, str]] = []
 
     def analyze(
-        image: str, page: int, *, base_url: str, api_key: str
+        image: str, page: int, *, base_url: str, api_key: str, model: str
     ) -> dict[str, object]:
-        calls.append((image, page, base_url, api_key))
+        calls.append((image, page, base_url, api_key, model))
         return {
             "page_number": page,
             "content": [{"type": "text", "data": "Vision result"}],
@@ -131,7 +134,163 @@ def test_extract_pdf_uses_vision_result(
 
     assert [(page.page, page.text) for page in pages] == [(1, "Vision result")]
     assert empty_pages == []
-    assert calls == [("image", 1, "https://models.example/v1", "secret")]
+    assert calls == [("image", 1, "https://models.example/v1", "secret", "gpt-6-luna")]
+
+
+def _vision_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pdf_service, "render_page_to_base64", lambda page: f"image-{page.text}")
+    monkeypatch.setattr(pdf_service, "load_env", lambda: {
+        "MODEL_OPENAI_API_BASE": "https://models.example/v1",
+        "MODEL_OPENAI_API_KEY": "secret",
+    })
+
+
+def _vision_result(page: int, text: str) -> dict[str, object]:
+    return {"page_number": page, "content": [{"type": "text", "data": text}]}
+
+
+def test_analyze_page_image_uses_selected_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_post(url: str, payload: dict[str, object], api_key: str) -> dict[str, object]:
+        captured.update(payload)
+        return {"choices": [{"message": {"content": '{"page_number": 1, "content": []}'}}]}
+
+    monkeypatch.setattr(pdf_service, "_post_json", fake_post)
+
+    pdf_service._analyze_page_image(
+        "image", 1, base_url="https://models.example/v1", api_key="", model="gpt-4.1-mini",
+    )
+
+    assert captured["model"] == "gpt-4.1-mini"
+
+
+def test_vision_prompt_is_not_limited_to_automotive_manuals() -> None:
+    prompt = pdf_service.VISION_SYSTEM_PROMPT
+    assert "automotive" not in prompt
+    assert "第{page_number}頁" not in prompt
+    assert "same language as the page text" in prompt
+
+
+def test_extract_pdf_runs_vision_calls_concurrently_and_keeps_page_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = FakeDocument(pages=[FakePage(f"p{number}") for number in range(1, 4)])
+    monkeypatch.setattr(pdf_service.pymupdf, "open", lambda path: document)
+    _vision_env(monkeypatch)
+    barrier = Barrier(3, timeout=5)
+
+    def analyze(image: str, page: int, **kwargs: object) -> dict[str, object]:
+        barrier.wait()  # Fails unless all three requests are in flight together.
+        return _vision_result(page, f"vision {page}")
+
+    monkeypatch.setattr(pdf_service, "_analyze_page_image", analyze)
+
+    report = pdf_service.extract_pdf_with_report("manual.pdf", max_workers=3)
+
+    assert [(page.page, page.text) for page in report.pages] == [
+        (1, "vision 1"), (2, "vision 2"), (3, "vision 3"),
+    ]
+    assert report.vision_pages == [1, 2, 3]
+    assert report.fallback_pages == {}
+
+
+def test_extract_pdf_reports_progress_for_every_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = FakeDocument(pages=[FakePage("a"), FakePage("b")])
+    monkeypatch.setattr(pdf_service.pymupdf, "open", lambda path: document)
+    _vision_env(monkeypatch)
+    monkeypatch.setattr(
+        pdf_service, "_analyze_page_image",
+        lambda image, page, **kwargs: _vision_result(page, "ok"),
+    )
+    progress: list[tuple[float, str]] = []
+
+    pdf_service.extract_pdf_with_report(
+        "manual.pdf", progress_callback=lambda fraction, message: progress.append((fraction, message)),
+    )
+
+    assert progress == [(0.5, "已解析 1 / 2 頁"), (1.0, "已解析 2 / 2 頁")]
+
+
+def test_extract_pdf_records_fallback_pages_with_reasons(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = FakeDocument(pages=[FakePage("first"), FakePage("second")])
+    monkeypatch.setattr(pdf_service.pymupdf, "open", lambda path: document)
+    _vision_env(monkeypatch)
+
+    def analyze(image: str, page: int, **kwargs: object) -> dict[str, object]:
+        if page == 2:
+            raise ValueError("模型回傳的不是有效 JSON")
+        return _vision_result(page, "vision first")
+
+    monkeypatch.setattr(pdf_service, "_analyze_page_image", analyze)
+
+    report = pdf_service.extract_pdf_with_report("manual.pdf")
+
+    assert [page.text for page in report.pages] == ["vision first", "second"]
+    assert report.vision_pages == [1]
+    assert report.fallback_pages == {2: "模型回傳的不是有效 JSON"}
+    assert report.vision_abort_reason is None
+    assert pdf_service.format_vision_report(report) == (
+        "⚠️ Vision（gpt-6-luna）解析 1 頁；1 頁改用文字層擷取（第 2 頁，例：模型回傳的不是有效 JSON）。"
+    )
+
+
+def test_extract_pdf_stops_calling_vision_after_authentication_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = FakeDocument(pages=[FakePage(f"text {number}") for number in range(1, 4)])
+    monkeypatch.setattr(pdf_service.pymupdf, "open", lambda path: document)
+    _vision_env(monkeypatch)
+    calls: list[int] = []
+
+    def analyze(image: str, page: int, **kwargs: object) -> dict[str, object]:
+        calls.append(page)
+        http_error = urllib.error.HTTPError("url", 401, "Unauthorized", None, None)
+        raise ValueError("模型 API 回傳 HTTP 401：invalid key") from http_error
+
+    monkeypatch.setattr(pdf_service, "_analyze_page_image", analyze)
+
+    report = pdf_service.extract_pdf_with_report("manual.pdf", max_workers=1)
+
+    assert calls == [1]
+    assert [page.text for page in report.pages] == ["text 1", "text 2", "text 3"]
+    assert sorted(report.fallback_pages) == [1, 2, 3]
+    assert report.vision_abort_reason == "模型 API 回傳 HTTP 401：invalid key"
+    assert "已中止" in pdf_service.format_vision_report(report)
+
+
+def test_format_vision_report_flattens_long_api_errors() -> None:
+    report = pdf_service.PdfExtraction(
+        pages=[], empty_pages=[], vision_model="gpt-6-luna",
+        fallback_pages={1: "Vision 解析已中止"},
+        vision_abort_reason='模型 API 回傳 HTTP 404：{\n  "error": "' + "x" * 300 + '"}',
+    )
+
+    message = pdf_service.format_vision_report(report)
+
+    assert "\n" not in message
+    assert "…；1 頁改用文字層擷取。" in message
+
+
+def test_extract_pdf_without_vision_model_skips_rendering_and_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = FakeDocument(pages=[FakePage("plain")])
+    monkeypatch.setattr(pdf_service.pymupdf, "open", lambda path: document)
+    fail = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not be called"))
+    monkeypatch.setattr(pdf_service, "render_page_to_base64", fail)
+    monkeypatch.setattr(pdf_service, "load_env", fail)
+    monkeypatch.setattr(pdf_service, "_analyze_page_image", fail)
+
+    report = pdf_service.extract_pdf_with_report("manual.pdf", vision_model=None)
+
+    assert [page.text for page in report.pages] == ["plain"]
+    assert report.vision_model is None and report.fallback_pages == {}
+    assert pdf_service.format_vision_report(report) == "未使用 Vision，僅擷取文字層。"
 
 
 class FakePage:
@@ -321,3 +480,52 @@ def test_extract_pdf_excludes_header_and_footer_regions(
         "Body content 2",
         "Body content 3",
     ]
+
+
+def test_extract_pdf_stop_raises_and_skips_remaining_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = FakeDocument(pages=[FakePage(f"text {number}") for number in range(1, 6)])
+    monkeypatch.setattr(pdf_service.pymupdf, "open", lambda path: document)
+    _vision_env(monkeypatch)
+    control = pdf_service.RunControl()
+    calls: list[int] = []
+
+    def analyze(image: str, page: int, **kwargs: object) -> dict[str, object]:
+        calls.append(page)
+        control.request_stop()
+        return _vision_result(page, "ok")
+
+    monkeypatch.setattr(pdf_service, "_analyze_page_image", analyze)
+
+    with pytest.raises(pdf_service.RunCancelled):
+        pdf_service.extract_pdf_with_report("manual.pdf", max_workers=1, control=control)
+
+    assert calls == [1]
+    assert len(document.loaded_pages) < 5
+
+
+def test_extract_pdf_pause_holds_new_pages_until_resumed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = FakeDocument(pages=[FakePage("a"), FakePage("b")])
+    monkeypatch.setattr(pdf_service.pymupdf, "open", lambda path: document)
+    _vision_env(monkeypatch)
+    monkeypatch.setattr(
+        pdf_service, "_analyze_page_image",
+        lambda image, page, **kwargs: _vision_result(page, f"vision {page}"),
+    )
+    control = pdf_service.RunControl()
+    control.toggle_pause()
+    result: list[pdf_service.PdfExtraction] = []
+    worker = Thread(target=lambda: result.append(
+        pdf_service.extract_pdf_with_report("manual.pdf", control=control)
+    ))
+
+    worker.start()
+    time.sleep(0.5)
+    assert document.loaded_pages == [] and worker.is_alive()
+    control.toggle_pause()
+    worker.join(timeout=5)
+
+    assert [page.text for page in result[0].pages] == ["vision 1", "vision 2"]

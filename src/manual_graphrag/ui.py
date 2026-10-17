@@ -13,7 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 import gradio as gr
@@ -61,7 +61,7 @@ from .neo4j_service import (
     search_graph_evidence,
     vector_index_name,
 )
-from .pdf_service import extract_pdf
+from .pdf_service import extract_pdf_with_report, format_vision_report
 from .project_store import (
     append_question,
     create_project,
@@ -122,6 +122,8 @@ from .service_settings import (
 from .storage import write_json
 
 DEFAULT_LLM_MODEL = GPT_6_LUNA_MODEL
+DEFAULT_PDF_VISION_MODEL = GPT_6_LUNA_MODEL
+PDF_VISION_DISABLED = "停用"
 DEFAULT_EVALUATION_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_JUDGE_REASONING_EFFORT = "medium"
@@ -1185,6 +1187,7 @@ def save_project_for_ui(
     extraction_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     answer_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     retrieval_strategy_params_json: Any = None,
+    pdf_vision_model: str | None = DEFAULT_PDF_VISION_MODEL,
 ) -> tuple[dict[str, Any], str]:
     if not project_id:
         return {}, "❌ 請先建立或載入專案。"
@@ -1206,6 +1209,7 @@ def save_project_for_ui(
         "schema_text": schema_text or "",
         "extraction_reasoning_effort": extraction_reasoning_effort or DEFAULT_REASONING_EFFORT,
         "answer_reasoning_effort": answer_reasoning_effort or DEFAULT_REASONING_EFFORT,
+        "pdf_vision_model": pdf_vision_model or DEFAULT_PDF_VISION_MODEL,
     }
     documents = documents or []
     graph_state = graph_state or {}
@@ -1306,8 +1310,23 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
             choices=list(GPT_6_LUNA_REASONING_EFFORTS),
         ),
         strategy_parameter_updates[0],
+        _pdf_vision_model_update(
+            llm_settings, get("pdf_vision_model", DEFAULT_PDF_VISION_MODEL),
+        ),
         *strategy_parameter_updates[1:],
     )
+
+
+def _pdf_vision_model_choices(llm_settings: dict[str, Any], selected: str | None = None) -> list[tuple[str, str]]:
+    choices = _model_choices_with_fallback(service_choice_items(llm_settings), DEFAULT_PDF_VISION_MODEL)
+    if selected and selected != PDF_VISION_DISABLED:
+        choices = _model_choices_with_fallback(choices, selected)
+    return [*choices, ("停用（僅擷取 PDF 文字層）", PDF_VISION_DISABLED)]
+
+
+def _pdf_vision_model_update(llm_settings: dict[str, Any], selected: str | None) -> dict[str, Any]:
+    selected = selected or DEFAULT_PDF_VISION_MODEL
+    return gr.update(value=selected, choices=_pdf_vision_model_choices(llm_settings, selected))
 
 
 def answer_question_for_project_ui(project_id: str, *args: Any) -> tuple[Any, ...]:
@@ -5502,13 +5521,20 @@ def _add_single_document(
     parsed_chunk_overlap: int,
     documents: list[dict[str, Any]],
     chunks: list[TextChunk],
+    vision_model: str | None = DEFAULT_PDF_VISION_MODEL,
+    progress_callback: Callable[[float, str], None] | None = None,
+    run_control: RunControl | None = None,
 ) -> tuple[str, dict[str, Any] | None, list[TextChunk]]:
     file_name = Path(file_path).name
     if any(doc.get("file_name") == file_name for doc in documents):
         return f"❌「{file_name}」：專案中已有同名文件，請先移除或重新命名後再上傳。", None, []
     try:
         document_id = hashlib.sha256(Path(file_path).read_bytes()).hexdigest()
-        pages, empty_pages = extract_pdf(file_path)
+        extraction = extract_pdf_with_report(
+            file_path, vision_model=vision_model, progress_callback=progress_callback,
+            control=run_control,
+        )
+        pages, empty_pages = extraction.pages, extraction.empty_pages
         next_number = max((chunk.number for chunk in chunks), default=0) + 1
         new_chunks = chunk_pages(
             pages, parsed_chunk_size, parsed_chunk_overlap,
@@ -5529,10 +5555,13 @@ def _add_single_document(
         "empty_pages": empty_pages,
         "chunk_count": len(new_chunks),
         "config": {"chunk_size": parsed_chunk_size, "chunk_overlap": parsed_chunk_overlap},
+        "vision_model": extraction.vision_model,
+        "vision_fallback_pages": sorted(extraction.fallback_pages),
     }
     note = f"✅「{file_name}」第 {parsed_start}–{parsed_end} 頁，產生 {len(new_chunks)} 個 chunk。"
     if empty_pages:
         note += f" 無文字頁面：{', '.join(map(str, empty_pages))}。"
+    note += f" {format_vision_report(extraction)}"
     return note, doc_state, new_chunks
 
 
@@ -5542,6 +5571,9 @@ def add_document_for_ui(
     chunk_overlap: int,
     documents: list[dict[str, Any]],
     chunks: list[TextChunk],
+    pdf_vision_model: str | None = DEFAULT_PDF_VISION_MODEL,
+    run_control: RunControl | None = None,
+    progress=gr.Progress(),
 ) -> tuple[
     str, list[list[object]], list[dict[str, Any]], list[TextChunk],
     dict[str, Any], list[TextChunk], str,
@@ -5570,13 +5602,33 @@ def add_document_for_ui(
         )
 
     paths = file_paths if isinstance(file_paths, list) else [file_paths]
+    if run_control:
+        run_control.reset()
+    vision_model = None if pdf_vision_model in (None, "", PDF_VISION_DISABLED) else pdf_vision_model
     notes: list[str] = []
     last_doc_state: dict[str, Any] = {}
     last_new_chunks: list[TextChunk] = []
-    for file_path in paths:
-        note, doc_state, new_chunks = _add_single_document(
-            file_path, parsed_chunk_size, parsed_chunk_overlap, documents, chunks,
+    for index, file_path in enumerate(paths):
+        file_label = (
+            f"{Path(file_path).name}（{index + 1}/{len(paths)}）"
+            if len(paths) > 1 else Path(file_path).name
         )
+
+        def report_progress(fraction: float, message: str, index: int = index, label: str = file_label) -> None:
+            progress((index + fraction) / len(paths), desc=f"{label}：{message}")
+
+        progress(index / len(paths), desc=f"{file_label}：開始解析")
+        try:
+            note, doc_state, new_chunks = _add_single_document(
+                file_path, parsed_chunk_size, parsed_chunk_overlap, documents, chunks,
+                vision_model, report_progress, run_control,
+            )
+        except RunCancelled:
+            notes.append(f"⏹「{Path(file_path).name}」已停止解析，未加入專案。")
+            notes.extend(
+                f"⏹「{Path(skipped).name}」未解析。" for skipped in paths[index + 1:]
+            )
+            break
         notes.append(note)
         if doc_state is not None:
             documents = documents + [doc_state]
@@ -5820,6 +5872,17 @@ def toggle_pause_for_ui(run_control: RunControl) -> tuple[str, dict[str, Any]]:
             gr.update(value="▶ 繼續"),
         )
     return "▶ 已繼續，將開始送出新的批次。", gr.update(value="⏸ 暫停")
+
+
+def request_pdf_stop_for_ui(run_control: RunControl) -> str:
+    run_control.request_stop()
+    return "⏹ 已送出停止要求；已送出的頁面會被捨棄，這份 PDF 不會加入專案。"
+
+
+def toggle_pdf_pause_for_ui(run_control: RunControl) -> tuple[str, dict[str, Any]]:
+    if run_control.toggle_pause():
+        return "⏸ 已暫停：已送出的頁面會跑完，但不會再送出新的頁面。", gr.update(value="▶ 繼續")
+    return "▶ 已繼續解析。", gr.update(value="⏸ 暫停")
 
 
 def _build_graph_evidence(
@@ -6435,7 +6498,18 @@ def build_app() -> gr.Blocks:
                         )
                         chunk_size = gr.Slider(100, 10000, value=1500, step=100, label="Chunk size（字元）")
                         chunk_overlap = gr.Slider(0, 2000, value=200, step=50, label="Chunk overlap（字元）")
+                        pdf_vision_model = gr.Dropdown(
+                            choices=_pdf_vision_model_choices(llm_settings),
+                            value=DEFAULT_PDF_VISION_MODEL,
+                            label="PDF 解析模型（Vision）",
+                            info="以多模態模型辨識表格與圖表；停用時只擷取 PDF 文字層，速度快但不含圖表描述。",
+                        )
                         preview_button = gr.Button("解析並加入專案", variant="primary")
+                        with gr.Row():
+                            pdf_pause_button = gr.Button("⏸ 暫停")
+                            pdf_stop_button = gr.Button("⏹ 停止", variant="stop")
+                        pdf_run_control_status = gr.Markdown()
+                        pdf_run_control_state = gr.State(RunControl())
                         gr.Markdown("##### 已加入本專案的 PDF")
                         documents_table = gr.Dataframe(
                             headers=["選取", "文件", "頁碼範圍", "Chunk 數"],
@@ -6752,7 +6826,7 @@ def build_app() -> gr.Blocks:
                                 )
                         generated_question_set_status = gr.Markdown()
                 # 試行：1-4 只負責生題，評測統一在 1-5。舊的題目匯入／匯出、回答、評測與結果元件
-                # 暫時隱藏但保留事件綁定，確定採用後再移除；改 visible=True 即可還原。見交接紀錄。
+                # 暫時隱藏但保留事件綁定，確定採用後再移除；改 visible=True 即可還原。見 docs/交接紀錄.md。
                 with gr.Column(visible=False) as legacy_evaluation_section:
                     with gr.Row():
                         evaluation_import_file = gr.File(
@@ -8171,7 +8245,7 @@ def build_app() -> gr.Blocks:
             extraction_max_concurrent_requests, retrieval_mode,
             top_k, schema_editor,
             extraction_reasoning_effort, answer_reasoning_effort,
-            retrieval_strategy_params_state,
+            retrieval_strategy_params_state, pdf_vision_model,
         ]
         project_load_outputs = [
             project_state, project_status,
@@ -8190,6 +8264,7 @@ def build_app() -> gr.Blocks:
             entity_table, relationship_table, build_status, import_status,
             extraction_reasoning_effort,
             answer_reasoning_effort, retrieval_strategy_params_state,
+            pdf_vision_model,
             *retrieval_strategy_parameter_controls,
         ]
         for effort_control in [extraction_reasoning_effort, answer_reasoning_effort]:
@@ -8355,7 +8430,7 @@ def build_app() -> gr.Blocks:
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor,
+            top_k, schema_editor, pdf_vision_model,
         ]
         for component in auto_save_components:
             component.input(
@@ -8558,6 +8633,8 @@ def build_app() -> gr.Blocks:
                 chunk_overlap,
                 documents_state,
                 chunk_state,
+                pdf_vision_model,
+                pdf_run_control_state,
             ],
             outputs=[
                 preview_status,
@@ -8571,6 +8648,24 @@ def build_app() -> gr.Blocks:
                 pdf_file,
                 remove_document_selector,
             ],
+            # Show one progress bar on the status message instead of one per output.
+            show_progress_on=preview_status,
+        )
+        pdf_pause_button.click(
+            toggle_pdf_pause_for_ui,
+            inputs=[pdf_run_control_state],
+            outputs=[pdf_run_control_status, pdf_pause_button],
+            queue=False,
+        )
+        pdf_stop_button.click(
+            request_pdf_stop_for_ui,
+            inputs=[pdf_run_control_state],
+            outputs=[pdf_run_control_status],
+            queue=False,
+        )
+        preview_event.then(
+            lambda: ("", gr.update(value="⏸ 暫停")),
+            outputs=[pdf_run_control_status, pdf_pause_button], show_progress="hidden",
         )
         preview_event.then(
             save_project_for_ui, inputs=project_setting_inputs,
