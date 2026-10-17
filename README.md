@@ -3,6 +3,8 @@
 這是一套將 PDF 文件轉換為 Neo4j 知識圖譜，並透過混合式 GraphRAG 進行問答的本機 Web 工具。介面使用 Gradio，支援 OpenAI 相容的模型服務，可自行設定建圖、Embedding 與回答模型。
 
 > 本專案目前定位為單機、單使用者 Demo，不會建立 Gradio 公開分享網址。
+>
+> 交接紀錄、改善計畫、目錄說明等其他文件集中在 [`docs/`](docs/README.md)。
 
 ## 目錄
 

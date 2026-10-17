@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import contextvars
 import csv
 from copy import deepcopy
 import hashlib
 import html
+from io import BytesIO
 import json
 from datetime import datetime, timedelta
 import re
@@ -13,7 +15,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 import gradio as gr
@@ -61,7 +63,12 @@ from .neo4j_service import (
     search_graph_evidence,
     vector_index_name,
 )
-from .pdf_service import extract_pdf
+from .pdf_service import (
+    FIGURE_KIND_LABELS,
+    extract_pdf_with_report,
+    format_vision_report,
+    render_pdf_figures,
+)
 from .project_store import (
     append_question,
     create_project,
@@ -122,6 +129,10 @@ from .service_settings import (
 from .storage import write_json
 
 DEFAULT_LLM_MODEL = GPT_6_LUNA_MODEL
+DEFAULT_PDF_VISION_MODEL = GPT_6_LUNA_MODEL
+PDF_VISION_DISABLED = "停用"
+FIGURE_GALLERY_LIMIT = 12
+CHUNK_FIGURE_HINT = "點選上方任一 chunk，可查看其來源頁的圖片、向量圖與表格原圖。"
 DEFAULT_EVALUATION_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_JUDGE_REASONING_EFFORT = "medium"
@@ -840,6 +851,117 @@ def _chunk_rows(chunks: list[TextChunk]) -> list[list[object]]:
     return preview_rows(chunks, limit=len(chunks))
 
 
+def _document_pdf_path(
+    project_id: str, document_name: str, documents: list[dict[str, Any]] | None,
+) -> Path | None:
+    """Prefer the copy saved in the project folder; fall back to the parsed upload."""
+    candidates: list[Any] = []
+    if project_id:
+        try:
+            candidates.extend(
+                item.get("path") for item in load_project(project_id).get("documents") or []
+                if item.get("name") == document_name
+            )
+        except (OSError, ValueError):
+            pass
+    candidates.extend(
+        item.get("file_path") for item in documents or []
+        if item.get("file_name") == document_name
+    )
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return Path(candidate)
+    return None
+
+
+def _figure_gallery_items(
+    project_id: str,
+    page_refs: list[tuple[str, int]],
+    documents: list[dict[str, Any]] | None,
+    limit: int = FIGURE_GALLERY_LIMIT,
+) -> tuple[list[tuple[Any, str]], list[str]]:
+    """Crop figures for (document, page) references; return gallery items and missing PDFs."""
+    from PIL import Image
+
+    pages_by_document: dict[str, list[int]] = {}
+    for document, page in page_refs:
+        pages_by_document.setdefault(document, []).append(page)
+    items: list[tuple[Any, str]] = []
+    missing: list[str] = []
+    for document, pages in pages_by_document.items():
+        path = _document_pdf_path(project_id, document, documents)
+        if path is None:
+            missing.append(document or "未標示文件")
+            continue
+        try:
+            figures = render_pdf_figures(path, pages, limit=limit - len(items))
+        except (OSError, RuntimeError, ValueError):
+            missing.append(document)
+            continue
+        for figure, png in figures:
+            caption = f"{document} 第 {figure.page} 頁｜{FIGURE_KIND_LABELS[figure.kind]}"
+            items.append((Image.open(BytesIO(png)), caption))
+        if len(items) >= limit:
+            break
+    return items, missing
+
+
+def _figure_status(items: list[Any], missing: list[str], scope: str) -> str:
+    note = f"{scope}共 {len(items)} 張圖表。" if items else f"{scope}沒有偵測到圖片、向量圖或表格。"
+    if missing:
+        note += f" ⚠️ 找不到 PDF：{'、'.join(missing)}。"
+    return note
+
+
+def show_chunk_figures_for_ui(
+    project_id: str,
+    active_chunks: list[TextChunk],
+    documents: list[dict[str, Any]],
+    evt: gr.SelectData,
+) -> tuple[list[tuple[Any, str]], str]:
+    index = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+    chunks = active_chunks or []
+    if not isinstance(index, int) or not 0 <= index < len(chunks):
+        return [], "請在上方表格點選一個 chunk。"
+    chunk = chunks[index]
+    items, missing = _figure_gallery_items(
+        project_id, [(chunk.document, page) for page in chunk.pages], documents,
+    )
+    pages = ", ".join(map(str, chunk.pages))
+    return items, _figure_status(items, missing, f"Chunk {chunk.number}（第 {pages} 頁）")
+
+
+def _source_page_refs(rows: Any) -> list[tuple[str, int]]:
+    """Parse (document, page) pairs from the 1-3 source table, in evidence order."""
+    if hasattr(rows, "values") and hasattr(rows.values, "tolist"):
+        rows = rows.values.tolist()
+    refs: list[tuple[str, int]] = []
+    for row in rows or []:
+        if not isinstance(row, (list, tuple)) or len(row) < 7:
+            continue
+        page_cell, document_cell = str(row[4] or ""), str(row[6] or "")
+        for line in page_cell.splitlines():
+            document, separator, pages = line.rpartition("：")
+            if not separator:
+                # Evidence without per-document references lists one document only.
+                document = document_cell.splitlines()[0] if document_cell else ""
+            refs.extend(
+                (document.strip(), int(page))
+                for page in re.findall(r"\d+", pages)
+            )
+    return list(dict.fromkeys(refs))
+
+
+def show_source_figures_for_ui(
+    project_id: str, sources: Any, documents: list[dict[str, Any]],
+) -> tuple[list[tuple[Any, str]], str]:
+    refs = _source_page_refs(sources)
+    if not refs:
+        return [], ""
+    items, missing = _figure_gallery_items(project_id, refs, documents)
+    return items, _figure_status(items, missing, "檢索來源頁")
+
+
 def _document_status(index: int, total: int, doc: dict[str, Any], chunk_count: int) -> str:
     if not total:
         return "尚未解析任何 PDF。"
@@ -1185,6 +1307,7 @@ def save_project_for_ui(
     extraction_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     answer_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     retrieval_strategy_params_json: Any = None,
+    pdf_vision_model: str | None = DEFAULT_PDF_VISION_MODEL,
 ) -> tuple[dict[str, Any], str]:
     if not project_id:
         return {}, "❌ 請先建立或載入專案。"
@@ -1206,6 +1329,7 @@ def save_project_for_ui(
         "schema_text": schema_text or "",
         "extraction_reasoning_effort": extraction_reasoning_effort or DEFAULT_REASONING_EFFORT,
         "answer_reasoning_effort": answer_reasoning_effort or DEFAULT_REASONING_EFFORT,
+        "pdf_vision_model": pdf_vision_model or DEFAULT_PDF_VISION_MODEL,
     }
     documents = documents or []
     graph_state = graph_state or {}
@@ -1306,17 +1430,37 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
             choices=list(GPT_6_LUNA_REASONING_EFFORTS),
         ),
         strategy_parameter_updates[0],
+        _pdf_vision_model_update(
+            llm_settings, get("pdf_vision_model", DEFAULT_PDF_VISION_MODEL),
+        ),
         *strategy_parameter_updates[1:],
     )
 
 
-def answer_question_for_project_ui(project_id: str, *args: Any) -> tuple[Any, ...]:
+def _pdf_vision_model_choices(llm_settings: dict[str, Any], selected: str | None = None) -> list[tuple[str, str]]:
+    choices = _model_choices_with_fallback(service_choice_items(llm_settings), DEFAULT_PDF_VISION_MODEL)
+    if selected and selected != PDF_VISION_DISABLED:
+        choices = _model_choices_with_fallback(choices, selected)
+    return [*choices, ("停用（僅擷取 PDF 文字層）", PDF_VISION_DISABLED)]
+
+
+def _pdf_vision_model_update(llm_settings: dict[str, Any], selected: str | None) -> dict[str, Any]:
+    selected = selected or DEFAULT_PDF_VISION_MODEL
+    return gr.update(value=selected, choices=_pdf_vision_model_choices(llm_settings, selected))
+
+
+def answer_question_for_project_ui(
+    project_id: str, *args: Any,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> tuple[Any, ...]:
     if len(args) > 15:
         status, answer, sources = answer_question_for_ui(
-            *args[:15], strategy_params=args[15],
+            *args[:15], strategy_params=args[15], progress_callback=progress_callback,
         )
     else:
-        status, answer, sources = answer_question_for_ui(*args)
+        status, answer, sources = answer_question_for_ui(
+            *args, progress_callback=progress_callback,
+        )
     if not status.startswith("✅") or not project_id:
         return status, answer, sources
     try:
@@ -1339,6 +1483,25 @@ def answer_question_for_project_ui(project_id: str, *args: Any) -> tuple[Any, ..
     except (OSError, ValueError) as exc:
         return f"{status}｜⚠️ 專案紀錄保存失敗：{exc}", answer, sources
     return f"{status}｜✅ 問答紀錄已加入目前專案。", answer, sources
+
+
+def ask_question_for_ui(
+    project_id: str, model_endpoint: str, api_key: str,
+    embedding_api_base: str, embedding_api_key: str,
+    neo4j_uri: str, neo4j_database: str, neo4j_username: str, neo4j_password: str,
+    answer_model: str, question: str, retrieval_mode: str, top_k: int,
+    use_reranker: str, expand_evidence: str, reasoning_effort: str | None,
+    strategy_params: Any,
+    progress=gr.Progress(),
+) -> tuple[Any, ...]:
+    """1-3 entry point; explicit parameters let Gradio inject the progress tracker."""
+    return answer_question_for_project_ui(
+        project_id, model_endpoint, api_key, embedding_api_base, embedding_api_key,
+        neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
+        answer_model, question, retrieval_mode, top_k, use_reranker, expand_evidence,
+        reasoning_effort, strategy_params,
+        progress_callback=lambda value, description: progress(value, desc=description),
+    )
 
 
 def _evaluation_question_rows(questions: list[dict[str, Any]]) -> list[list[object]]:
@@ -2131,6 +2294,7 @@ def _missing_experiment_member_row(project_id: str, connection_result: str = EXP
 
 def test_experiment_project_connections_for_ui(
     project_id: str | None, neo4j_uri: str, neo4j_username: str, neo4j_password: str,
+    progress=gr.Progress(),
 ) -> tuple[list[list[str]], dict[str, bool], str]:
     if not project_id:
         return [], {}, "❌ 請先載入實驗專案。"
@@ -2139,7 +2303,9 @@ def test_experiment_project_connections_for_ui(
     except (OSError, ValueError) as exc:
         return [], {}, f"❌ {exc}"
     rows, statuses = [], {}
-    for member_id in project.get("members", []):
+    members = project.get("members", [])
+    for index, member_id in enumerate(members):
+        progress(index / len(members), desc=f"測試成員專案連線 {index + 1} / {len(members)}")
         try:
             member = load_project(member_id)
             status, connected = check_neo4j_for_ui(
@@ -3347,6 +3513,7 @@ def generate_evaluation_for_ui(
     expand_evidence: str = "停用",
     reasoning_effort: str | None = None,
     strategy_params_json: Any = None,
+    progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], dict[str, Any], list[list[object]]]:
     if not project_id:
         return "❌ 請先建立或載入專案。", [], {}, []
@@ -3365,6 +3532,8 @@ def generate_evaluation_for_ui(
         existing_evaluation = dict(load_project(project_id).get("evaluation") or {})
         accepted_questions: list[dict[str, Any]] = []
         accepted_lock = Lock()
+        total_questions = count * len(document_chunks)
+        progress(0, desc=f"已產生 0 / {total_questions} 題")
 
         def generate_for_document(
             document: str,
@@ -3410,7 +3579,12 @@ def generate_evaluation_for_ui(
                             continue
                         accepted_questions.append(question)
                         accepted.append(question)
-                        break
+                        generated = len(accepted_questions)
+                    progress(
+                        generated / total_questions,
+                        desc=f"已產生 {generated} / {total_questions} 題",
+                    )
+                    break
             if len(accepted) < count:
                 detail = f"；最後錯誤：{last_error}" if last_error else ""
                 raise ValueError(
@@ -3422,10 +3596,14 @@ def generate_evaluation_for_ui(
         document_items = list(chunks_by_document.items())
         if allow_parallel_generation:
             with ThreadPoolExecutor(max_workers=len(document_items)) as executor:
-                document_results = list(executor.map(
-                    lambda item: generate_for_document(item[0], item[1]),
-                    document_items,
-                ))
+                # Copy the context so gr.Progress still reaches the UI from worker threads.
+                futures = [
+                    executor.submit(
+                        contextvars.copy_context().run, generate_for_document, document, selected_chunks,
+                    )
+                    for document, selected_chunks in document_items
+                ]
+                document_results = [future.result() for future in futures]
         else:
             document_results = [
                 generate_for_document(document, selected_chunks)
@@ -5502,13 +5680,20 @@ def _add_single_document(
     parsed_chunk_overlap: int,
     documents: list[dict[str, Any]],
     chunks: list[TextChunk],
+    vision_model: str | None = DEFAULT_PDF_VISION_MODEL,
+    progress_callback: Callable[[float, str], None] | None = None,
+    run_control: RunControl | None = None,
 ) -> tuple[str, dict[str, Any] | None, list[TextChunk]]:
     file_name = Path(file_path).name
     if any(doc.get("file_name") == file_name for doc in documents):
         return f"❌「{file_name}」：專案中已有同名文件，請先移除或重新命名後再上傳。", None, []
     try:
         document_id = hashlib.sha256(Path(file_path).read_bytes()).hexdigest()
-        pages, empty_pages = extract_pdf(file_path)
+        extraction = extract_pdf_with_report(
+            file_path, vision_model=vision_model, progress_callback=progress_callback,
+            control=run_control,
+        )
+        pages, empty_pages = extraction.pages, extraction.empty_pages
         next_number = max((chunk.number for chunk in chunks), default=0) + 1
         new_chunks = chunk_pages(
             pages, parsed_chunk_size, parsed_chunk_overlap,
@@ -5529,10 +5714,13 @@ def _add_single_document(
         "empty_pages": empty_pages,
         "chunk_count": len(new_chunks),
         "config": {"chunk_size": parsed_chunk_size, "chunk_overlap": parsed_chunk_overlap},
+        "vision_model": extraction.vision_model,
+        "vision_fallback_pages": sorted(extraction.fallback_pages),
     }
     note = f"✅「{file_name}」第 {parsed_start}–{parsed_end} 頁，產生 {len(new_chunks)} 個 chunk。"
     if empty_pages:
         note += f" 無文字頁面：{', '.join(map(str, empty_pages))}。"
+    note += f" {format_vision_report(extraction)}"
     return note, doc_state, new_chunks
 
 
@@ -5542,6 +5730,9 @@ def add_document_for_ui(
     chunk_overlap: int,
     documents: list[dict[str, Any]],
     chunks: list[TextChunk],
+    pdf_vision_model: str | None = DEFAULT_PDF_VISION_MODEL,
+    run_control: RunControl | None = None,
+    progress=gr.Progress(),
 ) -> tuple[
     str, list[list[object]], list[dict[str, Any]], list[TextChunk],
     dict[str, Any], list[TextChunk], str,
@@ -5570,13 +5761,33 @@ def add_document_for_ui(
         )
 
     paths = file_paths if isinstance(file_paths, list) else [file_paths]
+    if run_control:
+        run_control.reset()
+    vision_model = None if pdf_vision_model in (None, "", PDF_VISION_DISABLED) else pdf_vision_model
     notes: list[str] = []
     last_doc_state: dict[str, Any] = {}
     last_new_chunks: list[TextChunk] = []
-    for file_path in paths:
-        note, doc_state, new_chunks = _add_single_document(
-            file_path, parsed_chunk_size, parsed_chunk_overlap, documents, chunks,
+    for index, file_path in enumerate(paths):
+        file_label = (
+            f"{Path(file_path).name}（{index + 1}/{len(paths)}）"
+            if len(paths) > 1 else Path(file_path).name
         )
+
+        def report_progress(fraction: float, message: str, index: int = index, label: str = file_label) -> None:
+            progress((index + fraction) / len(paths), desc=f"{label}：{message}")
+
+        progress(index / len(paths), desc=f"{file_label}：開始解析")
+        try:
+            note, doc_state, new_chunks = _add_single_document(
+                file_path, parsed_chunk_size, parsed_chunk_overlap, documents, chunks,
+                vision_model, report_progress, run_control,
+            )
+        except RunCancelled:
+            notes.append(f"⏹「{Path(file_path).name}」已停止解析，未加入專案。")
+            notes.extend(
+                f"⏹「{Path(skipped).name}」未解析。" for skipped in paths[index + 1:]
+            )
+            break
         notes.append(note)
         if doc_state is not None:
             documents = documents + [doc_state]
@@ -5822,6 +6033,17 @@ def toggle_pause_for_ui(run_control: RunControl) -> tuple[str, dict[str, Any]]:
     return "▶ 已繼續，將開始送出新的批次。", gr.update(value="⏸ 暫停")
 
 
+def request_pdf_stop_for_ui(run_control: RunControl) -> str:
+    run_control.request_stop()
+    return "⏹ 已送出停止要求；已送出的頁面會被捨棄，這份 PDF 不會加入專案。"
+
+
+def toggle_pdf_pause_for_ui(run_control: RunControl) -> tuple[str, dict[str, Any]]:
+    if run_control.toggle_pause():
+        return "⏸ 已暫停：已送出的頁面會跑完，但不會再送出新的頁面。", gr.update(value="▶ 繼續")
+    return "▶ 已繼續解析。", gr.update(value="⏸ 暫停")
+
+
 def _build_graph_evidence(
     entities: list[dict[str, Any]],
     relationships: list[dict[str, Any]],
@@ -6055,15 +6277,19 @@ def answer_question_for_ui(
     reranker_mode: str | None = None,
     evidence_expansion_mode: str | None = None,
     strategy_params: Any = None,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> tuple[str, str, list[list[object]]]:
     if not answer_model:
         return "❌ 請先勾選並選擇問答 LLM。", "", []
     if not question.strip():
         return "請輸入問題。", "", []
+    report = progress_callback or (lambda value, description: None)
     try:
+        report(0.0, "讀取圖譜設定…")
         graph_state = load_latest_graph_metadata(
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password
         )
+        report(0.1, "將問題轉為向量…")
         question_vector = embedding_vectors(
             embedding_api_base, embedding_api_key, graph_state.get("embedding_model", ""),
             [question.strip()],
@@ -6076,6 +6302,7 @@ def answer_question_for_ui(
         )
         should_expand = retrieval_config.expansion["id"] != "disabled"
         should_rerank = retrieval_config.reranker["id"] != "disabled"
+        report(0.25, "檢索證據…")
         evidence = search_graph_evidence(
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
             question.strip(), question_vector,
@@ -6086,6 +6313,7 @@ def answer_question_for_ui(
             reasoning_effort=reasoning_effort or "low",
         )
         if retrieval_config.reranker["id"] == "llm":
+            report(0.55, "LLM 重新排序證據…")
             evidence = rerank_evidence(
                 model_endpoint, api_key, answer_model, question, evidence,
                 int(top_k), reasoning_effort,
@@ -6096,6 +6324,7 @@ def answer_question_for_ui(
             evidence = interleave_expanded_evidence(evidence, int(top_k))
         else:
             evidence = evidence[:int(top_k)]
+        report(0.7, f"以 {len(evidence)} 筆證據生成回答…")
         result = answer_graph_question(
             model_endpoint, api_key, answer_model, question,
             retrieval_config.strategy_id, evidence,
@@ -6435,7 +6664,18 @@ def build_app() -> gr.Blocks:
                         )
                         chunk_size = gr.Slider(100, 10000, value=1500, step=100, label="Chunk size（字元）")
                         chunk_overlap = gr.Slider(0, 2000, value=200, step=50, label="Chunk overlap（字元）")
+                        pdf_vision_model = gr.Dropdown(
+                            choices=_pdf_vision_model_choices(llm_settings),
+                            value=DEFAULT_PDF_VISION_MODEL,
+                            label="PDF 解析模型（Vision）",
+                            info="以多模態模型辨識表格與圖表；停用時只擷取 PDF 文字層，速度快但不含圖表描述。",
+                        )
                         preview_button = gr.Button("解析並加入專案", variant="primary")
+                        with gr.Row():
+                            pdf_pause_button = gr.Button("⏸ 暫停")
+                            pdf_stop_button = gr.Button("⏹ 停止", variant="stop")
+                        pdf_run_control_status = gr.Markdown()
+                        pdf_run_control_state = gr.State(RunControl())
                         gr.Markdown("##### 已加入本專案的 PDF")
                         documents_table = gr.Dataframe(
                             headers=["選取", "文件", "頁碼範圍", "Chunk 數"],
@@ -6462,6 +6702,11 @@ def build_app() -> gr.Blocks:
                             wrap=True,
                             max_height=750,
                             column_widths=[80, 160, 120, 100, 900],
+                        )
+                        chunk_figure_status = gr.Markdown(CHUNK_FIGURE_HINT)
+                        chunk_figures = gr.Gallery(
+                            label="來源頁圖表（自 PDF 裁切）", columns=3, height=420,
+                            object_fit="contain", interactive=False,
                         )
 
             with gr.Tab("1-2 建圖", interactive=False) as graph_tab:
@@ -6668,6 +6913,11 @@ def build_app() -> gr.Blocks:
                         interactive=False,
                         wrap=True,
                     )
+                    source_figure_status = gr.Markdown()
+                    source_figures = gr.Gallery(
+                        label="檢索來源頁圖表（自 PDF 裁切）", columns=4, height=360,
+                        object_fit="contain", interactive=False,
+                    )
 
             with gr.Tab("1-4 從 PDF 生題", interactive=False) as evaluation_tab:
                 gr.Markdown(
@@ -6752,7 +7002,7 @@ def build_app() -> gr.Blocks:
                                 )
                         generated_question_set_status = gr.Markdown()
                 # 試行：1-4 只負責生題，評測統一在 1-5。舊的題目匯入／匯出、回答、評測與結果元件
-                # 暫時隱藏但保留事件綁定，確定採用後再移除；改 visible=True 即可還原。見交接紀錄。
+                # 暫時隱藏但保留事件綁定，確定採用後再移除；改 visible=True 即可還原。見 docs/交接紀錄.md。
                 with gr.Column(visible=False) as legacy_evaluation_section:
                     with gr.Row():
                         evaluation_import_file = gr.File(
@@ -7360,6 +7610,7 @@ def build_app() -> gr.Blocks:
             import_central_question_set_for_ui,
             inputs=[central_question_file, central_question_name],
             outputs=[central_question_status, central_question_selector, central_question_table, central_question_file],
+            show_progress_on=central_question_status,
         )
         delete_central_question_set_button.click(
             request_central_question_set_deletion_for_ui,
@@ -7501,6 +7752,7 @@ def build_app() -> gr.Blocks:
                     evaluation_generation_effort, evaluation_strategy_params_state],
             outputs=[evaluation_status, evaluation_questions_table,
                      evaluation_state, evaluation_results_table],
+            show_progress_on=evaluation_status,
         )
         save_generated_question_set_button.click(
             save_generated_question_set_for_ui,
@@ -7518,6 +7770,7 @@ def build_app() -> gr.Blocks:
                     evaluation_use_reranker, evaluation_expand_evidence,
                     evaluation_test_effort, evaluation_strategy_params_state],
             outputs=[evaluation_status, evaluation_state, evaluation_results_table],
+            show_progress_on=evaluation_status,
         )
         run_evaluation_button.click(
             evaluate_generated_answers_for_ui,
@@ -7526,6 +7779,7 @@ def build_app() -> gr.Blocks:
                     evaluation_judge_max_concurrent_requests, evaluation_judge_effort,
                     evaluation_verify_judgment],
             outputs=[evaluation_status, evaluation_results_table, evaluation_state],
+            show_progress_on=evaluation_status,
         )
         evaluation_manual_edit_enabled.change(
             manual_result_editability_for_ui,
@@ -7636,7 +7890,8 @@ def build_app() -> gr.Blocks:
                 experiment_group_overall_summary_table,
                 experiment_summary_table, experiment_details_table,
             ],
-            show_progress="minimal",
+            # experiment_answer_progress already shows the only progress bar.
+            show_progress="hidden",
         ).then(
             lambda: (gr.update(active=False), gr.update(value="", visible=False)),
             outputs=[experiment_answer_progress_timer, experiment_answer_progress],
@@ -7655,7 +7910,7 @@ def build_app() -> gr.Blocks:
                 experiment_group_overall_summary_table,
                 experiment_summary_table, experiment_details_table,
             ],
-            show_progress="minimal",
+            show_progress="minimal", show_progress_on=experiment_status,
         )
         experiment_project_results_state.change(
             _experiment_results_visibility,
@@ -7847,6 +8102,7 @@ def build_app() -> gr.Blocks:
             test_experiment_project_connections_for_ui,
             inputs=[experiment_project_selector, neo4j_uri, neo4j_username, neo4j_password],
             outputs=[experiment_project_members_table, experiment_project_connection_state, experiment_connection_status],
+            show_progress_on=experiment_connection_status,
         )
         # Each experiment load also refreshes the run sections (groups, judge settings, results).
         for experiment_load_event in [
@@ -7969,7 +8225,7 @@ def build_app() -> gr.Blocks:
                 experiment_project_details_table,
                 experiment_project_state,
             ],
-            show_progress="minimal",
+            show_progress="minimal", show_progress_on=experiment_project_answers_status,
         )
         experiment_project_generation_event.then(
             lambda pending: gr.update(interactive=bool(pending)),
@@ -7990,7 +8246,7 @@ def build_app() -> gr.Blocks:
                      experiment_project_group_summary_table, experiment_project_summary_table,
                      experiment_project_details_table,
                      experiment_project_state],
-            show_progress="minimal",
+            show_progress="minimal", show_progress_on=experiment_project_test_status,
         )
         experiment_project_evaluation_event.then(
             save_experiment_run_button_state_for_ui,
@@ -8171,7 +8427,7 @@ def build_app() -> gr.Blocks:
             extraction_max_concurrent_requests, retrieval_mode,
             top_k, schema_editor,
             extraction_reasoning_effort, answer_reasoning_effort,
-            retrieval_strategy_params_state,
+            retrieval_strategy_params_state, pdf_vision_model,
         ]
         project_load_outputs = [
             project_state, project_status,
@@ -8190,6 +8446,7 @@ def build_app() -> gr.Blocks:
             entity_table, relationship_table, build_status, import_status,
             extraction_reasoning_effort,
             answer_reasoning_effort, retrieval_strategy_params_state,
+            pdf_vision_model,
             *retrieval_strategy_parameter_controls,
         ]
         for effort_control in [extraction_reasoning_effort, answer_reasoning_effort]:
@@ -8236,7 +8493,7 @@ def build_app() -> gr.Blocks:
             load_graph_tables_for_project_ui,
             inputs=[project_selector, graph_state],
             outputs=[entity_table, relationship_table, graph_state, load_graph_details_status],
-            show_progress="minimal",
+            show_progress="minimal", show_progress_on=load_graph_details_status,
         )
         project_selector.input(
             select_project_option_for_ui,
@@ -8264,10 +8521,12 @@ def build_app() -> gr.Blocks:
         export_project_button.click(
             export_project_for_ui, inputs=project_selector,
             outputs=[export_project_file, export_project_status],
+            show_progress_on=export_project_status,
         )
         import_project_event = import_project_button.click(
             import_project_for_ui, inputs=import_project_file,
             outputs=[project_selector, project_state, project_status],
+            show_progress_on=project_status,
         )
         import_load_event = import_project_event.success(
             load_project_with_services_for_ui,
@@ -8291,6 +8550,7 @@ def build_app() -> gr.Blocks:
                      model_connection_status, evaluation_generation_model, evaluation_test_model,
                      embedding_provider, embedding_service_state, embedding_models_table,
                      embedding_test_button, embedding_list_button, embedding_connection_status],
+            show_progress_on=project_status,
         )
         initialize_project_event = create_project_event.success(
             load_project_with_services_for_ui,
@@ -8355,7 +8615,7 @@ def build_app() -> gr.Blocks:
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor,
+            top_k, schema_editor, pdf_vision_model,
         ]
         for component in auto_save_components:
             component.input(
@@ -8447,7 +8707,7 @@ def build_app() -> gr.Blocks:
             global_api_test_button.click(
                 partial(persist_global_api_settings_for_ui, "test"),
                 inputs=global_service_inputs, outputs=global_service_outputs,
-                concurrency_id="service-settings",
+                concurrency_id="service-settings", show_progress_on=global_api_status,
             ),
         ]
         for component in [global_api_endpoint, global_api_key]:
@@ -8558,6 +8818,8 @@ def build_app() -> gr.Blocks:
                 chunk_overlap,
                 documents_state,
                 chunk_state,
+                pdf_vision_model,
+                pdf_run_control_state,
             ],
             outputs=[
                 preview_status,
@@ -8571,6 +8833,24 @@ def build_app() -> gr.Blocks:
                 pdf_file,
                 remove_document_selector,
             ],
+            # Show one progress bar on the status message instead of one per output.
+            show_progress_on=preview_status,
+        )
+        pdf_pause_button.click(
+            toggle_pdf_pause_for_ui,
+            inputs=[pdf_run_control_state],
+            outputs=[pdf_run_control_status, pdf_pause_button],
+            queue=False,
+        )
+        pdf_stop_button.click(
+            request_pdf_stop_for_ui,
+            inputs=[pdf_run_control_state],
+            outputs=[pdf_run_control_status],
+            queue=False,
+        )
+        preview_event.then(
+            lambda: ("", gr.update(value="⏸ 暫停")),
+            outputs=[pdf_run_control_status, pdf_pause_button], show_progress="hidden",
         )
         preview_event.then(
             save_project_for_ui, inputs=project_setting_inputs,
@@ -8594,6 +8874,16 @@ def build_app() -> gr.Blocks:
         remove_document_event.then(
             save_project_for_ui, inputs=project_setting_inputs,
             outputs=[project_state, project_status], show_progress="hidden",
+        )
+        chunk_table.select(
+            show_chunk_figures_for_ui,
+            inputs=[project_selector, active_chunks_state, documents_state],
+            outputs=[chunk_figures, chunk_figure_status],
+            show_progress_on=chunk_figure_status,
+        )
+        chunk_table.change(
+            lambda: ([], CHUNK_FIGURE_HINT),
+            outputs=[chunk_figures, chunk_figure_status], show_progress="hidden",
         )
         previous_button.click(
             previous_document,
@@ -8623,7 +8913,7 @@ def build_app() -> gr.Blocks:
                 extraction_reasoning_effort,
             ],
             outputs=[build_status, entity_table, relationship_table, graph_state],
-            show_progress="minimal",
+            show_progress="minimal", show_progress_on=build_status,
         )
         pause_button.click(
             toggle_pause_for_ui,
@@ -8662,7 +8952,7 @@ def build_app() -> gr.Blocks:
             outputs=[project_state, project_status], show_progress="hidden",
         )
         ask_button.click(
-            answer_question_for_project_ui,
+            ask_question_for_ui,
             inputs=[
                 project_selector,
                 answer_model_endpoint,
@@ -8683,6 +8973,12 @@ def build_app() -> gr.Blocks:
                 retrieval_strategy_params_state,
             ],
             outputs=[answer_status, answer, answer_sources],
+            show_progress_on=answer_status,
+        ).then(
+            show_source_figures_for_ui,
+            inputs=[project_selector, answer_sources, documents_state],
+            outputs=[source_figures, source_figure_status],
+            show_progress_on=source_figure_status,
         )
         evaluation_questions_table.change(
             generated_questions_visibility, inputs=evaluation_questions_table,
