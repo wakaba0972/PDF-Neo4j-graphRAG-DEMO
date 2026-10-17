@@ -1,10 +1,34 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pytest
 
 from manual_graphrag import pdf_service
+
+
+def test_render_page_to_base64_returns_png_of_content_area() -> None:
+    document = pdf_service.pymupdf.open()
+    page = document.new_page(width=600, height=800)
+
+    encoded = pdf_service.render_page_to_base64(page)
+    image_bytes = base64.b64decode(encoded, validate=True)
+    with pdf_service.pymupdf.open(stream=image_bytes, filetype="png") as image:
+        assert image.page_count == 1
+        assert image[0].rect.width == 1200
+        assert image[0].rect.height == 1344
+    document.close()
+
+
+@pytest.mark.parametrize("scale", [0, -1])
+def test_render_page_to_base64_rejects_non_positive_scale(scale: float) -> None:
+    document = pdf_service.pymupdf.open()
+    page = document.new_page()
+
+    with pytest.raises(ValueError, match="影像渲染倍率必須大於 0"):
+        pdf_service.render_page_to_base64(page, scale)
+    document.close()
 
 
 class FakePage:

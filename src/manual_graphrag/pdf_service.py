@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pymupdf
@@ -8,6 +9,7 @@ from .chunking import PageText
 
 
 HEADER_FOOTER_MARGIN_RATIO = 0.08
+DEFAULT_RENDER_SCALE = 2.0
 
 
 def get_pdf_page_count(path: str | Path) -> int:
@@ -54,6 +56,21 @@ def _content_clip(page: pymupdf.Page) -> pymupdf.Rect:
         page_rect.x1,
         page_rect.y1 - margin,
     )
+
+
+def render_page_to_base64(
+    page: pymupdf.Page, scale: float = DEFAULT_RENDER_SCALE
+) -> str:
+    """Render a PDF page's body area as a Base64-encoded PNG image."""
+    if scale <= 0:
+        raise ValueError("影像渲染倍率必須大於 0")
+
+    pixmap = page.get_pixmap(
+        matrix=pymupdf.Matrix(scale, scale),
+        clip=_content_clip(page),
+        alpha=False,
+    )
+    return base64.b64encode(pixmap.tobytes("png")).decode("ascii")
 
 
 def extract_pdf(
