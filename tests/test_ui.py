@@ -5306,3 +5306,112 @@ def test_build_app_wires_figure_galleries() -> None:
     }
     assert set(galleries.values()) <= outputs
 
+
+class _RecordingProgress:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, value, desc=None):
+        self.calls.append((value, desc))
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_generate_evaluation_reports_question_progress(monkeypatch, parallel) -> None:
+    counter = iter(range(100))
+
+    def fake_generate(*_args, **_kwargs):
+        index = next(counter)
+        return [{"question": f"Q{index}", "expected_answer": "A", "source_pages": [1]}]
+
+    monkeypatch.setattr(ui, "sample_random_page_context", lambda chunks: (1, chunks))
+    monkeypatch.setattr(ui, "expand_page_context_until_complete", lambda *args, **kwargs: args[3])
+    monkeypatch.setattr(ui, "generate_evaluation_questions", fake_generate)
+    monkeypatch.setattr(ui, "evaluation_questions_are_similar", lambda *_: False)
+    monkeypatch.setattr(ui, "load_project", lambda *_: {"evaluation": {}})
+    monkeypatch.setattr(ui, "save_project", lambda *_args: {})
+    progress = _RecordingProgress()
+
+    status, *_ = ui.generate_evaluation_for_ui(
+        "project", "endpoint", "key", "generation-model", "test-model", 2, "混合檢索", 8,
+        [TextChunk(1, "a", (1,), "a.pdf"), TextChunk(2, "b", (1,), "b.pdf")], parallel,
+        progress=progress,
+    )
+
+    assert status.startswith("✅")
+    assert progress.calls[0] == (0, "已產生 0 / 4 題")
+    assert progress.calls[-1] == (1.0, "已產生 4 / 4 題")
+    assert len(progress.calls) == 5
+
+
+def test_ask_question_forwards_progress_to_answer_stages(monkeypatch) -> None:
+    monkeypatch.setattr(ui, "load_latest_graph_metadata", lambda *_: {"embedding_model": "e"})
+    monkeypatch.setattr(ui, "embedding_vectors", lambda *_: [[0.1]])
+    monkeypatch.setattr(ui, "search_graph_evidence", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ui, "answer_graph_question", lambda *_args, **_kwargs: {
+        "answer": "答案", "evidence": [],
+    })
+    monkeypatch.setattr(ui, "load_project", lambda *_: {})
+    monkeypatch.setattr(ui, "append_question", lambda *_: {})
+    progress = _RecordingProgress()
+
+    status, answer, _ = ui.ask_question_for_ui(
+        "project", "endpoint", "key", "embedding-endpoint", "embedding-key",
+        "bolt", "neo4j", "user", "pass", "answer-model", "問題", "混合檢索", 8,
+        "停用", "停用", ui.DEFAULT_REASONING_EFFORT, None, progress,
+    )
+
+    assert status.startswith("✅") and answer == "答案"
+    assert [desc for _, desc in progress.calls] == [
+        "讀取圖譜設定…", "將問題轉為向量…", "檢索證據…", "以 0 筆證據生成回答…",
+    ]
+
+
+def test_experiment_connection_test_reports_member_progress(monkeypatch) -> None:
+    monkeypatch.setattr(ui, "load_experiment_project", lambda _id: {"members": ["p1", "p2"]})
+    monkeypatch.setattr(ui, "load_project", lambda _id: {"neo4j_database": "db"})
+    monkeypatch.setattr(ui, "check_neo4j_for_ui", lambda *_args: ("✅", True))
+    monkeypatch.setattr(ui, "_experiment_member_summary_row", lambda project_id, result: [project_id, result])
+    progress = _RecordingProgress()
+
+    ui.test_experiment_project_connections_for_ui("exp", "bolt://x", "neo4j", "pw", progress)
+
+    assert [desc for _, desc in progress.calls] == [
+        "測試成員專案連線 1 / 2", "測試成員專案連線 2 / 2",
+    ]
+
+
+def test_progress_tracked_events_show_a_single_progress_bar() -> None:
+    import functools
+    import inspect
+
+    app = build_app()
+    components = {component["id"]: component for component in app.config["components"]}
+    tracked = {}
+    for dependency in app.config["dependencies"]:
+        function = app.fns[dependency["id"]].fn
+        if function is None:
+            continue
+        while hasattr(function, "__wrapped__"):
+            function = function.__wrapped__
+        while isinstance(function, functools.partial):
+            function = function.func
+        if not any(
+            isinstance(parameter.default, gr.Progress)
+            for parameter in inspect.signature(function).parameters.values()
+        ) or dependency.get("show_progress") == "hidden":
+            continue
+        targets = dependency.get("show_progress_on") or [
+            output for output in dependency["outputs"]
+            if components[output]["type"] != "state"
+        ]
+        tracked[function.__name__] = len(targets)
+
+    assert {
+        "add_document_for_ui", "extract_graph_for_ui", "import_graph_for_ui",
+        "ask_question_for_ui", "generate_evaluation_for_ui",
+        "test_experiment_project_connections_for_ui",
+        "generate_experiment_project_answers_for_ui",
+        "evaluate_experiment_project_answers_for_ui",
+        "evaluate_experiment_answers_with_services_for_ui",
+    } <= set(tracked)
+    assert {name: count for name, count in tracked.items() if count != 1} == {}

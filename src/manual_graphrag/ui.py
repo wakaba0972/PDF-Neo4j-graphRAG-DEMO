@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import csv
 from copy import deepcopy
 import hashlib
@@ -1448,13 +1449,18 @@ def _pdf_vision_model_update(llm_settings: dict[str, Any], selected: str | None)
     return gr.update(value=selected, choices=_pdf_vision_model_choices(llm_settings, selected))
 
 
-def answer_question_for_project_ui(project_id: str, *args: Any) -> tuple[Any, ...]:
+def answer_question_for_project_ui(
+    project_id: str, *args: Any,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> tuple[Any, ...]:
     if len(args) > 15:
         status, answer, sources = answer_question_for_ui(
-            *args[:15], strategy_params=args[15],
+            *args[:15], strategy_params=args[15], progress_callback=progress_callback,
         )
     else:
-        status, answer, sources = answer_question_for_ui(*args)
+        status, answer, sources = answer_question_for_ui(
+            *args, progress_callback=progress_callback,
+        )
     if not status.startswith("✅") or not project_id:
         return status, answer, sources
     try:
@@ -1477,6 +1483,25 @@ def answer_question_for_project_ui(project_id: str, *args: Any) -> tuple[Any, ..
     except (OSError, ValueError) as exc:
         return f"{status}｜⚠️ 專案紀錄保存失敗：{exc}", answer, sources
     return f"{status}｜✅ 問答紀錄已加入目前專案。", answer, sources
+
+
+def ask_question_for_ui(
+    project_id: str, model_endpoint: str, api_key: str,
+    embedding_api_base: str, embedding_api_key: str,
+    neo4j_uri: str, neo4j_database: str, neo4j_username: str, neo4j_password: str,
+    answer_model: str, question: str, retrieval_mode: str, top_k: int,
+    use_reranker: str, expand_evidence: str, reasoning_effort: str | None,
+    strategy_params: Any,
+    progress=gr.Progress(),
+) -> tuple[Any, ...]:
+    """1-3 entry point; explicit parameters let Gradio inject the progress tracker."""
+    return answer_question_for_project_ui(
+        project_id, model_endpoint, api_key, embedding_api_base, embedding_api_key,
+        neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
+        answer_model, question, retrieval_mode, top_k, use_reranker, expand_evidence,
+        reasoning_effort, strategy_params,
+        progress_callback=lambda value, description: progress(value, desc=description),
+    )
 
 
 def _evaluation_question_rows(questions: list[dict[str, Any]]) -> list[list[object]]:
@@ -2269,6 +2294,7 @@ def _missing_experiment_member_row(project_id: str, connection_result: str = EXP
 
 def test_experiment_project_connections_for_ui(
     project_id: str | None, neo4j_uri: str, neo4j_username: str, neo4j_password: str,
+    progress=gr.Progress(),
 ) -> tuple[list[list[str]], dict[str, bool], str]:
     if not project_id:
         return [], {}, "❌ 請先載入實驗專案。"
@@ -2277,7 +2303,9 @@ def test_experiment_project_connections_for_ui(
     except (OSError, ValueError) as exc:
         return [], {}, f"❌ {exc}"
     rows, statuses = [], {}
-    for member_id in project.get("members", []):
+    members = project.get("members", [])
+    for index, member_id in enumerate(members):
+        progress(index / len(members), desc=f"測試成員專案連線 {index + 1} / {len(members)}")
         try:
             member = load_project(member_id)
             status, connected = check_neo4j_for_ui(
@@ -3485,6 +3513,7 @@ def generate_evaluation_for_ui(
     expand_evidence: str = "停用",
     reasoning_effort: str | None = None,
     strategy_params_json: Any = None,
+    progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], dict[str, Any], list[list[object]]]:
     if not project_id:
         return "❌ 請先建立或載入專案。", [], {}, []
@@ -3503,6 +3532,8 @@ def generate_evaluation_for_ui(
         existing_evaluation = dict(load_project(project_id).get("evaluation") or {})
         accepted_questions: list[dict[str, Any]] = []
         accepted_lock = Lock()
+        total_questions = count * len(document_chunks)
+        progress(0, desc=f"已產生 0 / {total_questions} 題")
 
         def generate_for_document(
             document: str,
@@ -3548,7 +3579,12 @@ def generate_evaluation_for_ui(
                             continue
                         accepted_questions.append(question)
                         accepted.append(question)
-                        break
+                        generated = len(accepted_questions)
+                    progress(
+                        generated / total_questions,
+                        desc=f"已產生 {generated} / {total_questions} 題",
+                    )
+                    break
             if len(accepted) < count:
                 detail = f"；最後錯誤：{last_error}" if last_error else ""
                 raise ValueError(
@@ -3560,10 +3596,14 @@ def generate_evaluation_for_ui(
         document_items = list(chunks_by_document.items())
         if allow_parallel_generation:
             with ThreadPoolExecutor(max_workers=len(document_items)) as executor:
-                document_results = list(executor.map(
-                    lambda item: generate_for_document(item[0], item[1]),
-                    document_items,
-                ))
+                # Copy the context so gr.Progress still reaches the UI from worker threads.
+                futures = [
+                    executor.submit(
+                        contextvars.copy_context().run, generate_for_document, document, selected_chunks,
+                    )
+                    for document, selected_chunks in document_items
+                ]
+                document_results = [future.result() for future in futures]
         else:
             document_results = [
                 generate_for_document(document, selected_chunks)
@@ -6237,15 +6277,19 @@ def answer_question_for_ui(
     reranker_mode: str | None = None,
     evidence_expansion_mode: str | None = None,
     strategy_params: Any = None,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> tuple[str, str, list[list[object]]]:
     if not answer_model:
         return "❌ 請先勾選並選擇問答 LLM。", "", []
     if not question.strip():
         return "請輸入問題。", "", []
+    report = progress_callback or (lambda value, description: None)
     try:
+        report(0.0, "讀取圖譜設定…")
         graph_state = load_latest_graph_metadata(
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password
         )
+        report(0.1, "將問題轉為向量…")
         question_vector = embedding_vectors(
             embedding_api_base, embedding_api_key, graph_state.get("embedding_model", ""),
             [question.strip()],
@@ -6258,6 +6302,7 @@ def answer_question_for_ui(
         )
         should_expand = retrieval_config.expansion["id"] != "disabled"
         should_rerank = retrieval_config.reranker["id"] != "disabled"
+        report(0.25, "檢索證據…")
         evidence = search_graph_evidence(
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
             question.strip(), question_vector,
@@ -6268,6 +6313,7 @@ def answer_question_for_ui(
             reasoning_effort=reasoning_effort or "low",
         )
         if retrieval_config.reranker["id"] == "llm":
+            report(0.55, "LLM 重新排序證據…")
             evidence = rerank_evidence(
                 model_endpoint, api_key, answer_model, question, evidence,
                 int(top_k), reasoning_effort,
@@ -6278,6 +6324,7 @@ def answer_question_for_ui(
             evidence = interleave_expanded_evidence(evidence, int(top_k))
         else:
             evidence = evidence[:int(top_k)]
+        report(0.7, f"以 {len(evidence)} 筆證據生成回答…")
         result = answer_graph_question(
             model_endpoint, api_key, answer_model, question,
             retrieval_config.strategy_id, evidence,
@@ -7563,6 +7610,7 @@ def build_app() -> gr.Blocks:
             import_central_question_set_for_ui,
             inputs=[central_question_file, central_question_name],
             outputs=[central_question_status, central_question_selector, central_question_table, central_question_file],
+            show_progress_on=central_question_status,
         )
         delete_central_question_set_button.click(
             request_central_question_set_deletion_for_ui,
@@ -7704,6 +7752,7 @@ def build_app() -> gr.Blocks:
                     evaluation_generation_effort, evaluation_strategy_params_state],
             outputs=[evaluation_status, evaluation_questions_table,
                      evaluation_state, evaluation_results_table],
+            show_progress_on=evaluation_status,
         )
         save_generated_question_set_button.click(
             save_generated_question_set_for_ui,
@@ -7721,6 +7770,7 @@ def build_app() -> gr.Blocks:
                     evaluation_use_reranker, evaluation_expand_evidence,
                     evaluation_test_effort, evaluation_strategy_params_state],
             outputs=[evaluation_status, evaluation_state, evaluation_results_table],
+            show_progress_on=evaluation_status,
         )
         run_evaluation_button.click(
             evaluate_generated_answers_for_ui,
@@ -7729,6 +7779,7 @@ def build_app() -> gr.Blocks:
                     evaluation_judge_max_concurrent_requests, evaluation_judge_effort,
                     evaluation_verify_judgment],
             outputs=[evaluation_status, evaluation_results_table, evaluation_state],
+            show_progress_on=evaluation_status,
         )
         evaluation_manual_edit_enabled.change(
             manual_result_editability_for_ui,
@@ -7839,7 +7890,8 @@ def build_app() -> gr.Blocks:
                 experiment_group_overall_summary_table,
                 experiment_summary_table, experiment_details_table,
             ],
-            show_progress="minimal",
+            # experiment_answer_progress already shows the only progress bar.
+            show_progress="hidden",
         ).then(
             lambda: (gr.update(active=False), gr.update(value="", visible=False)),
             outputs=[experiment_answer_progress_timer, experiment_answer_progress],
@@ -7858,7 +7910,7 @@ def build_app() -> gr.Blocks:
                 experiment_group_overall_summary_table,
                 experiment_summary_table, experiment_details_table,
             ],
-            show_progress="minimal",
+            show_progress="minimal", show_progress_on=experiment_status,
         )
         experiment_project_results_state.change(
             _experiment_results_visibility,
@@ -8050,6 +8102,7 @@ def build_app() -> gr.Blocks:
             test_experiment_project_connections_for_ui,
             inputs=[experiment_project_selector, neo4j_uri, neo4j_username, neo4j_password],
             outputs=[experiment_project_members_table, experiment_project_connection_state, experiment_connection_status],
+            show_progress_on=experiment_connection_status,
         )
         # Each experiment load also refreshes the run sections (groups, judge settings, results).
         for experiment_load_event in [
@@ -8172,7 +8225,7 @@ def build_app() -> gr.Blocks:
                 experiment_project_details_table,
                 experiment_project_state,
             ],
-            show_progress="minimal",
+            show_progress="minimal", show_progress_on=experiment_project_answers_status,
         )
         experiment_project_generation_event.then(
             lambda pending: gr.update(interactive=bool(pending)),
@@ -8193,7 +8246,7 @@ def build_app() -> gr.Blocks:
                      experiment_project_group_summary_table, experiment_project_summary_table,
                      experiment_project_details_table,
                      experiment_project_state],
-            show_progress="minimal",
+            show_progress="minimal", show_progress_on=experiment_project_test_status,
         )
         experiment_project_evaluation_event.then(
             save_experiment_run_button_state_for_ui,
@@ -8440,7 +8493,7 @@ def build_app() -> gr.Blocks:
             load_graph_tables_for_project_ui,
             inputs=[project_selector, graph_state],
             outputs=[entity_table, relationship_table, graph_state, load_graph_details_status],
-            show_progress="minimal",
+            show_progress="minimal", show_progress_on=load_graph_details_status,
         )
         project_selector.input(
             select_project_option_for_ui,
@@ -8468,10 +8521,12 @@ def build_app() -> gr.Blocks:
         export_project_button.click(
             export_project_for_ui, inputs=project_selector,
             outputs=[export_project_file, export_project_status],
+            show_progress_on=export_project_status,
         )
         import_project_event = import_project_button.click(
             import_project_for_ui, inputs=import_project_file,
             outputs=[project_selector, project_state, project_status],
+            show_progress_on=project_status,
         )
         import_load_event = import_project_event.success(
             load_project_with_services_for_ui,
@@ -8495,6 +8550,7 @@ def build_app() -> gr.Blocks:
                      model_connection_status, evaluation_generation_model, evaluation_test_model,
                      embedding_provider, embedding_service_state, embedding_models_table,
                      embedding_test_button, embedding_list_button, embedding_connection_status],
+            show_progress_on=project_status,
         )
         initialize_project_event = create_project_event.success(
             load_project_with_services_for_ui,
@@ -8651,7 +8707,7 @@ def build_app() -> gr.Blocks:
             global_api_test_button.click(
                 partial(persist_global_api_settings_for_ui, "test"),
                 inputs=global_service_inputs, outputs=global_service_outputs,
-                concurrency_id="service-settings",
+                concurrency_id="service-settings", show_progress_on=global_api_status,
             ),
         ]
         for component in [global_api_endpoint, global_api_key]:
@@ -8823,6 +8879,7 @@ def build_app() -> gr.Blocks:
             show_chunk_figures_for_ui,
             inputs=[project_selector, active_chunks_state, documents_state],
             outputs=[chunk_figures, chunk_figure_status],
+            show_progress_on=chunk_figure_status,
         )
         chunk_table.change(
             lambda: ([], CHUNK_FIGURE_HINT),
@@ -8856,7 +8913,7 @@ def build_app() -> gr.Blocks:
                 extraction_reasoning_effort,
             ],
             outputs=[build_status, entity_table, relationship_table, graph_state],
-            show_progress="minimal",
+            show_progress="minimal", show_progress_on=build_status,
         )
         pause_button.click(
             toggle_pause_for_ui,
@@ -8895,7 +8952,7 @@ def build_app() -> gr.Blocks:
             outputs=[project_state, project_status], show_progress="hidden",
         )
         ask_button.click(
-            answer_question_for_project_ui,
+            ask_question_for_ui,
             inputs=[
                 project_selector,
                 answer_model_endpoint,
@@ -8916,10 +8973,12 @@ def build_app() -> gr.Blocks:
                 retrieval_strategy_params_state,
             ],
             outputs=[answer_status, answer, answer_sources],
+            show_progress_on=answer_status,
         ).then(
             show_source_figures_for_ui,
             inputs=[project_selector, answer_sources, documents_state],
             outputs=[source_figures, source_figure_status],
+            show_progress_on=source_figure_status,
         )
         evaluation_questions_table.change(
             generated_questions_visibility, inputs=evaluation_questions_table,
