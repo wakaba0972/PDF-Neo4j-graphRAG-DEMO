@@ -359,6 +359,124 @@ def extract_pdf(
     return report.pages, report.empty_pages
 
 
+@dataclass(frozen=True)
+class PageFigure:
+    page: int
+    kind: str  # "table", "image" or "drawing"
+    bbox: tuple[float, float, float, float]
+
+
+FIGURE_KIND_LABELS = {"table": "表格", "image": "圖片", "drawing": "向量圖"}
+# Vector paths closer than this many points belong to the same illustration.
+FIGURE_CLUSTER_TOLERANCE = 12.0
+FIGURE_MIN_SIZE = 36.0
+FIGURE_RENDER_SCALE = 2.0
+FIGURE_PADDING = 6.0
+
+
+def _is_rule_drawing(drawing: dict[str, Any], page_width: float) -> bool:
+    """Long horizontal/vertical lines and rectangles: frames, rules and table borders."""
+    rect = drawing["rect"]
+    if max(rect.width, rect.height) < page_width * 0.2:
+        return False
+    for item in drawing["items"]:
+        if item[0] == "l":
+            start, end = item[1], item[2]
+            if abs(start.x - end.x) > 1 and abs(start.y - end.y) > 1:
+                return False
+        elif item[0] == "qu":
+            if not item[1].is_rectangular:
+                return False
+        elif item[0] != "re":
+            return False
+    return True
+
+
+def _merge_nearby(rects: list[pymupdf.Rect], tolerance: float) -> list[pymupdf.Rect]:
+    merged = [pymupdf.Rect(rect) for rect in rects]
+    changed = True
+    while changed:
+        changed = False
+        result: list[pymupdf.Rect] = []
+        for rect in merged:
+            for index, existing in enumerate(result):
+                if (existing + (-tolerance, -tolerance, tolerance, tolerance)).intersects(rect):
+                    result[index] = existing | rect
+                    changed = True
+                    break
+            else:
+                result.append(rect)
+        merged = result
+    return merged
+
+
+def detect_page_figures(page: pymupdf.Page) -> list[PageFigure]:
+    """Locate tables, embedded images and vector illustrations on a page.
+
+    Elements centred in the header/footer margin, images and drawings smaller
+    than ``FIGURE_MIN_SIZE``, and elements mostly inside a larger one are
+    skipped. Vector
+    paths are grouped by proximity after dropping frames and rules, so a
+    bordered note box is not mistaken for an illustration.
+    """
+    page_rect = page.rect
+    body = _content_clip(page)
+    tables = [pymupdf.Rect(table.bbox) for table in page.find_tables().tables]
+    images = [pymupdf.Rect(info["bbox"]) & page_rect for info in page.get_image_info()]
+    drawings = _merge_nearby(
+        [
+            drawing["rect"] for drawing in page.get_drawings()
+            if not _is_rule_drawing(drawing, page_rect.width)
+            and (drawing["rect"].width > 0 or drawing["rect"].height > 0)
+        ],
+        FIGURE_CLUSTER_TOLERANCE,
+    )
+    candidates = [
+        (kind, rect)
+        for kind, rects in (("table", tables), ("image", images), ("drawing", drawings))
+        for rect in rects
+        if not rect.is_empty and body.contains((rect.tl + rect.br) / 2)
+        and (kind == "table" or min(rect.width, rect.height) >= FIGURE_MIN_SIZE)
+    ]
+    # Largest first, so an element mostly inside another one (an icon in a
+    # table cell, a callout inside an illustration) is dropped as a duplicate.
+    kept: list[tuple[str, pymupdf.Rect]] = []
+    for kind, rect in sorted(candidates, key=lambda item: -item[1].get_area()):
+        if not any((rect & other).get_area() > rect.get_area() / 2 for _, other in kept):
+            kept.append((kind, rect))
+    return [
+        PageFigure(page.number + 1, kind, tuple(rect))
+        for kind, rect in sorted(kept, key=lambda item: (item[1].y0, item[1].x0))
+    ]
+
+
+def render_pdf_figures(
+    path: str | Path,
+    page_numbers: list[int],
+    *,
+    limit: int = 12,
+    scale: float = FIGURE_RENDER_SCALE,
+) -> list[tuple[PageFigure, bytes]]:
+    """Crop the figures on the given 1-based pages into PNG images, in page order."""
+    results: list[tuple[PageFigure, bytes]] = []
+    with pymupdf.open(Path(path)) as document:
+        for page_number in dict.fromkeys(page_numbers):
+            if not 1 <= page_number <= document.page_count:
+                continue
+            page = document.load_page(page_number - 1)
+            for figure in detect_page_figures(page):
+                if len(results) >= limit:
+                    return results
+                clip = (pymupdf.Rect(figure.bbox) + (
+                    -FIGURE_PADDING, -FIGURE_PADDING, FIGURE_PADDING, FIGURE_PADDING,
+                )) & page.rect
+                pixmap = page.get_pixmap(
+                    matrix=pymupdf.Matrix(scale, scale), clip=clip, alpha=False,
+                )
+                results.append((figure, pixmap.tobytes("png")))
+    return results
+
+
 def _short_reason(reason: str, limit: int = 160) -> str:
     flattened = " ".join(reason.split())
     return flattened if len(flattened) <= limit else f"{flattened[:limit]}…"

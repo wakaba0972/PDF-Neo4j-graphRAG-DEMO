@@ -4,6 +4,7 @@ import csv
 from copy import deepcopy
 import hashlib
 import html
+from io import BytesIO
 import json
 from datetime import datetime, timedelta
 import re
@@ -61,7 +62,12 @@ from .neo4j_service import (
     search_graph_evidence,
     vector_index_name,
 )
-from .pdf_service import extract_pdf_with_report, format_vision_report
+from .pdf_service import (
+    FIGURE_KIND_LABELS,
+    extract_pdf_with_report,
+    format_vision_report,
+    render_pdf_figures,
+)
 from .project_store import (
     append_question,
     create_project,
@@ -124,6 +130,8 @@ from .storage import write_json
 DEFAULT_LLM_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_PDF_VISION_MODEL = GPT_6_LUNA_MODEL
 PDF_VISION_DISABLED = "停用"
+FIGURE_GALLERY_LIMIT = 12
+CHUNK_FIGURE_HINT = "點選上方任一 chunk，可查看其來源頁的圖片、向量圖與表格原圖。"
 DEFAULT_EVALUATION_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_JUDGE_REASONING_EFFORT = "medium"
@@ -840,6 +848,117 @@ def _document_choices(documents: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _chunk_rows(chunks: list[TextChunk]) -> list[list[object]]:
     return preview_rows(chunks, limit=len(chunks))
+
+
+def _document_pdf_path(
+    project_id: str, document_name: str, documents: list[dict[str, Any]] | None,
+) -> Path | None:
+    """Prefer the copy saved in the project folder; fall back to the parsed upload."""
+    candidates: list[Any] = []
+    if project_id:
+        try:
+            candidates.extend(
+                item.get("path") for item in load_project(project_id).get("documents") or []
+                if item.get("name") == document_name
+            )
+        except (OSError, ValueError):
+            pass
+    candidates.extend(
+        item.get("file_path") for item in documents or []
+        if item.get("file_name") == document_name
+    )
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return Path(candidate)
+    return None
+
+
+def _figure_gallery_items(
+    project_id: str,
+    page_refs: list[tuple[str, int]],
+    documents: list[dict[str, Any]] | None,
+    limit: int = FIGURE_GALLERY_LIMIT,
+) -> tuple[list[tuple[Any, str]], list[str]]:
+    """Crop figures for (document, page) references; return gallery items and missing PDFs."""
+    from PIL import Image
+
+    pages_by_document: dict[str, list[int]] = {}
+    for document, page in page_refs:
+        pages_by_document.setdefault(document, []).append(page)
+    items: list[tuple[Any, str]] = []
+    missing: list[str] = []
+    for document, pages in pages_by_document.items():
+        path = _document_pdf_path(project_id, document, documents)
+        if path is None:
+            missing.append(document or "未標示文件")
+            continue
+        try:
+            figures = render_pdf_figures(path, pages, limit=limit - len(items))
+        except (OSError, RuntimeError, ValueError):
+            missing.append(document)
+            continue
+        for figure, png in figures:
+            caption = f"{document} 第 {figure.page} 頁｜{FIGURE_KIND_LABELS[figure.kind]}"
+            items.append((Image.open(BytesIO(png)), caption))
+        if len(items) >= limit:
+            break
+    return items, missing
+
+
+def _figure_status(items: list[Any], missing: list[str], scope: str) -> str:
+    note = f"{scope}共 {len(items)} 張圖表。" if items else f"{scope}沒有偵測到圖片、向量圖或表格。"
+    if missing:
+        note += f" ⚠️ 找不到 PDF：{'、'.join(missing)}。"
+    return note
+
+
+def show_chunk_figures_for_ui(
+    project_id: str,
+    active_chunks: list[TextChunk],
+    documents: list[dict[str, Any]],
+    evt: gr.SelectData,
+) -> tuple[list[tuple[Any, str]], str]:
+    index = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+    chunks = active_chunks or []
+    if not isinstance(index, int) or not 0 <= index < len(chunks):
+        return [], "請在上方表格點選一個 chunk。"
+    chunk = chunks[index]
+    items, missing = _figure_gallery_items(
+        project_id, [(chunk.document, page) for page in chunk.pages], documents,
+    )
+    pages = ", ".join(map(str, chunk.pages))
+    return items, _figure_status(items, missing, f"Chunk {chunk.number}（第 {pages} 頁）")
+
+
+def _source_page_refs(rows: Any) -> list[tuple[str, int]]:
+    """Parse (document, page) pairs from the 1-3 source table, in evidence order."""
+    if hasattr(rows, "values") and hasattr(rows.values, "tolist"):
+        rows = rows.values.tolist()
+    refs: list[tuple[str, int]] = []
+    for row in rows or []:
+        if not isinstance(row, (list, tuple)) or len(row) < 7:
+            continue
+        page_cell, document_cell = str(row[4] or ""), str(row[6] or "")
+        for line in page_cell.splitlines():
+            document, separator, pages = line.rpartition("：")
+            if not separator:
+                # Evidence without per-document references lists one document only.
+                document = document_cell.splitlines()[0] if document_cell else ""
+            refs.extend(
+                (document.strip(), int(page))
+                for page in re.findall(r"\d+", pages)
+            )
+    return list(dict.fromkeys(refs))
+
+
+def show_source_figures_for_ui(
+    project_id: str, sources: Any, documents: list[dict[str, Any]],
+) -> tuple[list[tuple[Any, str]], str]:
+    refs = _source_page_refs(sources)
+    if not refs:
+        return [], ""
+    items, missing = _figure_gallery_items(project_id, refs, documents)
+    return items, _figure_status(items, missing, "檢索來源頁")
 
 
 def _document_status(index: int, total: int, doc: dict[str, Any], chunk_count: int) -> str:
@@ -6537,6 +6656,11 @@ def build_app() -> gr.Blocks:
                             max_height=750,
                             column_widths=[80, 160, 120, 100, 900],
                         )
+                        chunk_figure_status = gr.Markdown(CHUNK_FIGURE_HINT)
+                        chunk_figures = gr.Gallery(
+                            label="來源頁圖表（自 PDF 裁切）", columns=3, height=420,
+                            object_fit="contain", interactive=False,
+                        )
 
             with gr.Tab("1-2 建圖", interactive=False) as graph_tab:
                 gr.Markdown("### 從文件文本抽取知識圖譜")
@@ -6741,6 +6865,11 @@ def build_app() -> gr.Blocks:
                         ],
                         interactive=False,
                         wrap=True,
+                    )
+                    source_figure_status = gr.Markdown()
+                    source_figures = gr.Gallery(
+                        label="檢索來源頁圖表（自 PDF 裁切）", columns=4, height=360,
+                        object_fit="contain", interactive=False,
                     )
 
             with gr.Tab("1-4 從 PDF 生題", interactive=False) as evaluation_tab:
@@ -8690,6 +8819,15 @@ def build_app() -> gr.Blocks:
             save_project_for_ui, inputs=project_setting_inputs,
             outputs=[project_state, project_status], show_progress="hidden",
         )
+        chunk_table.select(
+            show_chunk_figures_for_ui,
+            inputs=[project_selector, active_chunks_state, documents_state],
+            outputs=[chunk_figures, chunk_figure_status],
+        )
+        chunk_table.change(
+            lambda: ([], CHUNK_FIGURE_HINT),
+            outputs=[chunk_figures, chunk_figure_status], show_progress="hidden",
+        )
         previous_button.click(
             previous_document,
             inputs=[documents_state, chunk_state, active_preview_state],
@@ -8778,6 +8916,10 @@ def build_app() -> gr.Blocks:
                 retrieval_strategy_params_state,
             ],
             outputs=[answer_status, answer, answer_sources],
+        ).then(
+            show_source_figures_for_ui,
+            inputs=[project_selector, answer_sources, documents_state],
+            outputs=[source_figures, source_figure_status],
         )
         evaluation_questions_table.change(
             generated_questions_visibility, inputs=evaluation_questions_table,

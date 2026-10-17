@@ -529,3 +529,58 @@ def test_extract_pdf_pause_holds_new_pages_until_resumed(
     worker.join(timeout=5)
 
     assert [page.text for page in result[0].pages] == ["vision 1", "vision 2"]
+
+
+def _figure_test_pdf(path: Path) -> Path:
+    pymupdf = pdf_service.pymupdf
+    document = pymupdf.open()
+    page = document.new_page(width=600, height=800)
+    pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 20, 20), False)
+    pixmap.set_rect(pixmap.irect, (200, 30, 30))
+    page.insert_image(pymupdf.Rect(100, 100, 250, 250), pixmap=pixmap)
+    # An illustration made of separate nearby paths should become one figure.
+    for x in (320, 360, 400):
+        page.draw_circle((x, 320), 15)
+    page.draw_line((320, 340), (400, 380))
+    # A note box frame, a tiny icon and a header logo are not figures.
+    page.draw_rect(pymupdf.Rect(50, 450, 550, 500))
+    page.insert_text((60, 480), "Note text inside a frame")
+    page.draw_circle((520, 300), 5)
+    page.draw_circle((300, 30), 20)
+    # A ruled 3 x 3 table.
+    for y in (560, 590, 620, 650):
+        page.draw_line((60, y), (540, y))
+    for x in (60, 220, 380, 540):
+        page.draw_line((x, 560), (x, 650))
+    for row, y in enumerate((580, 610, 640)):
+        for column, x in enumerate((70, 230, 390)):
+            page.insert_text((x, y), f"r{row}c{column}")
+    target = path / "figures.pdf"
+    document.save(target)
+    document.close()
+    return target
+
+
+def test_detect_page_figures_finds_images_illustrations_and_tables(tmp_path: Path) -> None:
+    with pdf_service.pymupdf.open(_figure_test_pdf(tmp_path)) as document:
+        figures = pdf_service.detect_page_figures(document[0])
+
+    assert [figure.kind for figure in figures] == ["image", "drawing", "table"]
+    assert all(figure.page == 1 for figure in figures)
+    image, drawing, table = (pdf_service.pymupdf.Rect(f.bbox) for f in figures)
+    assert image == pdf_service.pymupdf.Rect(100, 100, 250, 250)
+    assert drawing.contains(pdf_service.pymupdf.Rect(305, 305, 415, 380))
+    assert table.contains(pdf_service.pymupdf.Rect(70, 570, 530, 640))
+
+
+def test_render_pdf_figures_crops_pngs_and_respects_limit(tmp_path: Path) -> None:
+    path = _figure_test_pdf(tmp_path)
+
+    results = pdf_service.render_pdf_figures(path, [1, 1, 5], scale=1.0)
+    assert [figure.kind for figure, _ in results] == ["image", "drawing", "table"]
+    figure, png = results[0]
+    assert png.startswith(b"\x89PNG")
+    # The crop is the figure plus padding on each side, not the whole page.
+    assert struct.unpack(">II", png[16:24]) == (162, 162)
+
+    assert len(pdf_service.render_pdf_figures(path, [1], limit=2)) == 2

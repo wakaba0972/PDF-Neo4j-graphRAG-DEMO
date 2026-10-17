@@ -5210,3 +5210,99 @@ def test_human_review_results_page_hides_sections_until_loaded():
     assert ui.human_review_results_visibility(None)["visible"] is False
     assert ui.human_review_results_visibility(pd.DataFrame([[""]]))["visible"] is False
     assert ui.human_review_results_visibility([["A 組", "車型 X"]])["visible"] is True
+
+
+def _figure_pdf(path: Path, pages: int = 2) -> Path:
+    pymupdf = ui.render_pdf_figures.__globals__["pymupdf"]
+    document = pymupdf.open()
+    for _ in range(pages):
+        page = document.new_page(width=600, height=800)
+        pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 10, 10), False)
+        page.insert_image(pymupdf.Rect(100, 100, 300, 300), pixmap=pixmap)
+    target = path / "manual.pdf"
+    document.save(target)
+    document.close()
+    return target
+
+
+class _Select:
+    def __init__(self, index):
+        self.index = index
+
+
+def test_show_chunk_figures_crops_figures_from_chunk_pages(tmp_path: Path) -> None:
+    pdf = _figure_pdf(tmp_path)
+    chunks = [TextChunk(1, "a", (1,), "manual.pdf"), TextChunk(2, "b", (1, 2), "manual.pdf")]
+    documents = [{"file_name": "manual.pdf", "file_path": str(pdf)}]
+
+    items, status = ui.show_chunk_figures_for_ui("", chunks, documents, _Select([1, 4]))
+
+    assert [caption for _, caption in items] == [
+        "manual.pdf 第 1 頁｜圖片", "manual.pdf 第 2 頁｜圖片",
+    ]
+    # 200 pt image plus 6 pt padding per side, rendered at 2x.
+    assert items[0][0].size == (424, 424)
+    assert status == "Chunk 2（第 1, 2 頁）共 2 張圖表。"
+
+
+def test_show_chunk_figures_reports_missing_pdf_and_bad_selection() -> None:
+    chunks = [TextChunk(1, "a", (3,), "gone.pdf")]
+    documents = [{"file_name": "gone.pdf", "file_path": "/nonexistent/gone.pdf"}]
+
+    items, status = ui.show_chunk_figures_for_ui("", chunks, documents, _Select([0, 0]))
+    assert items == []
+    assert "找不到 PDF：gone.pdf" in status
+    assert ui.show_chunk_figures_for_ui("", chunks, documents, _Select([5, 0]))[0] == []
+
+
+def test_document_pdf_path_prefers_project_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_copy = _figure_pdf(tmp_path)
+    upload = tmp_path / "upload.pdf"
+    upload.write_bytes(project_copy.read_bytes())
+    monkeypatch.setattr(ui, "load_project", lambda project_id: {
+        "documents": [{"name": "manual.pdf", "path": str(project_copy)}],
+    })
+
+    documents = [{"file_name": "manual.pdf", "file_path": str(upload)}]
+    assert ui._document_pdf_path("p1", "manual.pdf", documents) == project_copy
+    assert ui._document_pdf_path("", "manual.pdf", documents) == upload
+
+
+def test_source_page_refs_parse_both_source_formats() -> None:
+    rows = [
+        ["原文", "x", "vector", "0.9", "a.pdf：3, 4\nb.pdf：7", "a.pdf：1", "a.pdf\nb.pdf"],
+        ["實體", "y", "vector", "0.8", "5, 3", "2", "a.pdf"],
+        ["實體", "z", "vector", "0.7", "a.pdf：3", "1", "a.pdf"],
+    ]
+    assert ui._source_page_refs(rows) == [
+        ("a.pdf", 3), ("a.pdf", 4), ("b.pdf", 7), ("a.pdf", 5),
+    ]
+
+
+def test_show_source_figures_uses_source_pages(tmp_path: Path) -> None:
+    pdf = _figure_pdf(tmp_path)
+    documents = [{"file_name": "manual.pdf", "file_path": str(pdf)}]
+    rows = [["原文", "x", "vector", "0.9", "manual.pdf：2", "manual.pdf：1", "manual.pdf"]]
+
+    items, status = ui.show_source_figures_for_ui("", rows, documents)
+    assert [caption for _, caption in items] == ["manual.pdf 第 2 頁｜圖片"]
+    assert status == "檢索來源頁共 1 張圖表。"
+    assert ui.show_source_figures_for_ui("", [], documents) == ([], "")
+
+
+def test_build_app_wires_figure_galleries() -> None:
+    app = build_app()
+    galleries = {
+        component["props"].get("label"): component["id"]
+        for component in app.config["components"]
+        if component.get("type") == "gallery"
+    }
+    assert set(galleries) >= {"來源頁圖表（自 PDF 裁切）", "檢索來源頁圖表（自 PDF 裁切）"}
+    outputs = {
+        output for dependency in app.config["dependencies"]
+        for output in dependency.get("outputs", [])
+    }
+    assert set(galleries.values()) <= outputs
+
