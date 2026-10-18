@@ -143,6 +143,7 @@ def test_retrieval_strategies_are_not_filtered_by_graph_partition_mode() -> None
     assert ui.strategy_choices() == [
         "基本向量檢索", "混合檢索", "Agentic Search", "Agentic Search 3",
         "Agentic Search 4", "Greedy DFS Agentic Search",
+        "Greedy DFS Agentic Search 2",
     ]
 
 

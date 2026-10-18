@@ -102,12 +102,16 @@ def test_builtin_strategy_registry_loads_implementations_from_yaml() -> None:
     assert set(strategy_choices()) == {
         "基本向量檢索", "混合檢索", "Agentic Search", "Agentic Search 3",
         "Agentic Search 4", "Greedy DFS Agentic Search",
+        "Greedy DFS Agentic Search 2",
     }
 
 
 @pytest.mark.parametrize(
     "strategy_id",
-    ["agentic", "agentic_search_3", "agentic_search_4", "greedy_dfs_agentic_search"],
+    [
+        "agentic", "agentic_search_3", "agentic_search_4",
+        "greedy_dfs_agentic_search", "greedy_dfs_agentic_search_2",
+    ],
 )
 @pytest.mark.parametrize("component", ["reranker", "expansion"])
 def test_non_vector_strategies_reject_reranker_and_evidence_expansion(
