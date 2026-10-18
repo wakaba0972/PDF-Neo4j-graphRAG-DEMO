@@ -2501,15 +2501,22 @@ def test_inline_experiment_groups_round_trip_strategy_specific_params() -> None:
     assert restored == [group]
 
 
-def test_experiment_group_table_shows_strategy_parameter_labels_only_on_first_row() -> None:
+def test_single_project_experiment_groups_show_strategy_parameter_labels_on_every_card() -> None:
     app = build_app()
     hidden_ratio_labels = [
         item for item in app.config["components"]
         if item.get("props", {}).get("label") == "有效搜尋比例"
         and item.get("props", {}).get("show_label") is False
     ]
-    # 1-5 and 2-0 table rows after the first hide labels; vector and hybrid both declare this label.
-    assert len(hidden_ratio_labels) == (ui.EXPERIMENT_GROUP_LIMIT - 1) * 2 * 2
+    visible_ratio_labels = [
+        item for item in app.config["components"]
+        if item.get("props", {}).get("label") == "有效搜尋比例"
+        and item.get("props", {}).get("show_label") is True
+    ]
+    # 1-5 shows a label on every card; 2-0 retains its compact table-style labels.
+    # Both vector and hybrid strategies declare this parameter.
+    assert len(hidden_ratio_labels) == (ui.EXPERIMENT_GROUP_LIMIT - 1) * 2
+    assert len(visible_ratio_labels) == 30
 
 
 def test_experiment_group_cards_use_number_boxes_instead_of_sliders() -> None:

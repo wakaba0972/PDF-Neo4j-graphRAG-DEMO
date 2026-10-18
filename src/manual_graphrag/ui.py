@@ -6888,35 +6888,33 @@ def build_app() -> gr.Blocks:
                     experiment_group_rows: list[list[Any]] = []
                     with gr.Column(elem_classes="experiment-group-table"):
                         for row_index in range(EXPERIMENT_GROUP_LIMIT):
-                            # Groups render as one table: only the first row shows column labels.
-                            header = row_index == 0
                             with gr.Row(elem_classes="experiment-group-row"):
-                                group_name = gr.Textbox(label="實驗組名稱", show_label=header, min_width=110, placeholder=f"實驗組 {row_index + 1}", visible=False, scale=2)
+                                group_name = gr.Textbox(label="實驗組名稱", show_label=True, min_width=110, placeholder=f"實驗組 {row_index + 1}", visible=False, scale=2)
                                 group_model = gr.Dropdown(
                                     choices=llm_choices, value=None, allow_custom_value=False,
-                                    label="回答模型", show_label=header, min_width=110, visible=False, scale=2,
+                                    label="回答模型", show_label=True, min_width=110, visible=False, scale=2,
                                 )
                                 group_answer_effort = gr.Dropdown(
                                     choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                                    value=DEFAULT_REASONING_EFFORT, label="回答推理強度", show_label=header, min_width=110,
+                                    value=DEFAULT_REASONING_EFFORT, label="回答推理強度", show_label=True, min_width=110,
                                     visible=False, scale=1,
                                 )
                                 group_retrieval = gr.Dropdown(
                                     choices=strategy_choices(), value="混合檢索",
-                                    label="檢索策略", show_label=header, min_width=110, visible=False, scale=2,
+                                    label="檢索策略", show_label=True, min_width=110, visible=False, scale=2,
                                 )
-                                group_top_k = gr.Number(value=8, minimum=1, maximum=50, precision=0, label="Top K", show_label=header, min_width=110, visible=False, scale=1)
+                                group_top_k = gr.Number(value=8, minimum=1, maximum=50, precision=0, label="Top K", show_label=True, min_width=110, visible=False, scale=1)
                                 group_reranker = gr.Dropdown(
-                                    choices=list(RERANKER_MODES), value="停用", label="Reranker", show_label=header, min_width=110,
+                                    choices=list(RERANKER_MODES), value="停用", label="Reranker", show_label=True, min_width=110,
                                     visible=False, scale=2,
                                 )
                                 group_expansion = gr.Dropdown(
                                     choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
-                                    label="證據擴展", show_label=header, min_width=110, visible=False, scale=2,
+                                    label="證據擴展", show_label=True, min_width=110, visible=False, scale=2,
                                 )
                                 group_strategy_params = gr.State({})
                                 group_strategy_parameter_controls = _create_experiment_strategy_parameter_controls(
-                                    numeric_inputs=True, show_label=header,
+                                    numeric_inputs=True, show_label=True,
                                 )
                                 delete_group_button = gr.Button(
                                     "移除", size="sm", visible=False, scale=0, min_width=72,
