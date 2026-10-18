@@ -2513,6 +2513,16 @@ def _postprocessing_control_updates(
     )
 
 
+def _experiment_group_postprocessing_control_updates(
+    strategy: str | None, reranker: str | None, expansion: str | None,
+    group_name: str | None,
+) -> tuple[Any, Any]:
+    """Do not let a strategy-change event reveal controls in a deleted row."""
+    return _postprocessing_control_updates(
+        strategy, reranker, expansion, row_visible=bool(str(group_name or "").strip()),
+    )
+
+
 def _groups_from_inline_values(values: tuple[Any, ...]) -> list[dict[str, Any]]:
     groups = []
     seen_empty_name = False
@@ -8381,13 +8391,18 @@ def build_app() -> gr.Blocks:
         for strategy_control, reranker_control, expansion_control in [
             (retrieval_mode, use_reranker, expand_evidence),
             (evaluation_retrieval_mode, evaluation_use_reranker, evaluation_expand_evidence),
-            *[(row[3], row[5], row[6]) for row in experiment_group_rows],
-            *[(row[3], row[5], row[6]) for row in experiment_project_group_rows],
         ]:
             strategy_control.change(
                 _postprocessing_control_updates,
                 inputs=[strategy_control, reranker_control, expansion_control],
                 outputs=[reranker_control, expansion_control],
+                show_progress="hidden",
+            )
+        for row in [*experiment_group_rows, *experiment_project_group_rows]:
+            row[3].change(
+                _experiment_group_postprocessing_control_updates,
+                inputs=[row[3], row[5], row[6], row[0]],
+                outputs=[row[5], row[6]],
                 show_progress="hidden",
             )
 

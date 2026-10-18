@@ -3100,6 +3100,44 @@ def test_removing_last_group_hides_postprocessors_for_project(
     assert removed[second_row + 6]["visible"] is False
 
 
+def test_deleted_experiment_group_strategy_event_cannot_reveal_postprocessors():
+    hidden = ui._experiment_group_postprocessing_control_updates(
+        "混合檢索", "停用", "停用", "",
+    )
+    visible = ui._experiment_group_postprocessing_control_updates(
+        "混合檢索", "停用", "停用", "實驗組 1",
+    )
+
+    assert hidden[0]["visible"] is False
+    assert hidden[1]["visible"] is False
+    assert visible[0]["visible"] is True
+    assert visible[1]["visible"] is True
+
+
+def test_removing_last_experiment_project_group_hides_postprocessors(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_experiment_project("partitioned-experiment-project")
+    llm_state = settings.load_service_settings("llm")
+    project["groups"] = [{
+        "name": "實驗組 1", "answer_model": "gpt-4o-mini",
+        "retrieval_config": _retrieval_config(),
+    }]
+    values = ui._inline_group_values(project["groups"])
+
+    removed = ui.remove_experiment_project_inline_group_for_ui(
+        0, project, llm_state, *values,
+    )
+
+    assert removed[-2]["groups"] == []
+    assert removed[5]["visible"] is False
+    assert removed[6]["visible"] is False
+    second_row = ui.EXPERIMENT_GROUP_COMPONENTS
+    assert removed[second_row + 5]["visible"] is False
+    assert removed[second_row + 6]["visible"] is False
+
+
 def test_remove_inline_group_accepts_integral_value_for_float_strategy_parameter(
     tmp_path, monkeypatch,
 ) -> None:
