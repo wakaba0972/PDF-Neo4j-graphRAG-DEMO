@@ -61,7 +61,7 @@ from .neo4j_service import (
     search_graph_evidence,
     vector_index_name,
 )
-from .pdf_service import extract_pdf
+from .pdf_service import extract_pdf, extract_text_file
 from .project_store import (
     append_question,
     create_project,
@@ -775,7 +775,7 @@ def close_new_project_row_for_ui(status: str = "✅") -> tuple[dict[str, Any], d
 
 
 def reset_new_project_pdf_status_for_ui() -> str:
-    return "尚未解析 PDF。可重複上傳多份 PDF，逐一加入同一個專案。"
+    return "尚未解析文件。可重複上傳多份 PDF 或 TXT，逐一加入同一個專案。"
 
 
 def _chunk_dicts(chunks: list[TextChunk]) -> list[dict[str, Any]]:
@@ -823,7 +823,8 @@ def _document_rows(documents: list[dict[str, Any]]) -> list[list[object]]:
         [
             False,
             doc.get("file_name", ""),
-            f"{doc.get('page_start', '')}–{doc.get('page_end', '')}",
+            ("TXT（合成來源頁 1）" if doc.get("source_format") == "txt"
+             else f"{doc.get('page_start', '')}–{doc.get('page_end', '')}"),
             doc.get("chunk_count", 0),
         ]
         for doc in documents
@@ -842,8 +843,10 @@ def _chunk_rows(chunks: list[TextChunk]) -> list[list[object]]:
 
 def _document_status(index: int, total: int, doc: dict[str, Any], chunk_count: int) -> str:
     if not total:
-        return "尚未解析任何 PDF。"
+        return "尚未解析任何文件。"
     name = doc.get("file_name", "")
+    if doc.get("source_format") == "txt":
+        return f"文件 {index + 1} / {total}：{name}（TXT 全文視為單一來源頁）共 {chunk_count} 個 chunk。"
     page_range = f"{doc.get('page_start', '')}–{doc.get('page_end', '')}"
     return f"文件 {index + 1} / {total}：{name}（第 {page_range} 頁），共 {chunk_count} 個 chunk。"
 
@@ -1255,7 +1258,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
     ] if active_preview else []
     document_status = (
         _document_status(len(documents) - 1, len(documents), active_preview, len(active_chunks))
-        if documents else "請先解析 PDF。"
+        if documents else "請先解析文件。"
     )
     if graph.get("document") or graph.get("graph_data_file"):
         graph_status = (
@@ -3361,7 +3364,7 @@ def generate_evaluation_for_ui(
             chunks_by_document.setdefault(chunk.document, []).append(chunk)
         document_chunks = list(chunks_by_document.values())
         if not document_chunks:
-            raise ValueError("請先解析 PDF 並產生 chunks")
+            raise ValueError("請先解析文件並產生 chunks")
         existing_evaluation = dict(load_project(project_id).get("evaluation") or {})
         accepted_questions: list[dict[str, Any]] = []
         accepted_lock = Lock()
@@ -5507,21 +5510,29 @@ def _add_single_document(
     if any(doc.get("file_name") == file_name for doc in documents):
         return f"❌「{file_name}」：專案中已有同名文件，請先移除或重新命名後再上傳。", None, []
     try:
-        document_id = hashlib.sha256(Path(file_path).read_bytes()).hexdigest()
-        pages, empty_pages = extract_pdf(file_path)
+        source_path = Path(file_path)
+        document_id = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        source_format = source_path.suffix.lower().lstrip(".")
+        if source_format == "pdf":
+            pages, empty_pages = extract_pdf(file_path)
+        elif source_format == "txt":
+            pages, empty_pages = extract_text_file(file_path)
+        else:
+            raise ValueError("僅支援 PDF 或 UTF-8 TXT 檔案")
         next_number = max((chunk.number for chunk in chunks), default=0) + 1
         new_chunks = chunk_pages(
             pages, parsed_chunk_size, parsed_chunk_overlap,
             document=file_name, document_id=document_id, start_number=next_number,
         )
         if not new_chunks:
-            raise ValueError("PDF 沒有可解析文字；掃描文件需在後續版本加入 OCR。")
+            raise ValueError("文件沒有可解析文字。")
     except (ValueError, TypeError) as exc:
         return f"❌「{file_name}」：{exc}", None, []
     parsed_start, parsed_end = pages[0].page, pages[-1].page
     doc_state = {
         "file_path": file_path,
         "file_name": file_name,
+        "source_format": source_format,
         "document_id": document_id,
         "page_count": len(pages),
         "page_start": parsed_start,
@@ -5530,7 +5541,11 @@ def _add_single_document(
         "chunk_count": len(new_chunks),
         "config": {"chunk_size": parsed_chunk_size, "chunk_overlap": parsed_chunk_overlap},
     }
-    note = f"✅「{file_name}」第 {parsed_start}–{parsed_end} 頁，產生 {len(new_chunks)} 個 chunk。"
+    note = (
+        f"✅「{file_name}」TXT 全文作為單一來源頁，產生 {len(new_chunks)} 個 chunk。"
+        if source_format == "txt" else
+        f"✅「{file_name}」第 {parsed_start}–{parsed_end} 頁，產生 {len(new_chunks)} 個 chunk。"
+    )
     if empty_pages:
         note += f" 無文字頁面：{', '.join(map(str, empty_pages))}。"
     return note, doc_state, new_chunks
@@ -5551,8 +5566,8 @@ def add_document_for_ui(
     chunks = list(chunks or [])
     if not file_paths:
         return (
-            "請先上傳 PDF。", [], documents, chunks, {}, [],
-            "尚未解析任何 PDF。", _document_rows(documents), gr.update(),
+            "請先上傳 PDF 或 TXT。", [], documents, chunks, {}, [],
+            "尚未解析任何文件。", _document_rows(documents), gr.update(),
             _document_choices(documents),
         )
     try:
@@ -5565,7 +5580,7 @@ def add_document_for_ui(
     except (ValueError, TypeError) as exc:
         return (
             f"❌ {exc}", [], documents, chunks, {}, [],
-            "無法解析頁面。", _document_rows(documents), gr.update(),
+            "無法解析文件。", _document_rows(documents), gr.update(),
             _document_choices(documents),
         )
 
@@ -5591,7 +5606,7 @@ def add_document_for_ui(
     if not last_doc_state:
         return (
             status, [], documents, chunks, {}, [],
-            "無法解析頁面。", _document_rows(documents), gr.update(),
+            "無法解析文件。", _document_rows(documents), gr.update(),
             _document_choices(documents),
         )
     return (
@@ -5634,8 +5649,8 @@ def remove_document_for_ui(
         names = [str(name) for name in values if isinstance(name, str) and name]
     if not names:
         return (
-            "請先選擇要移除的 PDF。", documents, chunks, {}, [],
-            "請先解析 PDF。", _document_rows(documents),
+            "請先選擇要移除的文件。", documents, chunks, {}, [],
+            "請先解析文件。", _document_rows(documents),
             _document_choices(documents), [],
         )
     if project_id:
@@ -5645,7 +5660,7 @@ def remove_document_for_ui(
             except (OSError, ValueError) as exc:
                 return (
                     f"❌ {exc}", documents, chunks, {}, [],
-                    "請先解析 PDF。", _document_rows(documents),
+                    "請先解析文件。", _document_rows(documents),
                     _document_choices(documents), [],
                 )
     name_set = set(names)
@@ -5661,7 +5676,7 @@ def remove_document_for_ui(
     )
     document_status = (
         _document_status(len(documents) - 1, len(documents), active_preview, len(active_chunks))
-        if documents else "請先解析 PDF。"
+        if documents else "請先解析文件。"
     )
     return (
         status,
@@ -5684,7 +5699,7 @@ def switch_document(
 ) -> tuple[dict[str, Any], list[TextChunk], list[list[object]], str]:
     documents = documents or []
     if not documents:
-        return {}, [], [], "尚未解析任何 PDF。"
+        return {}, [], [], "尚未解析任何文件。"
     names = [doc.get("file_name", "") for doc in documents]
     current_name = (active or {}).get("file_name", "")
     current_index = names.index(current_name) if current_name in names else len(documents) - 1
@@ -6444,17 +6459,18 @@ def build_app() -> gr.Blocks:
                     gr.Markdown("Neo4j 連線設定隨專案保存，欄位修改後會自動儲存。模型與 Embedding API 請至「0 系統設定」管理。")
                     env_status = gr.Markdown()
 
-            with gr.Tab("1-1 PDF 與參數", interactive=False) as pdf_tab:
+            with gr.Tab("1-1 文件與參數", interactive=False) as pdf_tab:
                 with gr.Row():
                     with gr.Column(scale=1):
                         pdf_file = gr.File(
-                            label="PDF 使用手冊（可一次選取多個檔案）",
-                            file_types=[".pdf"], file_count="multiple", type="filepath",
+                            label="文件（PDF 或 UTF-8 TXT，可一次選取多個檔案）",
+                            file_types=[".pdf", ".txt"], file_count="multiple", type="filepath",
                         )
                         chunk_size = gr.Slider(100, 10000, value=1500, step=100, label="Chunk size（字元）")
                         chunk_overlap = gr.Slider(0, 2000, value=200, step=50, label="Chunk overlap（字元）")
+                        gr.Markdown("TXT 會以整份文件作為單一合成來源頁供 chunk 追蹤；此題庫只評答案正確率，不使用頁碼證據指標。")
                         preview_button = gr.Button("解析並加入專案", variant="primary")
-                        gr.Markdown("##### 已加入本專案的 PDF")
+                        gr.Markdown("##### 已加入本專案的文件")
                         documents_table = gr.Dataframe(
                             headers=["選取", "文件", "頁碼範圍", "Chunk 數"],
                             datatype=["bool", "str", "str", "number"],
@@ -6463,16 +6479,16 @@ def build_app() -> gr.Blocks:
                             wrap=True,
                         )
                         remove_document_selector = gr.Dropdown(
-                            label="選擇要移除的 PDF（可多選）", choices=[],
+                            label="選擇要移除的文件（可多選）", choices=[],
                             multiselect=True, interactive=True, visible=False,
                         )
                         remove_document_button = gr.Button("移除選定的 PDF", variant="stop")
                     with gr.Column(scale=3):
-                        preview_status = gr.Markdown("尚未解析 PDF。可重複上傳多份 PDF，逐一加入同一個專案。")
+                        preview_status = gr.Markdown("尚未解析文件。可重複上傳多份 PDF 或 TXT，逐一加入同一個專案。")
                         with gr.Row():
                             previous_button = gr.Button("上一份文件", scale=1)
                             next_button = gr.Button("下一份文件", scale=1)
-                        page_status = gr.Markdown("請先解析 PDF。")
+                        page_status = gr.Markdown("請先解析文件。")
                         chunk_table = gr.Dataframe(
                             headers=["編號", "文件", "頁碼", "字元數", "內容"],
                             datatype=["number", "str", "str", "number", "str"],

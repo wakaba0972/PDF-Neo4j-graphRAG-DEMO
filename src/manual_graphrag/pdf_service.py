@@ -91,3 +91,17 @@ def extract_pdf(
             raise ValueError("PDF 無法解析，請確認檔案內容有效") from exc
 
     return pages, empty_pages
+
+
+def extract_text_file(path: str | Path) -> tuple[list[PageText], list[int]]:
+    """Read a UTF-8 text document as one synthetic page for shared chunking."""
+    text_path = Path(path)
+    if text_path.suffix.lower() != ".txt":
+        raise ValueError("僅支援 TXT 檔案")
+    try:
+        text = text_path.read_text(encoding="utf-8-sig").strip()
+    except UnicodeDecodeError as exc:
+        raise ValueError("TXT 必須使用 UTF-8 編碼") from exc
+    except OSError as exc:
+        raise ValueError(f"TXT 無法讀取：{exc}") from exc
+    return [PageText(1, text)], ([1] if not text else [])

@@ -499,9 +499,10 @@ def test_pdf_upload_starts_with_valid_multi_document_controls() -> None:
         for component in app.config["components"]
     }
 
-    upload = fields["PDF 使用手冊（可一次選取多個檔案）"]["props"]
+    upload = fields["文件（PDF 或 UTF-8 TXT，可一次選取多個檔案）"]["props"]
     assert upload["file_count"] == "multiple"
-    assert fields["選擇要移除的 PDF（可多選）"]["props"]["choices"] == []
+    assert upload["file_types"] == [".pdf", ".txt"]
+    assert fields["選擇要移除的文件（可多選）"]["props"]["choices"] == []
     assert any(
         component.get("props", {}).get("headers")
         == ["選取", "文件", "頁碼範圍", "Chunk 數"]
@@ -579,7 +580,7 @@ def test_evaluation_results_table_uses_smaller_font_class() -> None:
 def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate(monkeypatch) -> None:
     app = build_app()
     protected_labels = {
-        "1-1 PDF 與參數", "1-2 建圖",
+        "1-1 文件與參數", "1-2 建圖",
         "1-3 問答測試", "1-4 從 PDF 生題",
         "1-5 單一專案實驗",
     }
@@ -629,7 +630,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
         component.get("props", {}).get("label") for component in app.config["components"]
     }
     assert {
-        "1-0 專案設定", "1-1 PDF 與參數", "1-2 建圖",
+        "1-0 專案設定", "1-1 文件與參數", "1-2 建圖",
         "1-3 問答測試", "1-4 從 PDF 生題", "1-5 單一專案實驗",
         "2-0 跨專案實驗",
     } <= page_labels
@@ -872,7 +873,7 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     assert "0-4 API Key 設定" not in labels
     assert "1-7 單一專案實驗" not in labels
     assert "1-1 連線設定" not in labels
-    assert labels.index("1-0 專案設定") < labels.index("Neo4j 連線設定") < labels.index("1-1 PDF 與參數")
+    assert labels.index("1-0 專案設定") < labels.index("Neo4j 連線設定") < labels.index("1-1 文件與參數")
     assert labels.index("1-3 問答測試") < labels.index("1-4 從 PDF 生題")
     assert "1-6 匯入問題集" not in labels
     assert labels.index("1-4 從 PDF 生題") < labels.index("1-5 單一專案實驗")
@@ -3532,7 +3533,7 @@ def test_switch_document_wraps_around_and_handles_empty_list() -> None:
     assert doc == {}
     assert doc_chunks == []
     assert rows == []
-    assert status == "尚未解析任何 PDF。"
+    assert status == "尚未解析任何文件。"
 
 
 def test_add_document_for_ui_initializes_active_document(tmp_path, monkeypatch) -> None:
@@ -3572,6 +3573,25 @@ def test_add_document_for_ui_initializes_active_document(tmp_path, monkeypatch) 
     assert document_status == "文件 1 / 1：manual.pdf（第 2–3 頁），共 2 個 chunk。"
     assert documents_rows == [[False, "manual.pdf", "2–3", 2]]
     assert remove_choices["choices"] == ["manual.pdf"]
+
+
+def test_add_document_for_ui_accepts_txt_as_one_synthetic_page(tmp_path, monkeypatch) -> None:
+    text_path = tmp_path / "article.txt"
+    text_path.write_text("A sufficiently long source text for chunking.", encoding="utf-8")
+    monkeypatch.setattr(
+        ui, "extract_text_file",
+        lambda path: ([PageText(1, "A sufficiently long source text for chunking.")], []),
+    )
+
+    result = ui.add_document_for_ui(str(text_path), 100, 0, [], [])
+    status, _rows, documents, chunks, _active, _active_chunks, document_status, rows, *_ = result
+
+    assert status.startswith("✅「article.txt」TXT 全文作為單一來源頁")
+    assert documents[0]["source_format"] == "txt"
+    assert documents[0]["page_count"] == 1
+    assert chunks and all(chunk.pages == (1,) for chunk in chunks)
+    assert "TXT 全文視為單一來源頁" in document_status
+    assert rows[0][2] == "TXT（合成來源頁 1）"
 
 
 def test_add_document_for_ui_rejects_duplicate_document_name(monkeypatch) -> None:
@@ -3621,8 +3641,30 @@ def test_document_table_dataframe_selection_removes_checked_pdf(monkeypatch) -> 
 
 def test_new_project_resets_pdf_status_message() -> None:
     assert ui.reset_new_project_pdf_status_for_ui() == (
-        "尚未解析 PDF。可重複上傳多份 PDF，逐一加入同一個專案。"
+        "尚未解析文件。可重複上傳多份 PDF 或 TXT，逐一加入同一個專案。"
     )
+
+
+def test_question_import_accepts_accuracy_only_json_without_source_pages(tmp_path) -> None:
+    question_file = tmp_path / "accuracy.json"
+    question_file.write_text(json.dumps({
+        "schema_version": 1,
+        "questions": [{
+            "number": 1,
+            "question": "Which two passages connect the facts?",
+            "expected_answer": "The answer",
+            "question_sources": [],
+            "answer_sources": [],
+            "hops": 3,
+        }],
+    }), encoding="utf-8")
+
+    questions = ui._questions_from_file(str(question_file))
+
+    assert len(questions) == 1
+    assert questions[0]["expected_answer"] == "The answer"
+    assert questions[0]["answer_sources"] == []
+    assert questions[0]["answer_source_pages"] == []
 
 def test_remove_document_for_ui_prunes_documents_and_chunks_without_project(monkeypatch) -> None:
     monkeypatch.setattr(
