@@ -101,10 +101,11 @@ def test_builtin_strategy_registry_loads_implementations_from_yaml() -> None:
     assert not any("multi_agent" in item for item in RETRIEVAL_STRATEGIES.ids())
     assert set(strategy_choices()) == {
         "基本向量檢索", "混合檢索", "Agentic Search", "Agentic Search 3",
+        "Agentic Search 4",
     }
 
 
-@pytest.mark.parametrize("strategy_id", ["agentic", "agentic_search_3"])
+@pytest.mark.parametrize("strategy_id", ["agentic", "agentic_search_3", "agentic_search_4"])
 @pytest.mark.parametrize("component", ["reranker", "expansion"])
 def test_non_vector_strategies_reject_reranker_and_evidence_expansion(
     strategy_id: str, component: str,
