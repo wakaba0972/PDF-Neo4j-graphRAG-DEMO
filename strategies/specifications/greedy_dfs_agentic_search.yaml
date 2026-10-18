@@ -1,0 +1,63 @@
+id: greedy_dfs_agentic_search
+name: Greedy DFS Agentic Search
+order: 70
+implementation:
+  file: greedy_dfs_agentic_search/strategy.py
+  class: GreedyDfsAgenticSearchRetrievalStrategy
+parameters:
+  seed_top_k:
+    type: integer
+    label: 向量起始證據數
+    default: 8
+    minimum: 1
+    maximum: 30
+    control: slider
+  candidate_pool_ratio:
+    type: integer
+    label: 候選池倍數（相對 Top K）
+    default: 4
+    minimum: 2
+    maximum: 8
+    control: slider
+  max_depth:
+    type: integer
+    label: DFS 最大深度
+    default: 5
+    minimum: 1
+    maximum: 12
+    control: slider
+  branch_width:
+    type: integer
+    label: 每個分岔保留候選數
+    default: 3
+    minimum: 1
+    maximum: 8
+    control: slider
+  max_expansions:
+    type: integer
+    label: 最大圖譜擴展次數
+    default: 20
+    minimum: 1
+    maximum: 60
+    control: slider
+  result_limit:
+    type: integer
+    label: 每次一跳查詢最多回傳證據數
+    default: 8
+    minimum: 1
+    maximum: 30
+    control: slider
+  max_runtime_seconds:
+    type: number
+    label: 搜尋總時間上限（秒）
+    default: 60.0
+    minimum: 5
+    maximum: 180
+    control: slider
+  effective_search_ratio:
+    type: integer
+    label: 起始有效搜尋比例
+    default: 3
+    minimum: 1
+    maximum: 10
+    control: slider
