@@ -14,7 +14,7 @@ from manual_graphrag.graph_service import (
     _post_json,
 )
 from manual_graphrag.retrieval import RetrievalConfig, RetrievalContext
-from strategies.implementations.agentic_search_4 import strategy as search4
+from strategies.implementations.agentic_search_2 import strategy as search2
 
 
 _DECISION_TOOL = {
@@ -94,9 +94,9 @@ class GreedyDfsAgenticSearchRetrievalStrategy:
         responses_api = model.casefold() == GPT_6_LUNA_MODEL
         content = json.dumps({
             "question": context.question,
-            "current_path": [search4.AgenticSearch4RetrievalStrategy._candidate_payload(item)
+            "current_path": [search2.AgenticSearch2RetrievalStrategy._candidate_payload(item)
                              for item in path],
-            "adjacent_candidates": [search4.AgenticSearch4RetrievalStrategy._candidate_payload(item)
+            "adjacent_candidates": [search2.AgenticSearch2RetrievalStrategy._candidate_payload(item)
                                     for item in candidates],
         }, ensure_ascii=False)
         if responses_api:
@@ -217,7 +217,7 @@ class GreedyDfsAgenticSearchRetrievalStrategy:
                 except Exception:
                     pass
                 continue
-            rows = search4.AgenticSearch4RetrievalStrategy._follow_one_hop(
+            rows = search2.AgenticSearch2RetrievalStrategy._follow_one_hop(
                 context, [evidence_id], min(result_limit, pool_limit - len(ordered_pool)),
             )
             expansions += 1
@@ -261,7 +261,7 @@ class GreedyDfsAgenticSearchRetrievalStrategy:
             return []
         try:
             selected_ids = (
-                search4.AgenticSearch4RetrievalStrategy._selection_arguments(
+                search2.AgenticSearch2RetrievalStrategy._selection_arguments(
                     context, ordered_pool, top_k,
                 ) if time.monotonic() < deadline else []
             )

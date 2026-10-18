@@ -70,7 +70,7 @@ def test_greedy_dfs_2_keeps_candidates_path_local_and_drops_pruned_sibling(monke
         return [{"evidence": _evidence(item), "score": 0.0} for item in adjacent]
 
     monkeypatch.setattr(
-        greedy_dfs_2.search4.AgenticSearch4RetrievalStrategy,
+        greedy_dfs_2.search2.AgenticSearch2RetrievalStrategy,
         "_follow_one_hop", staticmethod(follow),
     )
     decisions = iter([
@@ -99,7 +99,7 @@ def test_greedy_dfs_2_keeps_candidates_path_local_and_drops_pruned_sibling(monke
     monkeypatch.setattr(greedy_dfs_2.GreedyDfsAgenticSearch2RetrievalStrategy,
                         "_decide", staticmethod(decide))
     monkeypatch.setattr(
-        greedy_dfs_2.search4.AgenticSearch4RetrievalStrategy,
+        greedy_dfs_2.search2.AgenticSearch2RetrievalStrategy,
         "_selection_arguments", staticmethod(select),
     )
 
@@ -125,7 +125,7 @@ def test_greedy_dfs_2_does_not_leak_abandoned_path_when_answer_is_not_found(monk
         return [{"evidence": _evidence(item), "score": 0.0} for item in adjacent]
 
     monkeypatch.setattr(
-        greedy_dfs_2.search4.AgenticSearch4RetrievalStrategy,
+        greedy_dfs_2.search2.AgenticSearch2RetrievalStrategy,
         "_follow_one_hop", staticmethod(follow),
     )
     decisions = iter([
@@ -142,7 +142,7 @@ def test_greedy_dfs_2_does_not_leak_abandoned_path_when_answer_is_not_found(monk
         "_decide", staticmethod(lambda *_args: next(decisions)),
     )
     monkeypatch.setattr(
-        greedy_dfs_2.search4.AgenticSearch4RetrievalStrategy,
+        greedy_dfs_2.search2.AgenticSearch2RetrievalStrategy,
         "_selection_arguments",
         staticmethod(lambda _ctx, pool, _k: final_pool.extend(
             item["evidence_id"] for item in pool

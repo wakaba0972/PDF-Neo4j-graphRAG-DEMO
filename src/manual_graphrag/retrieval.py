@@ -320,7 +320,28 @@ class RetrievalConfig:
             "strategy_id", "top_k", "params", "reranker", "expansion",
         }:
             raise ValueError("專案未使用新的 retrieval_config 格式；請在新專案中重新設定檢索參數")
+        strategy_id = value["strategy_id"]
         params = dict(value["params"]) if isinstance(value["params"], dict) else value["params"]
+        # Keep saved projects created before the Agentic Search renumbering
+        # loadable, while ensuring they are rewritten with the current IDs.
+        legacy_strategy_ids = {
+            "agentic": "agentic_search_1",
+            "agentic_search_3": "agentic_search_1",
+            "agentic_search_4": "agentic_search_2",
+        }
+        migrated_strategy_id = legacy_strategy_ids.get(strategy_id)
+        if migrated_strategy_id:
+            strategy_id = migrated_strategy_id
+            if isinstance(params, dict):
+                migrated_spec = RETRIEVAL_STRATEGIES.get_spec(strategy_id)
+                params = {
+                    name: parameter
+                    for name, parameter in params.items()
+                    if name in migrated_spec.parameters
+                }
+                for name, parameter_spec in migrated_spec.parameters.items():
+                    if name not in params and parameter_spec.default is not None:
+                        params[name] = parameter_spec.default
         # candidate_top_k is an internal retrieval budget (not a user-facing
         # setting). Older persisted settings can contain a value below the
         # current Top K after the user raises Top K; repair that derived value
@@ -339,14 +360,14 @@ class RetrievalConfig:
             # Saved projects may still carry the removed V2 mode. Load them
             # safely with expansion disabled rather than breaking the project.
             expansion = {"id": "disabled", "params": {}}
-        strategy_spec = RETRIEVAL_STRATEGIES.get_spec(value["strategy_id"])
+        strategy_spec = RETRIEVAL_STRATEGIES.get_spec(strategy_id)
         reranker = dict(value["reranker"])
         if RERANKER_POSTPROCESSOR not in strategy_spec.postprocessors:
             reranker = {"id": "disabled", "params": {}}
         if EXPANSION_POSTPROCESSOR not in strategy_spec.postprocessors:
             expansion = {"id": "disabled", "params": {}}
         config = cls(
-            strategy_id=value["strategy_id"],
+            strategy_id=strategy_id,
             top_k=value["top_k"],
             params=params,
             reranker=reranker,

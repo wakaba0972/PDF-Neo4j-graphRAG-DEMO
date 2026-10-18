@@ -16,7 +16,7 @@ from manual_graphrag.graph_service import (
     _post_json,
 )
 from manual_graphrag.retrieval import RetrievalConfig, RetrievalContext
-from strategies.implementations.agentic_search_3 import strategy as search3
+from strategies.implementations.agentic_search_1 import strategy as search1
 
 
 _FINAL_SELECTION_TOOL = {
@@ -53,15 +53,15 @@ def _format_record(record: Any) -> RetrieverResultItem:
     evidence.update({
         "score": score,
         "fusion_score": score,
-        "matched_by": ["agentic-search-4-seed"],
+        "matched_by": ["agentic-search-2-seed"],
     })
     return RetrieverResultItem(content=evidence, metadata={"score": score})
 
 
-class AgenticSearch4RetrievalStrategy:
+class AgenticSearch2RetrievalStrategy:
     """Autonomously explore selected graph branches, then choose final evidence."""
 
-    strategy_id = "agentic_search_4"
+    strategy_id = "agentic_search_2"
     result_formatter = staticmethod(_format_record)
 
     @staticmethod
@@ -77,7 +77,7 @@ class AgenticSearch4RetrievalStrategy:
 
     @staticmethod
     def _tool_definitions() -> list[dict[str, Any]]:
-        tools = deepcopy(search3._tool_definitions())
+        tools = deepcopy(search1._tool_definitions())
         for tool in tools:
             function = tool.get("function", {})
             if function.get("name") == "follow_graph_connections":
@@ -91,7 +91,7 @@ class AgenticSearch4RetrievalStrategy:
     @staticmethod
     def _responses_tool_definitions() -> list[dict[str, Any]]:
         tools = []
-        for item in AgenticSearch4RetrievalStrategy._tool_definitions():
+        for item in AgenticSearch2RetrievalStrategy._tool_definitions():
             function = item["function"]
             tools.append({
                 "type": "function",
@@ -107,13 +107,13 @@ class AgenticSearch4RetrievalStrategy:
         payload: dict[str, Any] = {
             "model": context.model.strip(),
             "messages": messages,
-            "tools": AgenticSearch4RetrievalStrategy._tool_definitions(),
+            "tools": AgenticSearch2RetrievalStrategy._tool_definitions(),
             "tool_choice": "auto",
         }
         if context.model.strip().casefold() == GPT_6_LUNA_MODEL:
             effort = context.reasoning_effort or "low"
             if effort not in GPT_6_LUNA_REASONING_EFFORTS:
-                raise ValueError("Agentic Search 4 has an invalid GPT-6 Luna reasoning effort")
+                raise ValueError("Agentic Search 2 has an invalid GPT-6 Luna reasoning effort")
             payload["reasoning_effort"] = effort
             if effort == "none":
                 payload["temperature"] = 0
@@ -126,10 +126,10 @@ class AgenticSearch4RetrievalStrategy:
         )
         choices = response.get("choices") if isinstance(response, dict) else None
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise ValueError("Agentic Search 4 received an invalid model response")
+            raise ValueError("Agentic Search 2 received an invalid model response")
         message = choices[0].get("message")
         if not isinstance(message, dict):
-            raise ValueError("Agentic Search 4 response has no message")
+            raise ValueError("Agentic Search 2 response has no message")
         return message
 
     @staticmethod
@@ -138,7 +138,7 @@ class AgenticSearch4RetrievalStrategy:
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         effort = context.reasoning_effort or "low"
         if effort not in GPT_6_LUNA_REASONING_EFFORTS:
-            raise ValueError("Agentic Search 4 has an invalid GPT-6 Luna reasoning effort")
+            raise ValueError("Agentic Search 2 has an invalid GPT-6 Luna reasoning effort")
         response = _post_json(
             _api_url(context.model_base_url, "responses"),
             {
@@ -154,7 +154,7 @@ class AgenticSearch4RetrievalStrategy:
                     "Do not reveal hidden reasoning."
                 ),
                 "input": input_items,
-                "tools": AgenticSearch4RetrievalStrategy._responses_tool_definitions(),
+                "tools": AgenticSearch2RetrievalStrategy._responses_tool_definitions(),
                 "tool_choice": "auto",
                 "reasoning": {"effort": effort},
                 "store": False,
@@ -163,7 +163,7 @@ class AgenticSearch4RetrievalStrategy:
         )
         output = response.get("output") if isinstance(response, dict) else None
         if not isinstance(output, list):
-            raise ValueError("Agentic Search 4 Responses API response has no output list")
+            raise ValueError("Agentic Search 2 Responses API response has no output list")
         calls = []
         for item in output:
             if not isinstance(item, dict) or item.get("type") != "function_call":
@@ -184,7 +184,7 @@ class AgenticSearch4RetrievalStrategy:
     ) -> list[dict[str, Any]]:
         if not evidence_ids:
             return []
-        return AgenticSearch4RetrievalStrategy._read(
+        return AgenticSearch2RetrievalStrategy._read(
             context,
             f"""
             MATCH (seed:GraphEvidence)
@@ -195,7 +195,7 @@ class AgenticSearch4RetrievalStrategy:
             MATCH (evidence:GraphEvidence)-
                 [:MENTIONS_ENTITY|REPRESENTS|EVIDENCE_SOURCE|EVIDENCE_TARGET]-(neighbor)
             WHERE evidence.evidence_id <> seed.evidence_id
-            RETURN DISTINCT evidence {search3._EVIDENCE_PROJECTION} AS evidence,
+            RETURN DISTINCT evidence {search1._EVIDENCE_PROJECTION} AS evidence,
                    0.0 AS score
             LIMIT $limit
             """,
@@ -209,7 +209,7 @@ class AgenticSearch4RetrievalStrategy:
         known_ids: set[str], result_limit: int,
     ) -> list[dict[str, Any]]:
         if name != "follow_graph_connections":
-            return search3.AgenticSearch3RetrievalStrategy._tool_result(
+            return search1.AgenticSearch1RetrievalStrategy._tool_result(
                 name, arguments, context, known_ids, result_limit,
             )
         limit_value = arguments.get("limit", result_limit)
@@ -221,7 +221,7 @@ class AgenticSearch4RetrievalStrategy:
             or not all(isinstance(value, str) and value in known_ids for value in ids)
         ):
             raise ValueError("evidence_ids must contain only evidence IDs observed in this search")
-        return AgenticSearch4RetrievalStrategy._follow_one_hop(
+        return AgenticSearch2RetrievalStrategy._follow_one_hop(
             context, ids, min(max(limit_value, 1), result_limit),
         )
 
@@ -247,7 +247,7 @@ class AgenticSearch4RetrievalStrategy:
             "question": context.question,
             "maximum_evidence_to_select": top_k,
             "candidates": [
-                AgenticSearch4RetrievalStrategy._candidate_payload(item)
+                AgenticSearch2RetrievalStrategy._candidate_payload(item)
                 for item in candidates if item.get("evidence_id")
             ],
         }, ensure_ascii=False)
@@ -255,7 +255,7 @@ class AgenticSearch4RetrievalStrategy:
         if model.casefold() == GPT_6_LUNA_MODEL:
             effort = context.reasoning_effort or "low"
             if effort not in GPT_6_LUNA_REASONING_EFFORTS:
-                raise ValueError("Agentic Search 4 has an invalid GPT-6 Luna reasoning effort")
+                raise ValueError("Agentic Search 2 has an invalid GPT-6 Luna reasoning effort")
             tool = {
                 "type": "function", "name": "select_final_evidence",
                 "description": _FINAL_SELECTION_TOOL["function"]["description"],
@@ -332,7 +332,7 @@ class AgenticSearch4RetrievalStrategy:
         result_limit = int(params.get("result_limit", 8))
         max_runtime = float(params.get("max_runtime_seconds", 60.0))
         if not context.model_base_url.strip() or not context.model_api_key.strip() or not context.model.strip():
-            raise ValueError("Agentic Search 4 requires an available OpenAI answer model")
+            raise ValueError("Agentic Search 2 requires an available OpenAI answer model")
 
         retriever = VectorCypherRetriever(
             driver=context.driver,
@@ -432,7 +432,7 @@ class AgenticSearch4RetrievalStrategy:
                             **evidence,
                             "score": score,
                             "fusion_score": score,
-                            "matched_by": [f"agentic-search-4-{name}"],
+                            "matched_by": [f"agentic-search-2-{name}"],
                             "agentic_search_tool": name,
                             "agentic_search_round": calls_used,
                         }
@@ -485,7 +485,7 @@ class AgenticSearch4RetrievalStrategy:
             fallback = False
         selected = [by_id[evidence_id] for evidence_id in selected_ids if evidence_id in by_id]
         for rank, item in enumerate(selected, start=1):
-            item["agentic_search_4_final_rank"] = rank
+            item["agentic_search_2_final_rank"] = rank
             if fallback:
-                item["matched_by"] = [*(item.get("matched_by") or []), "agentic-search-4-selection-fallback"]
+                item["matched_by"] = [*(item.get("matched_by") or []), "agentic-search-2-selection-fallback"]
         return selected

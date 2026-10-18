@@ -97,11 +97,13 @@ def test_builtin_strategy_registry_loads_implementations_from_yaml() -> None:
     assert hybrid.strategy_id == "hybrid"
     assert vector.__class__.__module__ == "strategies.implementations.vector.strategy"
     assert hybrid.__class__.__module__ == "strategies.implementations.hybrid.strategy"
-    assert "agentic_search_2" not in RETRIEVAL_STRATEGIES.ids()
+    assert "agentic" not in RETRIEVAL_STRATEGIES.ids()
+    assert "agentic_search_3" not in RETRIEVAL_STRATEGIES.ids()
+    assert "agentic_search_4" not in RETRIEVAL_STRATEGIES.ids()
     assert not any("multi_agent" in item for item in RETRIEVAL_STRATEGIES.ids())
     assert set(strategy_choices()) == {
-        "基本向量檢索", "混合檢索", "Agentic Search", "Agentic Search 3",
-        "Agentic Search 4", "Greedy DFS Agentic Search",
+        "基本向量檢索", "混合檢索", "Agentic Search 1", "Agentic Search 2",
+        "Greedy DFS Agentic Search",
         "Greedy DFS Agentic Search 2",
     }
 
@@ -109,7 +111,7 @@ def test_builtin_strategy_registry_loads_implementations_from_yaml() -> None:
 @pytest.mark.parametrize(
     "strategy_id",
     [
-        "agentic", "agentic_search_3", "agentic_search_4",
+        "agentic_search_1", "agentic_search_2",
         "greedy_dfs_agentic_search", "greedy_dfs_agentic_search_2",
     ],
 )
@@ -127,21 +129,27 @@ def test_non_vector_strategies_reject_reranker_and_evidence_expansion(
         config.validated()
 
 
-def test_legacy_non_vector_postprocessors_load_as_disabled() -> None:
+@pytest.mark.parametrize(
+    ("legacy_id", "expected_id"),
+    [("agentic", "agentic_search_1"), ("agentic_search_3", "agentic_search_1"),
+     ("agentic_search_4", "agentic_search_2")],
+)
+def test_legacy_agentic_strategy_ids_migrate_on_load(legacy_id: str, expected_id: str) -> None:
     stored = RetrievalConfig.from_ui(
         "基本向量檢索", 5, "Reranker", "證據擴展",
     ).to_dict()
-    stored["strategy_id"] = "agentic"
+    stored["strategy_id"] = legacy_id
 
     loaded = RetrievalConfig.from_dict(stored)
 
+    assert loaded.strategy_id == expected_id
     assert loaded.reranker["id"] == "disabled"
     assert loaded.expansion["id"] == "disabled"
 
 
 def test_ui_config_ignores_postprocessors_for_incompatible_strategy() -> None:
     config = RetrievalConfig.from_ui(
-        "Agentic Search", 5, "LLM Reranker", "證據擴展",
+        "Agentic Search 1", 5, "LLM Reranker", "證據擴展",
         rerank_candidates=True,
     )
 

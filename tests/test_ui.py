@@ -141,8 +141,8 @@ def test_current_project_banner_reflects_project_name() -> None:
 
 def test_retrieval_strategies_are_not_filtered_by_graph_partition_mode() -> None:
     assert ui.strategy_choices() == [
-        "基本向量檢索", "混合檢索", "Agentic Search", "Agentic Search 3",
-        "Agentic Search 4", "Greedy DFS Agentic Search",
+        "基本向量檢索", "混合檢索", "Agentic Search 1", "Agentic Search 2",
+        "Greedy DFS Agentic Search",
         "Greedy DFS Agentic Search 2",
     ]
 
@@ -152,7 +152,7 @@ def test_reranker_and_expansion_controls_are_strategy_specific() -> None:
         "基本向量檢索", "LLM Reranker", "證據擴展",
     )
     unsupported = ui._postprocessing_control_updates(
-        "Agentic Search", "LLM Reranker", "證據擴展",
+        "Agentic Search 1", "LLM Reranker", "證據擴展",
     )
 
     assert supported[0]["interactive"] is True
@@ -2539,8 +2539,8 @@ def test_strategy_parameter_controls_are_native_gradio_components() -> None:
     assert len(controls) == len(ui._visible_strategy_parameters())
     controls_by_label = {control.label: control for control in controls}
     assert isinstance(controls_by_label["有效搜尋比例"], ui.gr.Slider)
-    assert isinstance(controls_by_label["最大圖譜跳數"], ui.gr.Slider)
-    assert controls_by_label["最大圖譜跳數"].maximum == 4
+    assert isinstance(controls_by_label["向量起始證據數"], ui.gr.Slider)
+    assert controls_by_label["向量起始證據數"].maximum == 20
 
 
 def test_strategy_specific_params_are_validated_from_json() -> None:
@@ -2560,7 +2560,7 @@ def test_declared_strategy_parameters_render_as_native_gradio_controls() -> None
 
     controls_by_label = {control.label: control for control in controls}
     assert controls_by_label["有效搜尋比例"].get_config().get("value") == 3
-    assert controls_by_label["最大圖譜跳數"].get_config().get("value") == 2
+    assert controls_by_label["向量起始證據數"].get_config().get("value") == 6
 
 
 def test_native_strategy_parameter_value_is_saved_without_json_encoding() -> None:
@@ -2600,7 +2600,7 @@ def test_single_evaluation_strategy_controls_sync_active_parameters() -> None:
 
 
 def test_same_named_strategy_controls_keep_values_within_each_strategy_limits() -> None:
-    saved = _retrieval_config("Agentic Search", 8)
+    saved = _retrieval_config("Agentic Search 2", 8)
     saved["params"]["seed_top_k"] = 30
     config = ui.RetrievalConfig.from_dict(saved)
     entries = ui._strategy_parameter_entries()
@@ -2614,7 +2614,7 @@ def test_same_named_strategy_controls_keep_values_within_each_strategy_limits() 
     for index, (strategy_id, name, spec) in enumerate(entries):
         if name != "seed_top_k":
             continue
-        expected = 30 if strategy_id == "agentic" else spec.default
+        expected = 30 if strategy_id == "agentic_search_2" else spec.default
         assert experiment_updates[index]["value"] == expected
         assert single_updates[index + 1]["value"] == expected
         assert group_updates[ui.EXPERIMENT_GROUP_FIELDS + index]["value"] == expected
@@ -3144,7 +3144,7 @@ def test_remove_inline_group_accepts_integral_value_for_float_strategy_parameter
     monkeypatch.chdir(tmp_path)
     project = ui.create_project("experiment-float-parameter")
     agentic_config = ui._retrieval_config_from_controls(
-        ui.RETRIEVAL_STRATEGIES.labels["agentic_search_3"],
+            ui.RETRIEVAL_STRATEGIES.labels["agentic_search_1"],
         10, "停用", "停用", {"max_runtime_seconds": 45.0},
     )
     groups = [
@@ -3154,7 +3154,7 @@ def test_remove_inline_group_accepts_integral_value_for_float_strategy_parameter
     values = ui._inline_group_values(groups)
     parameter_index = next(
         index for index, (strategy_id, name, _) in enumerate(ui._strategy_parameter_entries())
-        if strategy_id == "agentic_search_3" and name == "max_runtime_seconds"
+        if strategy_id == "agentic_search_1" and name == "max_runtime_seconds"
     )
     values[ui.EXPERIMENT_GROUP_COMPONENTS + ui.EXPERIMENT_GROUP_FIELDS + parameter_index] = 45
 
@@ -4251,17 +4251,18 @@ def test_answer_question_for_ui_passes_model_context_to_agentic_strategy(tmp_pat
     status, answer, rows = ui.answer_question_for_ui(
         "https://api.example/v1", "secret", "https://api.example/v1", "embed-key",
         "bolt://db", "neo4j", "user", "password", "gpt-4.1-mini", "問題？",
-        "Agentic Search", 5, "停用", "停用", "low",
+        "Agentic Search 1", 5, "停用", "停用", "low",
         strategy_params={
-            "candidate_top_k": 5, "seed_top_k": 2, "max_hops": 1,
-            "max_branches": 3, "hop_decay": 0.7, "effective_search_ratio": 2,
+            "candidate_top_k": 5, "seed_top_k": 2, "max_tool_calls": 4,
+            "result_limit": 3, "max_runtime_seconds": 45.0,
+            "effective_search_ratio": 2,
         },
     )
 
     assert status.startswith("✅ Agentic Search")
     assert answer == "根據路徑原文回答。"
-    assert captured["config"].strategy_id == "agentic"
-    assert captured["config"].params["max_hops"] == 1
+    assert captured["config"].strategy_id == "agentic_search_1"
+    assert captured["config"].params["max_tool_calls"] == 4
     assert captured["model_context"] == {
         "model_base_url": "https://api.example/v1", "model_api_key": "secret",
         "model": "gpt-4.1-mini", "reasoning_effort": "low",

@@ -1,9 +1,9 @@
-id: agentic_search_4
-name: Agentic Search 4
+id: agentic_search_2
+name: Agentic Search 2
 order: 60
 implementation:
-  file: agentic_search_4/strategy.py
-  class: AgenticSearch4RetrievalStrategy
+  file: agentic_search_2/strategy.py
+  class: AgenticSearch2RetrievalStrategy
 parameters:
   seed_top_k:
     type: integer

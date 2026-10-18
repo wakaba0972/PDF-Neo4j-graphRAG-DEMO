@@ -1,9 +1,9 @@
-id: agentic_search_3
-name: Agentic Search 3
+id: agentic_search_1
+name: Agentic Search 1
 order: 50
 implementation:
-  file: agentic_search_3/strategy.py
-  class: AgenticSearch3RetrievalStrategy
+  file: agentic_search_1/strategy.py
+  class: AgenticSearch1RetrievalStrategy
 parameters:
   candidate_top_k:
     type: integer

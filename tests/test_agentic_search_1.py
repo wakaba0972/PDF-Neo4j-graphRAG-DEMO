@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from manual_graphrag.retrieval import RetrievalConfig, RETRIEVAL_STRATEGIES
-from strategies.implementations.agentic_search_3 import strategy as agentic3
+from strategies.implementations.agentic_search_1 import strategy as agentic1
 
 
 class FakeTransaction:
@@ -73,7 +73,7 @@ class EmptyVectorRetriever:
 
 def _config() -> RetrievalConfig:
     return RetrievalConfig(
-        strategy_id="agentic_search_3",
+        strategy_id="agentic_search_1",
         top_k=5,
         params={
             "candidate_top_k": 5,
@@ -90,7 +90,7 @@ def _context(driver):
     return SimpleNamespace(
         driver=driver, database="neo4j", question="問題？",
         embedding=[0.1], vector_index_name="vectors", fulltext_index_name="fulltext",
-        retrieval_query="RETURN evidence", result_formatter=agentic3._format_record,
+        retrieval_query="RETURN evidence", result_formatter=agentic1._format_record,
         retry=lambda operation: operation(), model_base_url="https://api.example/v1",
         model_api_key="secret", model="gpt-4.1-mini", reasoning_effort="low",
     )
@@ -104,19 +104,19 @@ def _call(call_id, name, arguments):
     }
 
 
-def test_agentic_search_3_is_loaded_from_yaml_registry():
-    assert "agentic_search_3" in RETRIEVAL_STRATEGIES.ids()
-    assert isinstance(RETRIEVAL_STRATEGIES.get("agentic_search_3"), agentic3.AgenticSearch3RetrievalStrategy)
+def test_agentic_search_1_is_loaded_from_yaml_registry():
+    assert "agentic_search_1" in RETRIEVAL_STRATEGIES.ids()
+    assert isinstance(RETRIEVAL_STRATEGIES.get("agentic_search_1"), agentic1.AgenticSearch1RetrievalStrategy)
 
 
-def test_agentic_search_3_executes_llm_selected_readonly_tool_calls(monkeypatch):
+def test_agentic_search_1_executes_llm_selected_readonly_tool_calls(monkeypatch):
     evidence = {
         "evidence_id": "text-hit", "kind": "原文", "text": "全文搜尋找到的內容",
         "source_documents": ["manual.pdf"], "source_pages": [2],
         "source_chunk_numbers": [20], "source_references_json": "[]",
     }
     driver = FakeDriver([{"evidence": evidence, "score": 0.7}])
-    monkeypatch.setattr(agentic3, "VectorCypherRetriever", FakeVectorRetriever)
+    monkeypatch.setattr(agentic1, "VectorCypherRetriever", FakeVectorRetriever)
     turns = iter([
         {"tool_calls": [_call(
             "call-1", "search_document_text",
@@ -131,19 +131,19 @@ def test_agentic_search_3_executes_llm_selected_readonly_tool_calls(monkeypatch)
         return next(turns)
 
     monkeypatch.setattr(
-        agentic3.AgenticSearch3RetrievalStrategy,
+        agentic1.AgenticSearch1RetrievalStrategy,
         "_model_turn", staticmethod(model_turn),
     )
 
-    results = agentic3.AgenticSearch3RetrievalStrategy().retrieve(_context(driver), _config())
+    results = agentic1.AgenticSearch1RetrievalStrategy().retrieve(_context(driver), _config())
 
     assert "You are a knowledge-graph retrieval agent" in observed_messages[0][0]["content"]
     assert "Use the retrieval tools" in observed_messages[0][1]["content"]
-    assert "Search the current project’s source text" in agentic3._tool_definitions()[0]["function"]["description"]
+    assert "Search the current project’s source text" in agentic1._tool_definitions()[0]["function"]["description"]
     assert '"error"' not in observed_messages[1][-1]["content"]
     assert [item["evidence_id"] for item in results] == ["seed", "text-hit"]
     assert results[1]["agentic_search_tool"] == "search_document_text"
-    assert driver.session_instance.options["default_access_mode"] == agentic3.READ_ACCESS
+    assert driver.session_instance.options["default_access_mode"] == agentic1.READ_ACCESS
     assert driver.session_instance.transaction.options == {"timeout": 5.0}
     query, params = driver.session_instance.transaction.queries[0]
     assert "db.index.fulltext.queryNodes" in query
@@ -152,16 +152,16 @@ def test_agentic_search_3_executes_llm_selected_readonly_tool_calls(monkeypatch)
     assert params["search_limit"] == 100
 
 
-def test_agentic_search_3_only_expands_previously_observed_evidence_ids():
+def test_agentic_search_1_only_expands_previously_observed_evidence_ids():
     context = _context(FakeDriver([]))
     with pytest.raises(ValueError, match="本次已找到的證據 ID"):
-        agentic3.AgenticSearch3RetrievalStrategy._tool_result(
+        agentic1.AgenticSearch1RetrievalStrategy._tool_result(
             "follow_graph_connections", {"evidence_ids": ["invented"]},
             context, {"known"}, 5,
         )
 
 
-def test_agentic_search_3_uses_responses_api_for_luna_tool_calls(monkeypatch):
+def test_agentic_search_1_uses_responses_api_for_luna_tool_calls(monkeypatch):
     driver = FakeDriver([{
         "evidence": {
             "evidence_id": "text-hit", "kind": "原文", "text": "全文搜尋找到的內容",
@@ -172,7 +172,7 @@ def test_agentic_search_3_uses_responses_api_for_luna_tool_calls(monkeypatch):
     }])
     context = _context(driver)
     context.model = "gpt-6-luna"
-    monkeypatch.setattr(agentic3, "VectorCypherRetriever", FakeVectorRetriever)
+    monkeypatch.setattr(agentic1, "VectorCypherRetriever", FakeVectorRetriever)
     requests = []
     responses = iter([
         {
@@ -192,9 +192,9 @@ def test_agentic_search_3_uses_responses_api_for_luna_tool_calls(monkeypatch):
         requests.append((url, payload))
         return next(responses)
 
-    monkeypatch.setattr(agentic3, "_post_json", post_json)
+    monkeypatch.setattr(agentic1, "_post_json", post_json)
 
-    results = agentic3.AgenticSearch3RetrievalStrategy().retrieve(context, _config())
+    results = agentic1.AgenticSearch1RetrievalStrategy().retrieve(context, _config())
 
     assert [item["evidence_id"] for item in results] == ["seed", "text-hit"]
     assert requests[0][0].endswith("/responses")
@@ -207,7 +207,7 @@ def test_agentic_search_3_uses_responses_api_for_luna_tool_calls(monkeypatch):
     assert next_input[3]["call_id"] == "call-1"
 
 
-def test_agentic_search_3_can_start_with_fulltext_when_vector_has_no_seed(monkeypatch):
+def test_agentic_search_1_can_start_with_fulltext_when_vector_has_no_seed(monkeypatch):
     driver = FakeDriver([{
         "evidence": {
             "evidence_id": "text-hit", "kind": "原文", "text": "全文證據",
@@ -216,7 +216,7 @@ def test_agentic_search_3_can_start_with_fulltext_when_vector_has_no_seed(monkey
         },
         "score": 0.7,
     }])
-    monkeypatch.setattr(agentic3, "VectorCypherRetriever", EmptyVectorRetriever)
+    monkeypatch.setattr(agentic1, "VectorCypherRetriever", EmptyVectorRetriever)
     turns = iter([
         {"tool_calls": [_call(
             "call-1", "search_document_text", '{"query":"重要步驟"}',
@@ -224,11 +224,11 @@ def test_agentic_search_3_can_start_with_fulltext_when_vector_has_no_seed(monkey
         {"content": "已找到原文"},
     ])
     monkeypatch.setattr(
-        agentic3.AgenticSearch3RetrievalStrategy,
+        agentic1.AgenticSearch1RetrievalStrategy,
         "_model_turn", staticmethod(lambda _context, _messages: next(turns)),
     )
 
-    results = agentic3.AgenticSearch3RetrievalStrategy().retrieve(_context(driver), _config())
+    results = agentic1.AgenticSearch1RetrievalStrategy().retrieve(_context(driver), _config())
 
     assert [item["evidence_id"] for item in results] == ["text-hit"]
 
@@ -238,7 +238,7 @@ def test_document_scoped_agentic_graph_tool_filters_every_path_node():
     context = _context(driver)
     context.document_id = "doc-a"
 
-    agentic3.AgenticSearch3RetrievalStrategy._follow_connections(
+    agentic1.AgenticSearch1RetrievalStrategy._follow_connections(
         context, ["seed-a"], 5,
     )
 

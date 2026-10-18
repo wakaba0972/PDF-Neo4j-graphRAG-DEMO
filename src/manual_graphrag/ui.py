@@ -6613,8 +6613,8 @@ def build_app() -> gr.Blocks:
                 gr.Markdown(
                     "直接使用連線設定中的 Neo4j；預設查詢最近更新的建圖結果。"
                     "可選擇使用 LLM Reranker 重排候選，或啟用證據擴展。"
-                    "Agentic Search 以 LLM 選擇圖譜候選路徑；Agentic Search 3 透過固定唯讀工具自主搜尋，"
-                    "程式會限定圖譜標籤、工具呼叫數與執行時間。Agentic Search 4 會讓 Agent 選擇擴展分支，"
+                    "Agentic Search 1 透過固定唯讀工具自主搜尋；程式會限定圖譜標籤、工具呼叫數與執行時間。"
+                    "Agentic Search 2 會讓 Agent 選擇擴展分支，"
                     "累積較大的候選池後再由 Agent 挑選最終 Top K。"
                 )
                 with gr.Accordion("① 問答模型", open=True):

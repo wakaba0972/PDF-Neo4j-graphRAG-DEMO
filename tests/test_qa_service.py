@@ -22,7 +22,7 @@ def test_answer_graph_question_omits_max_tokens(monkeypatch) -> None:
         "secret",
         "model-a",
         "問題",
-        "agentic",
+        "agentic_search_1",
         [{"text": "證據", "graph_path": [{"from": "A", "type": "影響", "to": "B"}]}],
     )
 
@@ -59,7 +59,7 @@ def test_answer_graph_question_rejects_empty_model_completion(monkeypatch) -> No
 
     with pytest.raises(ValueError, match="回答模型回傳空白內容.*finish_reason=length"):
         qa_service.answer_graph_question(
-            "http://models/v1", "secret", "model-a", "問題", "agentic",
+            "http://models/v1", "secret", "model-a", "問題", "agentic_search_1",
             [{"evidence_id": "ev-1", "text": "來源證據"}],
         )
 

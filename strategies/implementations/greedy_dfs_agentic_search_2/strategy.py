@@ -14,7 +14,7 @@ from manual_graphrag.graph_service import (
     _post_json,
 )
 from manual_graphrag.retrieval import RetrievalConfig, RetrievalContext
-from strategies.implementations.agentic_search_4 import strategy as search4
+from strategies.implementations.agentic_search_2 import strategy as search2
 
 
 _DECISION_TOOL = {
@@ -85,10 +85,10 @@ class GreedyDfsAgenticSearch2RetrievalStrategy:
         content = json.dumps({
             "question": context.question,
             "current_path_evidence": [
-                search4.AgenticSearch4RetrievalStrategy._candidate_payload(item) for item in path
+                search2.AgenticSearch2RetrievalStrategy._candidate_payload(item) for item in path
             ],
             "adjacent_candidate_evidence": [
-                search4.AgenticSearch4RetrievalStrategy._candidate_payload(item)
+                search2.AgenticSearch2RetrievalStrategy._candidate_payload(item)
                 for item in adjacent
             ],
         }, ensure_ascii=False)
@@ -233,7 +233,7 @@ class GreedyDfsAgenticSearch2RetrievalStrategy:
             adjacent: list[dict[str, Any]] = []
             if depth < max_depth and len(evidence_store) < pool_limit:
                 remaining = pool_limit - len(evidence_store)
-                rows = search4.AgenticSearch4RetrievalStrategy._follow_one_hop(
+                rows = search2.AgenticSearch2RetrievalStrategy._follow_one_hop(
                     context, [head_id], min(result_limit, remaining),
                 )
                 expansions += 1
@@ -285,7 +285,7 @@ class GreedyDfsAgenticSearch2RetrievalStrategy:
             return []
         try:
             selected_ids = (
-                search4.AgenticSearch4RetrievalStrategy._selection_arguments(
+                search2.AgenticSearch2RetrievalStrategy._selection_arguments(
                     context, path_pool, top_k,
                 ) if time.monotonic() < deadline else []
             )

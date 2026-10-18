@@ -75,7 +75,7 @@ def test_greedy_dfs_goes_deep_first_then_backtracks_to_ranked_sibling(monkeypatc
         return [{"evidence": _evidence(item), "score": 0.0} for item in adjacent]
 
     monkeypatch.setattr(
-        greedy_dfs.search4.AgenticSearch4RetrievalStrategy,
+        greedy_dfs.search2.AgenticSearch2RetrievalStrategy,
         "_follow_one_hop", staticmethod(follow),
     )
     decisions = iter([
@@ -94,7 +94,7 @@ def test_greedy_dfs_goes_deep_first_then_backtracks_to_ranked_sibling(monkeypatc
     monkeypatch.setattr(greedy_dfs.GreedyDfsAgenticSearchRetrievalStrategy,
                         "_decide", staticmethod(decide))
     monkeypatch.setattr(
-        greedy_dfs.search4.AgenticSearch4RetrievalStrategy,
+        greedy_dfs.search2.AgenticSearch2RetrievalStrategy,
         "_selection_arguments", staticmethod(lambda _ctx, _pool, _k: ["d", "seed"]),
     )
 
@@ -155,7 +155,7 @@ def test_greedy_dfs_uses_responses_api_for_luna(monkeypatch):
 def test_greedy_dfs_keeps_seed_if_all_dfs_decisions_fail(monkeypatch):
     monkeypatch.setattr(greedy_dfs, "VectorCypherRetriever", FakeVectorRetriever)
     monkeypatch.setattr(
-        greedy_dfs.search4.AgenticSearch4RetrievalStrategy,
+        greedy_dfs.search2.AgenticSearch2RetrievalStrategy,
         "_follow_one_hop", staticmethod(lambda *_args: [{"evidence": _evidence("next")}]),
     )
     monkeypatch.setattr(
@@ -163,7 +163,7 @@ def test_greedy_dfs_keeps_seed_if_all_dfs_decisions_fail(monkeypatch):
         "_decide", staticmethod(lambda *_args: (_ for _ in ()).throw(TimeoutError("timeout"))),
     )
     monkeypatch.setattr(
-        greedy_dfs.search4.AgenticSearch4RetrievalStrategy,
+        greedy_dfs.search2.AgenticSearch2RetrievalStrategy,
         "_selection_arguments", staticmethod(lambda *_args: []),
     )
 
