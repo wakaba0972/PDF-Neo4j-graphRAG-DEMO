@@ -12,6 +12,24 @@ import pytest
 from manual_graphrag import pdf_service
 
 
+_real_page_has_figures = pdf_service.page_has_figures
+
+
+@pytest.fixture(autouse=True)
+def _fake_figure_detection(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Fake pages have no drawing API; they declare whether they hold a figure,
+    # either as a bool (any / no element) or as a set of element kinds.
+    def has_figures(page: object, kinds: tuple[str, ...] = pdf_service.FIGURE_KINDS) -> bool:
+        declared = getattr(page, "has_figures", True)
+        if isinstance(declared, bool):
+            return declared
+        return bool(set(declared) & set(kinds))
+
+    monkeypatch.setattr(pdf_service, "page_has_figures", has_figures)
+    # Language detection reads every page; tests of it call it directly.
+    monkeypatch.setattr(pdf_service, "_document_language", lambda document: None)
+
+
 def test_render_page_to_base64_returns_png_of_content_area() -> None:
     document = pdf_service.pymupdf.open()
     page = document.new_page(width=600, height=800)
@@ -117,12 +135,13 @@ def test_extract_pdf_uses_vision_result(
         "MODEL_OPENAI_API_BASE": "https://models.example/v1",
         "MODEL_OPENAI_API_KEY": "secret",
     })
-    calls: list[tuple[str, int, str, str, str]] = []
+    calls: list[tuple[str, int, str, str, str, str | None]] = []
 
     def analyze(
-        image: str, page: int, *, base_url: str, api_key: str, model: str
+        image: str, page: int, *, base_url: str, api_key: str, model: str,
+        language: str | None, reasoning_effort: str | None,
     ) -> dict[str, object]:
-        calls.append((image, page, base_url, api_key, model))
+        calls.append((image, page, base_url, api_key, model, reasoning_effort))
         return {
             "page_number": page,
             "content": [{"type": "text", "data": "Vision result"}],
@@ -134,7 +153,7 @@ def test_extract_pdf_uses_vision_result(
 
     assert [(page.page, page.text) for page in pages] == [(1, "Vision result")]
     assert empty_pages == []
-    assert calls == [("image", 1, "https://models.example/v1", "secret", "gpt-6-luna")]
+    assert calls == [("image", 1, "https://models.example/v1", "secret", "gpt-6-luna", "none")]
 
 
 def _vision_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,6 +182,29 @@ def test_analyze_page_image_uses_selected_model(monkeypatch: pytest.MonkeyPatch)
     )
 
     assert captured["model"] == "gpt-4.1-mini"
+    # Only GPT-6 Luna takes reasoning_effort; other models keep temperature 0.
+    assert captured["temperature"] == 0.0 and "reasoning_effort" not in captured
+
+
+def test_analyze_page_image_sends_selected_reasoning_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_post(url: str, payload: dict[str, object], api_key: str) -> dict[str, object]:
+        captured.update(payload)
+        return {"choices": [{"message": {"content": '{"page_number": 1, "content": []}'}}]}
+
+    monkeypatch.setattr(pdf_service, "_post_json", fake_post)
+
+    pdf_service._analyze_page_image(
+        "image", 1, base_url="https://models.example/v1", api_key="", reasoning_effort="high",
+    )
+
+    # GPT-6 reasoning requests reject temperature unless effort is none.
+    assert captured["reasoning_effort"] == "high" and "temperature" not in captured
+    with pytest.raises(ValueError, match="不支援的 Vision 推理強度"):
+        pdf_service._analyze_page_image(
+            "image", 1, base_url="https://models.example/v1", api_key="", reasoning_effort="max",
+        )
 
 
 def test_vision_prompt_is_not_limited_to_automotive_manuals() -> None:
@@ -294,10 +336,13 @@ def test_extract_pdf_without_vision_model_skips_rendering_and_api(
 
 
 class FakePage:
-    def __init__(self, text: str, *, broken: bool = False) -> None:
+    def __init__(
+        self, text: str, *, broken: bool = False, has_figures: bool | set[str] = True,
+    ) -> None:
         self.rect = pdf_service.pymupdf.Rect(0, 0, 600, 800)
         self.text = text
         self.broken = broken
+        self.has_figures = has_figures
         self.received_clip: pdf_service.pymupdf.Rect | None = None
 
     def get_text(self, output: str, **options: object) -> str:
@@ -584,3 +629,252 @@ def test_render_pdf_figures_crops_pngs_and_respects_limit(tmp_path: Path) -> Non
     assert struct.unpack(">II", png[16:24]) == (162, 162)
 
     assert len(pdf_service.render_pdf_figures(path, [1], limit=2)) == 2
+
+
+def test_extract_pdf_figures_scope_sends_only_figure_and_textless_pages_to_vision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = FakeDocument(pages=[
+        FakePage("diagram page"),
+        FakePage("plain page", has_figures=False),
+        FakePage("   ", has_figures=False),  # A scan without a text layer.
+    ])
+    monkeypatch.setattr(pdf_service.pymupdf, "open", lambda path: document)
+    _vision_env(monkeypatch)
+    sent: list[int] = []
+
+    def analyze(image: str, page: int, **kwargs: object) -> dict[str, object]:
+        sent.append(page)
+        return _vision_result(page, f"vision {page}")
+
+    monkeypatch.setattr(pdf_service, "_analyze_page_image", analyze)
+    progress: list[float] = []
+
+    report = pdf_service.extract_pdf_with_report(
+        "manual.pdf", vision_scope=pdf_service.VISION_SCOPE_FIGURES, max_workers=1,
+        progress_callback=lambda fraction, _message: progress.append(fraction),
+    )
+
+    assert sorted(sent) == [1, 3]
+    assert [page.text for page in report.pages] == ["vision 1", "plain page", "vision 3"]
+    assert report.figure_pages == [1]
+    assert report.text_layer_pages == [2]
+    assert [report.page_source(number) for number in (1, 2, 3)] == ["vision", "text", "vision"]
+    assert progress[-1] == 1.0 and len(progress) == 3
+    assert pdf_service.format_vision_report(report) == (
+        "Vision（gpt-6-luna）解析 2 頁。1 頁無圖表，直接使用文字層。"
+    )
+
+
+@pytest.mark.parametrize(
+    ("scope", "sent_pages", "label"),
+    [
+        (pdf_service.VISION_SCOPE_TABLES, [1, 4], "無表格"),
+        (pdf_service.VISION_SCOPE_DIAGRAMS, [2, 4], "無圖片或向量圖"),
+    ],
+)
+def test_extract_pdf_tables_and_diagrams_scopes_send_only_matching_pages(
+    monkeypatch: pytest.MonkeyPatch, scope: str, sent_pages: list[int], label: str,
+) -> None:
+    document = FakeDocument(pages=[
+        FakePage("table page", has_figures={"table"}),
+        FakePage("diagram page", has_figures={"image"}),
+        FakePage("plain page", has_figures=False),
+        FakePage("   ", has_figures=False),  # A scan without a text layer.
+    ])
+    monkeypatch.setattr(pdf_service.pymupdf, "open", lambda path: document)
+    _vision_env(monkeypatch)
+    sent: list[int] = []
+
+    def analyze(image: str, page: int, **kwargs: object) -> dict[str, object]:
+        sent.append(page)
+        return _vision_result(page, f"vision {page}")
+
+    monkeypatch.setattr(pdf_service, "_analyze_page_image", analyze)
+
+    report = pdf_service.extract_pdf_with_report("manual.pdf", vision_scope=scope, max_workers=1)
+
+    assert sorted(sent) == sent_pages
+    # figure_pages still lists every page with any element, for the review filter.
+    assert report.figure_pages == [1, 2]
+    assert report.text_layer_pages == sorted({1, 2, 3} - set(sent_pages))
+    assert pdf_service.format_vision_report(report) == (
+        f"Vision（gpt-6-luna）解析 2 頁。2 頁{label}，直接使用文字層。"
+    )
+
+
+def test_extract_pdf_all_scope_still_records_figure_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = FakeDocument(pages=[FakePage("a"), FakePage("b", has_figures=False)])
+    monkeypatch.setattr(pdf_service.pymupdf, "open", lambda path: document)
+    _vision_env(monkeypatch)
+    monkeypatch.setattr(
+        pdf_service, "_analyze_page_image",
+        lambda image, page, **kwargs: _vision_result(page, f"vision {page}"),
+    )
+
+    report = pdf_service.extract_pdf_with_report("manual.pdf")
+
+    assert report.vision_pages == [1, 2]
+    assert report.figure_pages == [1]
+    assert report.text_layer_pages == []
+
+
+def test_extract_pdf_rejects_unknown_vision_scope() -> None:
+    with pytest.raises(ValueError, match="Vision 解析範圍"):
+        pdf_service.extract_pdf_with_report("manual.pdf", vision_scope="some")
+
+
+def test_page_has_figures_matches_detect_page_figures(tmp_path: Path) -> None:
+    with pdf_service.pymupdf.open(_figure_test_pdf(tmp_path)) as document:
+        assert _real_page_has_figures(document[0]) is True
+        assert _real_page_has_figures(document[0], ("table",)) is True
+        assert _real_page_has_figures(document[0], pdf_service.DIAGRAM_KINDS) is True
+    with pdf_service.pymupdf.open() as document:
+        page = document.new_page()
+        page.insert_text((72, 200), "Only text on this page")
+        page.draw_rect(pdf_service.pymupdf.Rect(50, 180, 550, 220))  # A note frame.
+        assert _real_page_has_figures(page) is False
+        assert pdf_service.detect_page_figures(page) == []
+        # A ruled table without any illustration.
+        for y in (560, 590, 620, 650):
+            page.draw_line((60, y), (540, y))
+        for x in (60, 220, 380, 540):
+            page.draw_line((x, 560), (x, 650))
+        for row, y in enumerate((580, 610, 640)):
+            for column, x in enumerate((70, 230, 390)):
+                page.insert_text((x, y), f"r{row}c{column}")
+        assert _real_page_has_figures(page, ("table",)) is True
+        assert _real_page_has_figures(page, pdf_service.DIAGRAM_KINDS) is False
+
+
+def test_table_needs_ruled_top_and_bottom_edges() -> None:
+    pymupdf = pdf_service.pymupdf
+    with pymupdf.open() as document:
+        page = document.new_page(width=600, height=800)
+        # A real table: its top edge is two cell borders, the bottom one long rule.
+        page.draw_line((60, 100), (300, 100))
+        page.draw_line((300, 100), (540, 100))
+        page.draw_line((60, 160), (540, 160))
+        # Callout leader lines: a label line on top only, partial at the bottom.
+        page.draw_line((60, 300), (540, 300))
+        page.draw_line((60, 360), (200, 360))
+        segments = pdf_service._horizontal_segments(page.get_drawings())
+
+    assert pdf_service._has_table_border(pymupdf.Rect(60, 100, 540, 160), segments) is True
+    assert pdf_service._has_table_border(pymupdf.Rect(60, 300, 540, 360), segments) is False
+
+
+def test_single_page_helpers_render_read_and_reanalyze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "manual.pdf"
+    with pdf_service.pymupdf.open() as document:
+        for text in ("First page body", "Second page body"):
+            document.new_page(width=600, height=800).insert_text((72, 300), text)
+        document.save(path)
+    _vision_env(monkeypatch)
+    monkeypatch.setattr(pdf_service, "render_page_to_base64", lambda page: f"image-{page.number}")
+    captured: dict[str, object] = {}
+
+    def analyze(image: str, page: int, **kwargs: object) -> dict[str, object]:
+        captured.update(image=image, page=page, **kwargs)
+        return {"page_number": page, "content": [
+            {"type": "text", "data": "Body"}, {"type": "table", "data": "| a |\n| --- |"},
+        ]}
+
+    monkeypatch.setattr(pdf_service, "_analyze_page_image", analyze)
+
+    png = pdf_service.render_pdf_page(path, 2, scale=1.0)
+    assert png.startswith(b"\x89PNG") and struct.unpack(">II", png[16:24]) == (600, 800)
+    assert pdf_service.extract_page_text_layer(path, 2) == "Second page body"
+    assert pdf_service.analyze_pdf_page(path, 2, "gpt-4.1-mini") == "Body\n\n| a |\n| --- |"
+    assert captured["image"] == "image-1" and captured["page"] == 2
+    assert captured["model"] == "gpt-4.1-mini" and captured["api_key"] == "secret"
+    with pytest.raises(ValueError, match="頁碼超出範圍"):
+        pdf_service.render_pdf_page(path, 3)
+
+
+@pytest.mark.parametrize(("texts", "language"), [
+    (["麥克風 閃光燈 後置相機 GPS 天線", "開始使用：請先設定裝置，點擊選單中的網路設定。"], "Traditional Chinese"),
+    (["开始使用：请先设定装置，点击选单中的网络设定。这个设备的开关在右侧。"], "Simplified Chinese"),
+    (["スマートフォンの背面にあるカメラを使用します。設定メニューを開いてください。"], "Japanese"),
+    (["휴대전화 뒷면의 카메라를 사용합니다. 설정 메뉴를 여십시오."], "Korean"),
+    (["Press the power button to turn on the device and open the settings menu. " * 3], "English"),
+    (["Seite 12", "12"], None),
+])
+def test_detect_document_language(texts: list[str], language: str | None) -> None:
+    assert pdf_service.detect_document_language(texts) == language
+
+
+def test_vision_prompt_states_document_language_and_keeps_labels_verbatim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert pdf_service.vision_system_prompt(None) == pdf_service.VISION_SYSTEM_PROMPT
+    assert "never translate a label" in pdf_service.VISION_SYSTEM_PROMPT
+    prompt = pdf_service.vision_system_prompt("Traditional Chinese")
+    assert "This document is written in Traditional Chinese" in prompt
+    assert "only figure labels" in prompt
+    captured: dict[str, object] = {}
+
+    def fake_post(url: str, payload: dict[str, object], api_key: str) -> dict[str, object]:
+        captured.update(payload)
+        return {"choices": [{"message": {"content": '{"page_number": 1, "content": []}'}}]}
+
+    monkeypatch.setattr(pdf_service, "_post_json", fake_post)
+    pdf_service._analyze_page_image(
+        "image", 1, base_url="https://models.example/v1", api_key="", language="Japanese",
+    )
+    assert "written in Japanese" in captured["messages"][0]["content"]  # type: ignore[index]
+
+
+def test_extract_pdf_passes_reasoning_effort_to_every_vision_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = FakeDocument(pages=[FakePage("one"), FakePage("two")])
+    monkeypatch.setattr(pdf_service.pymupdf, "open", lambda path: document)
+    _vision_env(monkeypatch)
+    efforts: list[object] = []
+
+    def analyze(image: str, page: int, **kwargs: object) -> dict[str, object]:
+        efforts.append(kwargs["reasoning_effort"])
+        return _vision_result(page, f"vision {page}")
+
+    monkeypatch.setattr(pdf_service, "_analyze_page_image", analyze)
+
+    report = pdf_service.extract_pdf_with_report(
+        "manual.pdf", vision_reasoning_effort="medium", max_workers=1,
+    )
+    assert efforts == ["medium", "medium"]
+    assert report.vision_reasoning_effort == "medium"
+
+    report = pdf_service.extract_pdf_with_report(
+        "manual.pdf", vision_model="gpt-4.1-mini", vision_reasoning_effort="medium", max_workers=1,
+    )
+    assert efforts[2:] == [None, None]
+    assert report.vision_reasoning_effort is None
+
+
+def test_extract_pdf_passes_detected_language_to_every_vision_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = FakeDocument(pages=[FakePage("麥克風"), FakePage("閃光燈")])
+    monkeypatch.setattr(pdf_service.pymupdf, "open", lambda path: document)
+    monkeypatch.setattr(pdf_service, "_document_language", lambda document: "Traditional Chinese")
+    _vision_env(monkeypatch)
+    languages: list[object] = []
+
+    def analyze(image: str, page: int, **kwargs: object) -> dict[str, object]:
+        languages.append(kwargs["language"])
+        return _vision_result(page, f"vision {page}")
+
+    monkeypatch.setattr(pdf_service, "_analyze_page_image", analyze)
+
+    report = pdf_service.extract_pdf_with_report("manual.pdf", max_workers=1)
+
+    assert languages == ["Traditional Chinese"] * 2
+    assert report.language == "Traditional Chinese"
+    assert pdf_service.format_vision_report(report) == (
+        "Vision（gpt-6-luna）解析 2 頁。圖表描述語言：繁體中文。"
+    )

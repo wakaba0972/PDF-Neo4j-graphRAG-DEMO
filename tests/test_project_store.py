@@ -335,6 +335,28 @@ def test_remove_document_deletes_file_and_entry(tmp_path) -> None:
     assert not (root / project["project_id"] / "documents" / "a.pdf").exists()
 
 
+def test_document_pages_are_saved_per_document_and_removed_with_it(tmp_path) -> None:
+    from manual_graphrag.project_store import load_document_pages, save_document_pages
+
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"a")
+    root = tmp_path / "projects"
+    project_id = create_project("Pages", root)["project_id"]
+    save_project(project_id, {}, [str(pdf)], root)
+    assert load_document_pages(project_id, root) == {}
+
+    record = {"pages": [{"page": 1, "text": "中文", "source": "vision"}], "chunked": False}
+    save_document_pages(project_id, "a.pdf", record, root)
+    save_document_pages(project_id, "b.pdf", {"pages": [], "chunked": True}, root)
+    assert load_document_pages(project_id, root)["a.pdf"] == record
+    assert (root / project_id / "pages.json.gz").is_file()
+
+    remove_document(project_id, "a.pdf", root)
+    assert list(load_document_pages(project_id, root)) == ["b.pdf"]
+    with pytest.raises(ValueError, match="找不到專案"):
+        save_document_pages("missing", "a.pdf", record, root)
+
+
 def test_load_project_migrates_legacy_single_document(tmp_path) -> None:
     root = tmp_path / "projects"
     project = create_project("Legacy", root)

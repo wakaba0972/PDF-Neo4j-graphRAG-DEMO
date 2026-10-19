@@ -26,6 +26,8 @@ PROJECT_ARCHIVE_FORMAT = "manual-graphrag-project"
 PROJECT_ARCHIVE_VERSION = 1
 GRAPH_DATA_FILENAME = "graph.json.gz"
 CHUNK_DATA_FILENAME = "chunks.json.gz"
+# Per-page parse results (vision or text layer) and their human review state.
+PAGE_DATA_FILENAME = "pages.json.gz"
 
 
 def project_database_name(project_id: str) -> str:
@@ -211,38 +213,29 @@ def _read_project_metadata(
     return project
 
 
-def _write_graph_data(project_dir: Path, graph_payload: dict[str, Any]) -> None:
-    target = project_dir / GRAPH_DATA_FILENAME
+def _write_gzip_json(project_dir: Path, filename: str, payload: dict[str, Any]) -> None:
+    target = project_dir / filename
     descriptor, temporary_name = tempfile.mkstemp(
-        dir=project_dir, prefix=f".{GRAPH_DATA_FILENAME}.", suffix=".tmp",
+        dir=project_dir, prefix=f".{filename}.", suffix=".tmp",
     )
     os.close(descriptor)
     try:
         with gzip.open(temporary_name, "wt", encoding="utf-8", compresslevel=6) as handle:
-            json.dump(graph_payload, handle, ensure_ascii=False, separators=(",", ":"))
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
         with open(temporary_name, "rb") as handle:
             os.fsync(handle.fileno())
         os.replace(temporary_name, target)
     except Exception:
         Path(temporary_name).unlink(missing_ok=True)
         raise
+
+
+def _write_graph_data(project_dir: Path, graph_payload: dict[str, Any]) -> None:
+    _write_gzip_json(project_dir, GRAPH_DATA_FILENAME, graph_payload)
 
 
 def _write_chunk_data(project_dir: Path, chunk_payload: dict[str, Any]) -> None:
-    target = project_dir / CHUNK_DATA_FILENAME
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=project_dir, prefix=f".{CHUNK_DATA_FILENAME}.", suffix=".tmp",
-    )
-    os.close(descriptor)
-    try:
-        with gzip.open(temporary_name, "wt", encoding="utf-8", compresslevel=6) as handle:
-            json.dump(chunk_payload, handle, ensure_ascii=False, separators=(",", ":"))
-        with open(temporary_name, "rb") as handle:
-            os.fsync(handle.fileno())
-        os.replace(temporary_name, target)
-    except Exception:
-        Path(temporary_name).unlink(missing_ok=True)
-        raise
+    _write_gzip_json(project_dir, CHUNK_DATA_FILENAME, chunk_payload)
 
 
 def _read_graph_data(project_dir: Path, graph_state: dict[str, Any]) -> dict[str, Any]:
@@ -352,6 +345,44 @@ def load_project_chunks(
     """Load only chunk text, without decompressing potentially large graph data."""
     project = load_project_metadata(project_id, root)
     return _read_chunk_data(Path(root) / project_id, project).get("chunks", [])
+
+
+def load_document_pages(
+    project_id: str, root: str | Path = PROJECTS_DIR,
+) -> dict[str, dict[str, Any]]:
+    """Per-document page records: ``{file_name: {"pages": [...], "chunked": bool}}``.
+
+    Documents parsed before page records existed are simply absent.
+    """
+    target = Path(root) / project_id / PAGE_DATA_FILENAME
+    if not target.is_file():
+        return {}
+    with gzip.open(target, "rt", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    documents = payload.get("documents") if isinstance(payload, dict) else None
+    if not isinstance(documents, dict):
+        raise ValueError("專案頁面解析檔案格式錯誤")
+    return documents
+
+
+def save_document_pages(
+    project_id: str,
+    file_name: str,
+    record: dict[str, Any] | None,
+    root: str | Path = PROJECTS_DIR,
+) -> None:
+    """Replace one document's page records; ``None`` removes the document."""
+    with _PROJECT_WRITE_LOCK:
+        project_dir = Path(root) / project_id
+        if not (project_dir / "project.json").is_file():
+            raise ValueError("找不到專案")
+        documents = load_document_pages(project_id, root)
+        if record is None:
+            if documents.pop(file_name, None) is None:
+                return
+        else:
+            documents[file_name] = record
+        _write_gzip_json(project_dir, PAGE_DATA_FILENAME, {"documents": documents})
 
 
 def delete_project(project_id: str, root: str | Path = PROJECTS_DIR) -> str:
@@ -675,6 +706,7 @@ def remove_document(
             path = Path(doc.get("path", ""))
             if path.is_file():
                 path.unlink()
+    save_document_pages(project_id, file_name, None, root)
     return save_project(project_id, {"documents": remaining}, root=root)
 
 

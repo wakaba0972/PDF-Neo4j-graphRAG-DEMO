@@ -4,6 +4,7 @@ from pathlib import Path
 from threading import Barrier, Lock
 
 import gradio as gr
+import pymupdf
 import pytest
 
 from manual_graphrag import service_settings as settings
@@ -1372,7 +1373,7 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
         "混合檢索", 6, '{"entity_types": []}',
         ui.DEFAULT_REASONING_EFFORT,
         ui.DEFAULT_REASONING_EFFORT, '{"effective_search_ratio": 6}',
-        ui.PDF_VISION_DISABLED,
+        ui.PDF_VISION_DISABLED, ui.VISION_SCOPE_ALL, "high",
     ]
     saved, save_status = ui.save_project_for_ui(*values)
     loaded = ui.load_project_for_ui(created["project_id"])
@@ -1384,6 +1385,9 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert loaded[36] == {"effective_search_ratio": 6}
     assert loaded[37]["value"] == ui.PDF_VISION_DISABLED
     assert ui.PDF_VISION_DISABLED in [value for _, value in loaded[37]["choices"]]
+    assert loaded[38] == ui.VISION_SCOPE_ALL
+    # The effort is kept but hidden while Vision is disabled.
+    assert loaded[39]["value"] == "high" and loaded[39]["visible"] is False
     parameter_entries = ui._strategy_parameter_entries()
     hybrid_ratio = next(
         update for (strategy_id, name, _spec), update
@@ -2716,6 +2720,15 @@ def test_luna_reasoning_controls_are_visible_only_for_luna_and_default_low() -> 
     assert ui.reasoning_effort_visibility("gpt-4o-mini")["visible"] is False
 
 
+def test_pdf_vision_reasoning_effort_is_visible_only_for_luna_and_keeps_value() -> None:
+    assert ui.DEFAULT_PDF_VISION_REASONING_EFFORT == "none"
+    assert ui.pdf_vision_reasoning_effort_visibility("gpt-6-luna") == {
+        "visible": True, "__type__": "update",
+    }
+    assert ui.pdf_vision_reasoning_effort_visibility(ui.PDF_VISION_DISABLED)["visible"] is False
+    assert ui.pdf_vision_reasoning_effort_visibility("gpt-4o-mini")["visible"] is False
+
+
 def test_empty_experiment_group_hides_luna_reasoning_effort_control() -> None:
     assert ui.experiment_group_reasoning_effort_visibility("gpt-6-luna", "")["visible"] is False
     assert ui.experiment_group_reasoning_effort_visibility("gpt-6-luna", "實驗組 1")["visible"] is True
@@ -2745,6 +2758,32 @@ def test_model_selection_dynamically_toggles_reasoning_effort_control() -> None:
         and c.get("props", {}).get("choices") == list(ui.GPT_6_LUNA_REASONING_EFFORTS)
         and not c.get("props", {}).get("label")
         for c in components
+    )
+
+
+def test_review_page_vision_reparse_uses_its_own_reasoning_effort() -> None:
+    app = build_app()
+    components = app.config["components"]
+    by_label = {c.get("props", {}).get("label"): c["id"] for c in components}
+    by_value = {
+        c["props"]["value"]: c["id"] for c in components
+        if isinstance(c.get("props", {}).get("value"), str)
+    }
+    parse_effort = by_label["Vision 推理強度"]
+    review_effort = by_label["重新解析此頁的推理強度"]
+    vision_model = by_label["PDF 解析模型（Vision）"]
+    button = by_value["🔁 以 Vision 重新解析此頁"]
+    dependencies = app.config["dependencies"]
+    reparse = next(item for item in dependencies if (button, "click") in item["targets"])
+    assert review_effort in reparse["inputs"] and parse_effort not in reparse["inputs"]
+    # It follows the parse setting and the model's Luna visibility.
+    assert any(
+        (parse_effort, "change") in item["targets"] and item["outputs"] == [review_effort]
+        for item in dependencies
+    )
+    assert any(
+        (vision_model, "change") in item["targets"] and item["outputs"] == [review_effort]
+        for item in dependencies
     )
 
 
@@ -3548,66 +3587,224 @@ def test_switch_document_wraps_around_and_handles_empty_list() -> None:
     assert status == "尚未解析任何 PDF。"
 
 
-def test_add_document_for_ui_initializes_active_document(tmp_path, monkeypatch) -> None:
+def _pdf_project(tmp_path, monkeypatch) -> str:
+    monkeypatch.chdir(tmp_path)
+    return ui.create_project("手冊專案")["project_id"]
+
+
+def test_add_document_for_ui_parses_pages_without_chunking(tmp_path, monkeypatch) -> None:
+    project_id = _pdf_project(tmp_path, monkeypatch)
     pdf_path = tmp_path / "manual.pdf"
     pdf_path.write_bytes(b"pdf bytes")
-    pages = [PageText(2, "two"), PageText(3, "three")]
-    chunks = [
-        TextChunk(1, "two", (2,), "manual.pdf"),
-        TextChunk(2, "three", (3,), "manual.pdf"),
-    ]
     calls = []
 
     def fake_extract(path, **kwargs):
-        calls.append(kwargs["vision_model"])
-        return PdfExtraction(pages, [], vision_model=kwargs["vision_model"], vision_pages=[2, 3])
+        calls.append((kwargs["vision_model"], kwargs["vision_scope"], kwargs["vision_reasoning_effort"]))
+        return PdfExtraction(
+            [PageText(2, "two"), PageText(3, "three"), PageText(4, "four")], [],
+            vision_model=kwargs["vision_model"], vision_pages=[2],
+            fallback_pages={3: "HTTP 500"}, figure_pages=[2, 3], text_layer_pages=[4],
+            vision_scope=kwargs["vision_scope"],
+            vision_reasoning_effort=kwargs["vision_reasoning_effort"],
+        )
 
     monkeypatch.setattr(ui, "extract_pdf_with_report", fake_extract)
-    monkeypatch.setattr(
-        ui, "chunk_pages",
-        lambda *args, **kwargs: [
-            TextChunk(chunk.number, chunk.text, chunk.pages, kwargs["document"], kwargs["document_id"])
-            for chunk in chunks
-        ],
+    monkeypatch.setattr(ui, "chunk_pages", lambda *args, **kwargs: pytest.fail("不應切 chunk"))
+
+    status, documents, documents_rows, pdf_reset, remove_choices = ui.add_document_for_ui(
+        str(pdf_path), [], project_id=project_id, pdf_vision_reasoning_effort="low",
     )
 
-    result = ui.add_document_for_ui(str(pdf_path), 100, 0, [], [])
-    (
-        status, rows, documents, stored_chunks, active_preview, active_chunks,
-        document_status, documents_rows, pdf_reset, remove_choices,
-    ) = result
-
-    assert status.startswith("✅「manual.pdf」第 2–3 頁，產生 2 個 chunk")
-    assert "Vision（gpt-6-luna）解析 2 頁" in status
-    assert calls == [ui.DEFAULT_PDF_VISION_MODEL]
-    assert documents[0]["vision_model"] == ui.DEFAULT_PDF_VISION_MODEL
-    assert documents[0]["vision_fallback_pages"] == []
-    assert [row[0] for row in rows] == [1, 2]
-    assert documents[0]["file_name"] == "manual.pdf"
-    assert documents[0]["page_count"] == 2
-    assert documents[0]["page_start"] == 2
-    assert documents[0]["page_end"] == 3
-    assert len(documents[0]["document_id"]) == 64
-    assert all(chunk.document_id == documents[0]["document_id"] for chunk in stored_chunks)
-    assert [chunk.text for chunk in stored_chunks] == [chunk.text for chunk in chunks]
-    assert active_chunks == stored_chunks
-    assert active_preview["file_name"] == "manual.pdf"
-    assert document_status == "文件 1 / 1：manual.pdf（第 2–3 頁），共 2 個 chunk。"
-    assert documents_rows == [[False, "manual.pdf", "2–3", 2]]
+    assert status.startswith("✅「manual.pdf」解析第 2–4 頁。")
+    assert "1 頁無圖表，直接使用文字層" in status and "③ 切分 chunk" in status
+    assert calls == [(ui.DEFAULT_PDF_VISION_MODEL, ui.DEFAULT_PDF_VISION_SCOPE, "low")]
+    document = documents[0]
+    assert document["file_name"] == "manual.pdf" and len(document["document_id"]) == 64
+    assert (document["page_start"], document["page_end"], document["chunk_count"]) == (2, 4, 0)
+    assert document["vision_scope"] == ui.VISION_SCOPE_FIGURES
+    assert document["vision_fallback_pages"] == [3]
+    assert document["vision_reasoning_effort"] == "low"
+    assert documents_rows == [[False, "manual.pdf", "2–4", 0]]
+    assert pdf_reset == {"value": None, "__type__": "update"}
     assert remove_choices["choices"] == ["manual.pdf"]
+    entry = ui.load_document_pages(project_id)["manual.pdf"]
+    assert entry["chunked"] is False
+    assert entry["pages"] == [
+        {"page": 2, "text": "two", "source": "vision", "reviewed": False, "has_figures": True},
+        {"page": 3, "text": "three", "source": "fallback", "reviewed": False, "has_figures": True,
+         "fallback_reason": "HTTP 500"},
+        {"page": 4, "text": "four", "source": "text", "reviewed": False, "has_figures": False},
+    ]
 
 
-def test_add_document_for_ui_rejects_duplicate_document_name(monkeypatch) -> None:
+def test_add_document_for_ui_requires_project_and_rejects_duplicates(monkeypatch) -> None:
     monkeypatch.setattr(
         ui, "extract_pdf_with_report",
         lambda path, **kwargs: ((_ for _ in ()).throw(AssertionError())),
     )
     existing = [{"file_name": "manual.pdf"}]
 
-    status, *_ = ui.add_document_for_ui("manual.pdf", 100, 0, existing, [])
+    status, *_ = ui.add_document_for_ui("manual.pdf", existing)
+    assert status == "❌ 請先建立或載入專案。"
+    status, documents, *_ = ui.add_document_for_ui("manual.pdf", existing, project_id="p")
+    assert status.startswith("❌") and "同名文件" in status
+    assert documents == existing
 
-    assert status.startswith("❌")
-    assert "同名文件" in status
+
+def test_add_document_for_ui_rejects_pdf_without_any_text(tmp_path, monkeypatch) -> None:
+    project_id = _pdf_project(tmp_path, monkeypatch)
+    pdf_path = tmp_path / "scan.pdf"
+    pdf_path.write_bytes(b"scan")
+    monkeypatch.setattr(
+        ui, "extract_pdf_with_report",
+        lambda path, **kwargs: PdfExtraction([PageText(1, "")], [1]),
+    )
+
+    status, documents, *_ = ui.add_document_for_ui(
+        str(pdf_path), [], ui.PDF_VISION_DISABLED, project_id=project_id,
+    )
+
+    assert status.startswith("❌「scan.pdf」：PDF 沒有可解析文字")
+    assert documents == [] and ui.load_document_pages(project_id) == {}
+
+
+def test_chunk_documents_for_ui_uses_reviewed_pages_and_keeps_legacy_chunks(
+    tmp_path, monkeypatch,
+) -> None:
+    project_id = _pdf_project(tmp_path, monkeypatch)
+    ui.save_document_pages(project_id, "new.pdf", {"pages": [
+        {"page": 1, "text": "第一頁" * 50, "source": "vision", "reviewed": True},
+        {"page": 2, "text": "人工修正" * 50, "source": "text", "reviewed": True,
+         "original_text": "錯字"},
+    ], "chunked": False})
+    documents = [
+        {"file_name": "old.pdf", "document_id": "old-id", "page_start": 1, "page_end": 1},
+        {"file_name": "new.pdf", "document_id": "new-id", "page_start": 1, "page_end": 2},
+    ]
+    legacy = [TextChunk(7, "舊內容", (1,), "old.pdf", "old-id")]
+
+    (
+        status, documents, chunks, active, active_chunks, rows, page_status, document_rows,
+    ) = ui.chunk_documents_for_ui(project_id, 200, 0, documents, legacy, {"file_name": "new.pdf"})
+
+    assert status.startswith("✅ 已依目前頁面內容切分 1 份文件")
+    assert "old.pdf 沒有逐頁解析結果" in status
+    assert [chunk.number for chunk in chunks] == list(range(1, len(chunks) + 1))
+    assert chunks[0] == TextChunk(1, "舊內容", (1,), "old.pdf", "old-id")
+    new_chunks = [chunk for chunk in chunks if chunk.document == "new.pdf"]
+    assert "".join(chunk.text for chunk in new_chunks).count("人工修正") == 50
+    assert all(chunk.document_id == "new-id" for chunk in new_chunks)
+    assert active["file_name"] == "new.pdf" and active_chunks == new_chunks
+    assert documents[1]["chunk_count"] == len(new_chunks)
+    assert documents[1]["config"] == {"chunk_size": 200, "chunk_overlap": 0}
+    assert document_rows[0][3] == 1
+    assert ui.load_document_pages(project_id)["new.pdf"]["chunked"] is True
+
+    status, *_ = ui.chunk_documents_for_ui(project_id, 50, 0, documents, chunks, active)
+    assert status == "❌ chunk_size 必須介於 100 到 10,000"
+
+
+def _review_project(tmp_path, monkeypatch) -> tuple[str, list[dict[str, object]]]:
+    project_id = _pdf_project(tmp_path, monkeypatch)
+    with pymupdf.open() as document:
+        for text in ("Page one", "Page two", "Page three"):
+            document.new_page(width=300, height=400).insert_text((40, 200), text)
+        document.save(tmp_path / "manual.pdf")
+    ui.save_document_pages(project_id, "manual.pdf", {"pages": [
+        {"page": 1, "text": "vision one", "source": "vision", "reviewed": False, "has_figures": True},
+        {"page": 2, "text": "text two", "source": "text", "reviewed": False, "has_figures": False},
+        {"page": 3, "text": "", "source": "fallback", "reviewed": False, "has_figures": True,
+         "fallback_reason": "HTTP 500"},
+    ], "chunked": True})
+    return project_id, [{"file_name": "manual.pdf", "file_path": str(tmp_path / "manual.pdf")}]
+
+
+def test_review_page_shows_image_text_and_filters(tmp_path, monkeypatch) -> None:
+    project_id, documents = _review_project(tmp_path, monkeypatch)
+
+    rows, image, text, info, page, status = ui.show_review_page_for_ui(
+        project_id, documents, "manual.pdf", None, "全部",
+    )
+    assert [row[:3] for row in rows] == [
+        [1, "Vision", "有"], [2, "文字層", "無"], [3, "Vision 失敗→文字層", "有"],
+    ]
+    assert image.size == (450, 600)
+    assert text == {"value": "vision one", "interactive": True, "__type__": "update"}
+    assert page == 1 and "解析方式：Vision" in info and "⬜ 未檢查" in info
+    assert status == "已檢查 0 / 3 頁，人工修改 0 頁。"
+
+    rows, _image, _text, info, page, _status = ui.show_review_page_for_ui(
+        project_id, documents, "manual.pdf", 1, "Vision 失敗",
+    )
+    assert [row[0] for row in rows] == [3] and page == 3
+    assert "Vision 失敗原因：HTTP 500" in info
+    assert ui.step_review_page_for_ui(1, project_id, documents, "manual.pdf", 3, "全部")[4] == 1
+    assert ui.step_review_page_for_ui(-1, project_id, documents, "manual.pdf", 1, "全部")[4] == 3
+
+    legacy = ui.show_review_page_for_ui(project_id, documents, "old.pdf", None, "全部")
+    assert legacy[0] == [] and "沒有逐頁解析結果" in legacy[5]
+
+
+def test_review_save_marks_page_edits_text_and_moves_to_next(tmp_path, monkeypatch) -> None:
+    project_id, documents = _review_project(tmp_path, monkeypatch)
+
+    result = ui.save_review_page_for_ui(
+        project_id, documents, "manual.pdf", 1, "vision one", "未檢查",
+    )
+    assert result[4] == 2 and result[5].startswith("✅ 第 1 頁已標記為已檢查。")
+    entry = ui.load_document_pages(project_id)["manual.pdf"]
+    assert entry["pages"][0]["reviewed"] is True and entry["chunked"] is True
+
+    result = ui.save_review_page_for_ui(
+        project_id, documents, "manual.pdf", 2, " corrected two ", "全部",
+    )
+    assert result[4] == 3 and "已儲存修改" in result[5]
+    assert "已人工修改 1 頁" not in result[5] and "人工修改 1 頁" in result[5]
+    assert "chunks 尚未依目前頁面內容產生" in result[5]
+    page = ui.load_document_pages(project_id)["manual.pdf"]["pages"][1]
+    assert page["text"] == "corrected two" and page["original_text"] == "text two"
+    assert ui.load_document_pages(project_id)["manual.pdf"]["chunked"] is False
+
+    result = ui.revert_review_page_for_ui(project_id, documents, "manual.pdf", 2, "全部")
+    assert result[2]["value"] == "text two" and "已還原" in result[5]
+    assert "original_text" not in ui.load_document_pages(project_id)["manual.pdf"]["pages"][1]
+
+
+def test_review_page_can_be_reparsed_with_vision_or_text_layer(tmp_path, monkeypatch) -> None:
+    project_id, documents = _review_project(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        ui, "analyze_pdf_page",
+        lambda path, page, model, effort: calls.append(
+            (Path(path).name, page, model, effort)
+        ) or " new vision ",
+    )
+
+    result = ui.reparse_review_page_with_vision_for_ui(
+        project_id, documents, "manual.pdf", 3, "全部", "gpt-4.1-mini", "high",
+    )
+    assert calls == [("manual.pdf", 3, "gpt-4.1-mini", "high")]
+    assert result[2]["value"] == "new vision" and "改用Vision重新解析" in result[5]
+    page = ui.load_document_pages(project_id)["manual.pdf"]["pages"][2]
+    assert page["source"] == "vision" and "fallback_reason" not in page
+
+    result = ui.use_text_layer_for_review_page_for_ui(project_id, documents, "manual.pdf", 1, "全部")
+    assert result[2]["value"] == "Page one"
+    assert ui.load_document_pages(project_id)["manual.pdf"]["pages"][0]["source"] == "text"
+
+    result = ui.reparse_review_page_with_vision_for_ui(
+        project_id, documents, "manual.pdf", 1, "全部", ui.PDF_VISION_DISABLED,
+    )
+    assert "請先在「① 解析 PDF」選擇 Vision 模型" in result[5]
+
+
+def test_review_document_choices_keep_selection_or_pick_latest() -> None:
+    documents = [{"file_name": "a.pdf"}, {"file_name": "b.pdf"}]
+    assert ui.review_document_choices_for_ui(documents, "a.pdf")["value"] == "a.pdf"
+    assert ui.review_document_choices_for_ui(documents, "gone.pdf")["value"] == "b.pdf"
+    assert ui.review_document_choices_for_ui([], None) == {
+        "choices": [], "value": None, "__type__": "update",
+    }
 
 
 
@@ -3721,6 +3918,7 @@ def test_remove_document_for_ui_supports_multi_select(monkeypatch) -> None:
 
 
 def test_add_document_for_ui_accepts_multiple_files_at_once(tmp_path, monkeypatch) -> None:
+    project_id = _pdf_project(tmp_path, monkeypatch)
     paths = [tmp_path / "a.pdf", tmp_path / "b.pdf"]
     for path in paths:
         path.write_bytes(path.name.encode())
@@ -3730,34 +3928,27 @@ def test_add_document_for_ui_accepts_multiple_files_at_once(tmp_path, monkeypatc
 
     monkeypatch.setattr(ui, "extract_pdf_with_report", fake_extract_pdf)
 
-    result = ui.add_document_for_ui(
-        [str(path) for path in paths], 1500, 200, [], []
+    status, documents, *_ = ui.add_document_for_ui(
+        [str(path) for path in paths], [], project_id=project_id,
     )
-    (
-        status, rows, documents, chunks, active_preview, active_chunks,
-        document_status, documents_rows, pdf_reset, remove_choices,
-    ) = result
 
     assert [doc["file_name"] for doc in documents] == ["a.pdf", "b.pdf"]
-    assert [chunk.number for chunk in chunks] == [1, 2]
-    assert [chunk.document for chunk in chunks] == ["a.pdf", "b.pdf"]
-    assert len({chunk.document_id for chunk in chunks}) == 2
-    assert active_preview["file_name"] == "b.pdf"
-    assert "a.pdf" in status and "b.pdf" in status
-    assert "2 份文件" in status
+    assert len({doc["document_id"] for doc in documents}) == 2
+    assert sorted(ui.load_document_pages(project_id)) == ["a.pdf", "b.pdf"]
     assert status.count("- ✅") == 2
     assert status.splitlines()[0].startswith("- ✅「a.pdf」")
     assert status.splitlines()[1].startswith("- ✅「b.pdf」")
 
 
 def test_add_document_for_ui_reports_progress_and_vision_fallbacks(tmp_path, monkeypatch) -> None:
+    project_id = _pdf_project(tmp_path, monkeypatch)
     paths = [tmp_path / "a.pdf", tmp_path / "b.pdf"]
     for path in paths:
         path.write_bytes(path.name.encode())
-    seen_models = []
+    seen = []
 
     def fake_extract_pdf(path, **kwargs):
-        seen_models.append(kwargs["vision_model"])
+        seen.append((kwargs["vision_model"], kwargs["vision_scope"]))
         kwargs["progress_callback"](0.5, "已解析 1 / 2 頁")
         return PdfExtraction(
             [PageText(1, "one"), PageText(2, "two")], [], vision_model=kwargs["vision_model"],
@@ -3771,13 +3962,12 @@ def test_add_document_for_ui_reports_progress_and_vision_fallbacks(tmp_path, mon
 
     monkeypatch.setattr(ui, "extract_pdf_with_report", fake_extract_pdf)
 
-    status, *_rest = ui.add_document_for_ui(
-        [str(path) for path in paths], 1500, 200, [], [], "gpt-4.1-mini",
-        progress=fake_progress,
+    status, documents, *_ = ui.add_document_for_ui(
+        [str(path) for path in paths], [], "gpt-4.1-mini", ui.VISION_SCOPE_ALL,
+        project_id=project_id, progress=fake_progress,
     )
-    documents = _rest[1]
 
-    assert seen_models == ["gpt-4.1-mini", "gpt-4.1-mini"]
+    assert seen == [("gpt-4.1-mini", ui.VISION_SCOPE_ALL)] * 2
     assert (0.25, "a.pdf（1/2）：已解析 1 / 2 頁") in progress_calls
     assert (0.75, "b.pdf（2/2）：已解析 1 / 2 頁") in progress_calls
     assert "1 頁改用文字層擷取（第 2 頁，例：模型 API 回傳 HTTP 500：boom）" in status
@@ -3785,6 +3975,7 @@ def test_add_document_for_ui_reports_progress_and_vision_fallbacks(tmp_path, mon
 
 
 def test_add_document_for_ui_stop_discards_current_and_remaining_files(tmp_path, monkeypatch) -> None:
+    project_id = _pdf_project(tmp_path, monkeypatch)
     paths = [tmp_path / name for name in ("a.pdf", "b.pdf", "c.pdf")]
     for path in paths:
         path.write_bytes(path.name.encode())
@@ -3802,12 +3993,14 @@ def test_add_document_for_ui_stop_discards_current_and_remaining_files(tmp_path,
 
     monkeypatch.setattr(ui, "extract_pdf_with_report", fake_extract_pdf)
 
-    status, _rows, documents, *_ = ui.add_document_for_ui(
-        [str(path) for path in paths], 1500, 200, [], [], "gpt-6-luna", control,
+    status, documents, *_ = ui.add_document_for_ui(
+        [str(path) for path in paths], [], "gpt-6-luna", ui.VISION_SCOPE_ALL, control,
+        project_id,
     )
 
     assert parsed == ["a.pdf", "b.pdf"]
     assert [doc["file_name"] for doc in documents] == ["a.pdf"]
+    assert list(ui.load_document_pages(project_id)) == ["a.pdf"]
     assert "⏹「b.pdf」已停止解析，未加入專案。" in status
     assert "⏹「c.pdf」未解析。" in status
 
@@ -3826,6 +4019,7 @@ def test_pdf_pause_and_stop_buttons_update_control() -> None:
 
 
 def test_add_document_for_ui_disabled_vision_passes_no_model(tmp_path, monkeypatch) -> None:
+    project_id = _pdf_project(tmp_path, monkeypatch)
     pdf_path = tmp_path / "manual.pdf"
     pdf_path.write_bytes(b"pdf")
     seen_models = []
@@ -3836,12 +4030,14 @@ def test_add_document_for_ui_disabled_vision_passes_no_model(tmp_path, monkeypat
 
     monkeypatch.setattr(ui, "extract_pdf_with_report", fake_extract_pdf)
 
-    status, *_ = ui.add_document_for_ui(
-        str(pdf_path), 1500, 200, [], [], ui.PDF_VISION_DISABLED,
+    status, documents, *_ = ui.add_document_for_ui(
+        str(pdf_path), [], ui.PDF_VISION_DISABLED, project_id=project_id,
     )
 
     assert seen_models == [None]
     assert "未使用 Vision，僅擷取文字層。" in status
+    assert documents[0]["vision_scope"] is None
+    assert "has_figures" not in ui.load_document_pages(project_id)["manual.pdf"]["pages"][0]
 
 
 def test_request_stop_for_ui_sets_flag_on_shared_control() -> None:
@@ -5415,3 +5611,15 @@ def test_progress_tracked_events_show_a_single_progress_bar() -> None:
         "evaluate_experiment_answers_with_services_for_ui",
     } <= set(tracked)
     assert {name: count for name, count in tracked.items() if count != 1} == {}
+
+
+def test_pdf_review_opens_after_successful_parse_and_page_number_accepts_empty() -> None:
+    assert ui._review_tab_after_parse("✅「a.pdf」解析第 1–2 頁。")["selected"] == "pdf-review"
+    assert "selected" not in ui._review_tab_after_parse("❌「a.pdf」：PDF 無法開啟")
+    app = build_app()
+    page_number = next(
+        component for component in app.config["components"]
+        if component.get("props", {}).get("label") == "頁碼（Enter 跳頁）"
+    )
+    # An empty page number is sent as 0; a minimum would reject every review event.
+    assert page_number["props"].get("minimum") is None

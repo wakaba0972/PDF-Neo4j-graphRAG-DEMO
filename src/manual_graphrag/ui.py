@@ -21,7 +21,7 @@ from uuid import uuid4
 import gradio as gr
 
 from .audit import bind_gradio_callbacks_to_actor, current_actor
-from .chunking import TextChunk, chunk_pages, preview_rows
+from .chunking import PageText, TextChunk, chunk_pages, preview_rows
 from .config import (
     public_settings,
 )
@@ -65,9 +65,18 @@ from .neo4j_service import (
 )
 from .pdf_service import (
     FIGURE_KIND_LABELS,
+    DEFAULT_VISION_REASONING_EFFORT,
+    VISION_SCOPE_ALL,
+    VISION_SCOPE_DIAGRAMS,
+    VISION_SCOPE_FIGURES,
+    VISION_SCOPE_TABLES,
+    PdfExtraction,
+    analyze_pdf_page,
+    extract_page_text_layer,
     extract_pdf_with_report,
     format_vision_report,
     render_pdf_figures,
+    render_pdf_page,
 )
 from .project_store import (
     append_question,
@@ -76,12 +85,14 @@ from .project_store import (
     export_project_archive,
     import_project_archive,
     list_projects,
+    load_document_pages,
     load_project as load_full_project,
     load_project_chunks,
     load_project_metadata as load_project,
     load_project_summary,
     project_database_name,
     remove_document,
+    save_document_pages,
     save_project,
 )
 from .question_set_store import (
@@ -131,6 +142,16 @@ from .storage import write_json
 DEFAULT_LLM_MODEL = GPT_6_LUNA_MODEL
 DEFAULT_PDF_VISION_MODEL = GPT_6_LUNA_MODEL
 PDF_VISION_DISABLED = "停用"
+PDF_VISION_SCOPE_CHOICES = [
+    ("僅含圖表或表格的頁面（純文字頁用文字層，省 token）", VISION_SCOPE_FIGURES),
+    ("只讀表格（僅含表格的頁面）", VISION_SCOPE_TABLES),
+    ("只讀圖表（僅含圖片或向量圖的頁面）", VISION_SCOPE_DIAGRAMS),
+    ("全部頁面", VISION_SCOPE_ALL),
+]
+DEFAULT_PDF_VISION_SCOPE = VISION_SCOPE_FIGURES
+DEFAULT_PDF_VISION_REASONING_EFFORT = DEFAULT_VISION_REASONING_EFFORT
+PAGE_SOURCE_LABELS = {"vision": "Vision", "text": "文字層", "fallback": "Vision 失敗→文字層"}
+PAGE_REVIEW_FILTERS = ["全部", "未檢查", "Vision", "文字層", "Vision 失敗", "含圖表", "已修改"]
 FIGURE_GALLERY_LIMIT = 12
 CHUNK_FIGURE_HINT = "點選上方任一 chunk，可查看其來源頁的圖片、向量圖與表格原圖。"
 DEFAULT_EVALUATION_MODEL = GPT_6_LUNA_MODEL
@@ -201,6 +222,11 @@ def reasoning_effort_visibility(model: str | None) -> dict[str, Any]:
         visible=str(model or "").strip().casefold() == GPT_6_LUNA_MODEL,
         value=DEFAULT_REASONING_EFFORT,
     )
+
+
+def pdf_vision_reasoning_effort_visibility(model: str | None) -> dict[str, Any]:
+    """Show the Vision effort control for GPT-6 Luna, keeping the chosen value."""
+    return gr.update(visible=str(model or "").strip().casefold() == GPT_6_LUNA_MODEL)
 
 
 def temperature_visibility(model: str | None) -> dict[str, Any]:
@@ -1308,6 +1334,8 @@ def save_project_for_ui(
     answer_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     retrieval_strategy_params_json: Any = None,
     pdf_vision_model: str | None = DEFAULT_PDF_VISION_MODEL,
+    pdf_vision_scope: str | None = DEFAULT_PDF_VISION_SCOPE,
+    pdf_vision_reasoning_effort: str | None = DEFAULT_PDF_VISION_REASONING_EFFORT,
 ) -> tuple[dict[str, Any], str]:
     if not project_id:
         return {}, "❌ 請先建立或載入專案。"
@@ -1330,6 +1358,10 @@ def save_project_for_ui(
         "extraction_reasoning_effort": extraction_reasoning_effort or DEFAULT_REASONING_EFFORT,
         "answer_reasoning_effort": answer_reasoning_effort or DEFAULT_REASONING_EFFORT,
         "pdf_vision_model": pdf_vision_model or DEFAULT_PDF_VISION_MODEL,
+        "pdf_vision_scope": pdf_vision_scope or DEFAULT_PDF_VISION_SCOPE,
+        "pdf_vision_reasoning_effort": (
+            pdf_vision_reasoning_effort or DEFAULT_PDF_VISION_REASONING_EFFORT
+        ),
     }
     documents = documents or []
     graph_state = graph_state or {}
@@ -1432,6 +1464,12 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
         strategy_parameter_updates[0],
         _pdf_vision_model_update(
             llm_settings, get("pdf_vision_model", DEFAULT_PDF_VISION_MODEL),
+        ),
+        get("pdf_vision_scope", DEFAULT_PDF_VISION_SCOPE),
+        gr.update(
+            value=get("pdf_vision_reasoning_effort", DEFAULT_PDF_VISION_REASONING_EFFORT),
+            visible=str(get("pdf_vision_model", DEFAULT_PDF_VISION_MODEL) or "").casefold() == GPT_6_LUNA_MODEL,
+            choices=list(GPT_6_LUNA_REASONING_EFFORTS),
         ),
         *strategy_parameter_updates[1:],
     )
@@ -5674,33 +5712,45 @@ def human_review_results_for_ui(
         return f"❌ 載入人工評測結果失敗：{exc}", [], [], []
 
 
+def _page_records(extraction: PdfExtraction) -> list[dict[str, Any]]:
+    """Per-page parse results kept for human review and later chunking."""
+    figure_pages = set(extraction.figure_pages) if extraction.vision_model else None
+    records = []
+    for page in extraction.pages:
+        record: dict[str, Any] = {
+            "page": page.page, "text": page.text,
+            "source": extraction.page_source(page.page), "reviewed": False,
+        }
+        if figure_pages is not None:
+            record["has_figures"] = page.page in figure_pages
+        if page.page in extraction.fallback_pages:
+            record["fallback_reason"] = extraction.fallback_pages[page.page]
+        records.append(record)
+    return records
+
+
 def _add_single_document(
     file_path: str,
-    parsed_chunk_size: int,
-    parsed_chunk_overlap: int,
     documents: list[dict[str, Any]],
-    chunks: list[TextChunk],
     vision_model: str | None = DEFAULT_PDF_VISION_MODEL,
+    vision_scope: str = DEFAULT_PDF_VISION_SCOPE,
     progress_callback: Callable[[float, str], None] | None = None,
     run_control: RunControl | None = None,
-) -> tuple[str, dict[str, Any] | None, list[TextChunk]]:
+    vision_reasoning_effort: str | None = DEFAULT_PDF_VISION_REASONING_EFFORT,
+) -> tuple[str, dict[str, Any] | None, list[dict[str, Any]]]:
     file_name = Path(file_path).name
     if any(doc.get("file_name") == file_name for doc in documents):
         return f"❌「{file_name}」：專案中已有同名文件，請先移除或重新命名後再上傳。", None, []
     try:
         document_id = hashlib.sha256(Path(file_path).read_bytes()).hexdigest()
         extraction = extract_pdf_with_report(
-            file_path, vision_model=vision_model, progress_callback=progress_callback,
-            control=run_control,
+            file_path, vision_model=vision_model, vision_scope=vision_scope,
+            vision_reasoning_effort=vision_reasoning_effort,
+            progress_callback=progress_callback, control=run_control,
         )
         pages, empty_pages = extraction.pages, extraction.empty_pages
-        next_number = max((chunk.number for chunk in chunks), default=0) + 1
-        new_chunks = chunk_pages(
-            pages, parsed_chunk_size, parsed_chunk_overlap,
-            document=file_name, document_id=document_id, start_number=next_number,
-        )
-        if not new_chunks:
-            raise ValueError("PDF 沒有可解析文字；掃描文件需在後續版本加入 OCR。")
+        if not pages or len(empty_pages) == len(pages):
+            raise ValueError("PDF 沒有可解析文字；掃描文件請改用 Vision 解析。")
     except (ValueError, TypeError) as exc:
         return f"❌「{file_name}」：{exc}", None, []
     parsed_start, parsed_end = pages[0].page, pages[-1].page
@@ -5712,61 +5762,43 @@ def _add_single_document(
         "page_start": parsed_start,
         "page_end": parsed_end,
         "empty_pages": empty_pages,
-        "chunk_count": len(new_chunks),
-        "config": {"chunk_size": parsed_chunk_size, "chunk_overlap": parsed_chunk_overlap},
+        "chunk_count": 0,
         "vision_model": extraction.vision_model,
+        "vision_scope": extraction.vision_scope if extraction.vision_model else None,
+        "vision_reasoning_effort": extraction.vision_reasoning_effort,
         "vision_fallback_pages": sorted(extraction.fallback_pages),
     }
-    note = f"✅「{file_name}」第 {parsed_start}–{parsed_end} 頁，產生 {len(new_chunks)} 個 chunk。"
+    note = f"✅「{file_name}」解析第 {parsed_start}–{parsed_end} 頁。"
     if empty_pages:
         note += f" 無文字頁面：{', '.join(map(str, empty_pages))}。"
     note += f" {format_vision_report(extraction)}"
-    return note, doc_state, new_chunks
+    return note, doc_state, _page_records(extraction)
 
 
 def add_document_for_ui(
     file_paths: list[str] | str | None,
-    chunk_size: int,
-    chunk_overlap: int,
     documents: list[dict[str, Any]],
-    chunks: list[TextChunk],
     pdf_vision_model: str | None = DEFAULT_PDF_VISION_MODEL,
+    pdf_vision_scope: str | None = DEFAULT_PDF_VISION_SCOPE,
     run_control: RunControl | None = None,
+    project_id: str = "",
+    pdf_vision_reasoning_effort: str | None = DEFAULT_PDF_VISION_REASONING_EFFORT,
     progress=gr.Progress(),
-) -> tuple[
-    str, list[list[object]], list[dict[str, Any]], list[TextChunk],
-    dict[str, Any], list[TextChunk], str,
-    list[list[object]], dict[str, Any], dict[str, Any],
-]:
+) -> tuple[str, list[dict[str, Any]], list[list[object]], dict[str, Any], dict[str, Any]]:
+    """Parse PDFs into per-page text only; chunking is a separate step."""
     documents = list(documents or [])
-    chunks = list(chunks or [])
+    unchanged = (documents, _document_rows(documents), gr.update(), _document_choices(documents))
+    if not project_id:
+        return ("❌ 請先建立或載入專案。", *unchanged)
     if not file_paths:
-        return (
-            "請先上傳 PDF。", [], documents, chunks, {}, [],
-            "尚未解析任何 PDF。", _document_rows(documents), gr.update(),
-            _document_choices(documents),
-        )
-    try:
-        parsed_chunk_size = int(chunk_size)
-        parsed_chunk_overlap = int(chunk_overlap)
-        if not 100 <= parsed_chunk_size <= 10000:
-            raise ValueError("chunk_size 必須介於 100 到 10,000")
-        if not 0 <= parsed_chunk_overlap < parsed_chunk_size:
-            raise ValueError("chunk_overlap 必須大於等於 0 且小於 chunk_size")
-    except (ValueError, TypeError) as exc:
-        return (
-            f"❌ {exc}", [], documents, chunks, {}, [],
-            "無法解析頁面。", _document_rows(documents), gr.update(),
-            _document_choices(documents),
-        )
+        return ("請先上傳 PDF。", *unchanged)
 
     paths = file_paths if isinstance(file_paths, list) else [file_paths]
     if run_control:
         run_control.reset()
     vision_model = None if pdf_vision_model in (None, "", PDF_VISION_DISABLED) else pdf_vision_model
     notes: list[str] = []
-    last_doc_state: dict[str, Any] = {}
-    last_new_chunks: list[TextChunk] = []
+    added = 0
     for index, file_path in enumerate(paths):
         file_label = (
             f"{Path(file_path).name}（{index + 1}/{len(paths)}）"
@@ -5778,9 +5810,9 @@ def add_document_for_ui(
 
         progress(index / len(paths), desc=f"{file_label}：開始解析")
         try:
-            note, doc_state, new_chunks = _add_single_document(
-                file_path, parsed_chunk_size, parsed_chunk_overlap, documents, chunks,
-                vision_model, report_progress, run_control,
+            note, doc_state, page_records = _add_single_document(
+                file_path, documents, vision_model, pdf_vision_scope or DEFAULT_PDF_VISION_SCOPE,
+                report_progress, run_control, pdf_vision_reasoning_effort,
             )
         except RunCancelled:
             notes.append(f"⏹「{Path(file_path).name}」已停止解析，未加入專案。")
@@ -5788,35 +5820,374 @@ def add_document_for_ui(
                 f"⏹「{Path(skipped).name}」未解析。" for skipped in paths[index + 1:]
             )
             break
+        if doc_state is not None:
+            try:
+                save_document_pages(
+                    project_id, doc_state["file_name"], {"pages": page_records, "chunked": False},
+                )
+            except (OSError, ValueError) as exc:
+                note, doc_state = f"❌「{Path(file_path).name}」：無法保存解析結果：{exc}", None
         notes.append(note)
         if doc_state is not None:
             documents = documents + [doc_state]
-            chunks = chunks + new_chunks
-            last_doc_state, last_new_chunks = doc_state, new_chunks
+            added += 1
 
-    summary = f"（專案累計 {len(chunks)} 個 chunk，{len(documents)} 份文件）"
     if len(notes) > 1:
-        status = "\n".join(f"- {note}" for note in notes) + f"\n\n{summary}"
+        status = "\n".join(f"- {note}" for note in notes)
     else:
-        status = notes[0] + summary
-    if not last_doc_state:
-        return (
-            status, [], documents, chunks, {}, [],
-            "無法解析頁面。", _document_rows(documents), gr.update(),
-            _document_choices(documents),
-        )
+        status = notes[0]
+    if added:
+        status += f"\n\n請在「② 逐頁檢查」確認解析結果後，到「③ 切分 chunk」產生 chunks。"
     return (
-        status,
-        _chunk_rows(last_new_chunks),
-        documents,
-        chunks,
-        last_doc_state,
-        last_new_chunks,
-        _document_status(len(documents) - 1, len(documents), last_doc_state, len(last_new_chunks)),
-        _document_rows(documents),
-        gr.update(value=None),
-        _document_choices(documents),
+        status, documents, _document_rows(documents),
+        gr.update(value=None) if added else gr.update(), _document_choices(documents),
     )
+
+
+def chunk_documents_for_ui(
+    project_id: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    documents: list[dict[str, Any]],
+    chunks: list[TextChunk],
+    active: dict[str, Any],
+) -> tuple[
+    str, list[dict[str, Any]], list[TextChunk], dict[str, Any], list[TextChunk],
+    list[list[object]], str, list[list[object]],
+]:
+    """Rebuild every document's chunks from its saved (and reviewed) page text."""
+    documents = [dict(doc) for doc in documents or []]
+    chunks = list(chunks or [])
+
+    def unchanged(message: str) -> tuple[Any, ...]:
+        active_doc = active or {}
+        active_chunks = [chunk for chunk in chunks if chunk.document == active_doc.get("file_name")]
+        return (
+            message, documents, chunks, active_doc, active_chunks, _chunk_rows(active_chunks),
+            gr.update(), _document_rows(documents),
+        )
+
+    if not project_id:
+        return unchanged("❌ 請先建立或載入專案。")
+    if not documents:
+        return unchanged("請先解析 PDF。")
+    try:
+        parsed_chunk_size = int(chunk_size)
+        parsed_chunk_overlap = int(chunk_overlap)
+        if not 100 <= parsed_chunk_size <= 10000:
+            raise ValueError("chunk_size 必須介於 100 到 10,000")
+        if not 0 <= parsed_chunk_overlap < parsed_chunk_size:
+            raise ValueError("chunk_overlap 必須大於等於 0 且小於 chunk_size")
+        stored_pages = load_document_pages(project_id)
+    except (OSError, ValueError, TypeError) as exc:
+        return unchanged(f"❌ {exc}")
+
+    new_chunks: list[TextChunk] = []
+    legacy: list[str] = []
+    for doc in documents:
+        name = doc.get("file_name", "")
+        entry = stored_pages.get(name)
+        next_number = len(new_chunks) + 1
+        if entry is None:
+            # Parsed before page records existed: keep its chunks, renumbered.
+            legacy.append(name)
+            doc_chunks = [
+                TextChunk(next_number + offset, chunk.text, chunk.pages, chunk.document, chunk.document_id)
+                for offset, chunk in enumerate(chunk for chunk in chunks if chunk.document == name)
+            ]
+        else:
+            doc_chunks = chunk_pages(
+                [PageText(int(page["page"]), str(page.get("text") or "")) for page in entry["pages"]],
+                parsed_chunk_size, parsed_chunk_overlap,
+                document=name, document_id=doc.get("document_id", ""), start_number=next_number,
+            )
+            doc["config"] = {"chunk_size": parsed_chunk_size, "chunk_overlap": parsed_chunk_overlap}
+            if not entry.get("chunked"):
+                try:
+                    save_document_pages(project_id, name, {**entry, "chunked": True})
+                except (OSError, ValueError) as exc:
+                    return unchanged(f"❌ {exc}")
+        doc["chunk_count"] = len(doc_chunks)
+        new_chunks.extend(doc_chunks)
+
+    names = [doc.get("file_name") for doc in documents]
+    active_name = (active or {}).get("file_name")
+    index = names.index(active_name) if active_name in names else len(documents) - 1
+    active_doc = documents[index]
+    active_chunks = [chunk for chunk in new_chunks if chunk.document == active_doc.get("file_name")]
+    status = (
+        f"✅ 已依目前頁面內容切分 {len(documents) - len(legacy)} 份文件，"
+        f"共 {len(new_chunks)} 個 chunk（size {parsed_chunk_size}、overlap {parsed_chunk_overlap}）。"
+    )
+    if legacy:
+        status += f" ⚠️ {'、'.join(legacy)} 沒有逐頁解析結果（較早版本解析），沿用原有 chunks；需移除後重新解析才能重新切分。"
+    return (
+        status, documents, new_chunks, active_doc, active_chunks, _chunk_rows(active_chunks),
+        _document_status(index, len(documents), active_doc, len(active_chunks)),
+        _document_rows(documents),
+    )
+
+
+def _review_filter_match(record: dict[str, Any], review_filter: str) -> bool:
+    return {
+        "未檢查": not record.get("reviewed"),
+        "Vision": record.get("source") == "vision",
+        "文字層": record.get("source") == "text",
+        "Vision 失敗": record.get("source") == "fallback",
+        "含圖表": bool(record.get("has_figures")),
+        "已修改": "original_text" in record,
+    }.get(review_filter, True)
+
+
+def _review_page_label(record: dict[str, Any]) -> str:
+    return PAGE_SOURCE_LABELS.get(str(record.get("source")), str(record.get("source") or ""))
+
+
+def _review_outputs(
+    project_id: str,
+    documents: list[dict[str, Any]],
+    document_name: str | None,
+    page_number: Any,
+    review_filter: str,
+    note: str = "",
+) -> tuple[Any, ...]:
+    """Overview rows, page image, editable text, page info, page number and status."""
+    from PIL import Image
+
+    def empty(message: str) -> tuple[Any, ...]:
+        return [], None, gr.update(value="", interactive=False), "", None, message
+
+    if not project_id or not document_name:
+        return empty(note or "請先解析 PDF。")
+    try:
+        entry = load_document_pages(project_id).get(document_name)
+    except (OSError, ValueError) as exc:
+        return empty(f"❌ {exc}")
+    if not entry:
+        return empty(
+            f"「{document_name}」沒有逐頁解析結果（較早版本解析），需移除後重新解析才能逐頁檢查。"
+        )
+    pages = entry.get("pages") or []
+    visible = [record for record in pages if _review_filter_match(record, review_filter)]
+    reviewed = sum(bool(record.get("reviewed")) for record in pages)
+    edited = sum("original_text" in record for record in pages)
+    summary = f"已檢查 {reviewed} / {len(pages)} 頁，人工修改 {edited} 頁。"
+    if not entry.get("chunked"):
+        summary += " ⚠️ chunks 尚未依目前頁面內容產生，檢查完請到「③ 切分 chunk」重新切分。"
+    status = f"{note}\n\n{summary}" if note else summary
+    rows = [
+        [
+            record["page"], _review_page_label(record),
+            {True: "有", False: "無"}.get(record.get("has_figures"), "—"),
+            "✓" if record.get("reviewed") else "",
+            "✓" if "original_text" in record else "",
+            len(record.get("text") or ""),
+        ]
+        for record in visible
+    ]
+    numbers = [record["page"] for record in visible]
+    try:
+        page_number = int(page_number)
+    except (TypeError, ValueError):
+        page_number = None
+    if page_number not in numbers:
+        page_number = numbers[0] if numbers else None
+    if page_number is None:
+        return rows, None, gr.update(value="", interactive=False), "沒有符合篩選條件的頁面。", None, status
+    record = next(record for record in visible if record["page"] == page_number)
+    image = None
+    path = _document_pdf_path(project_id, document_name, documents)
+    if path is None:
+        status += " ⚠️ 找不到 PDF，無法顯示頁面影像。"
+    else:
+        try:
+            image = Image.open(BytesIO(render_pdf_page(path, page_number)))
+        except (OSError, RuntimeError, ValueError) as exc:
+            status += f" ⚠️ 頁面影像渲染失敗：{exc}"
+    figures = {True: "有", False: "無"}.get(record.get("has_figures"), "未偵測")
+    info = (
+        f"**第 {page_number} 頁**｜解析方式：{_review_page_label(record)}｜圖表／表格：{figures}｜"
+        + ("✅ 已檢查" if record.get("reviewed") else "⬜ 未檢查")
+        + ("｜✏️ 已人工修改" if "original_text" in record else "")
+    )
+    if record.get("fallback_reason"):
+        info += f"\n\n⚠️ Vision 失敗原因：{record['fallback_reason']}"
+    return (
+        rows, image, gr.update(value=record.get("text") or "", interactive=True),
+        info, page_number, status,
+    )
+
+
+def show_review_page_for_ui(
+    project_id: str, documents: list[dict[str, Any]], document_name: str | None,
+    page_number: Any, review_filter: str,
+) -> tuple[Any, ...]:
+    return _review_outputs(project_id, documents, document_name, page_number, review_filter)
+
+
+def _neighbor_review_page(
+    project_id: str, document_name: str | None, page_number: Any, review_filter: str, offset: int,
+) -> Any:
+    try:
+        pages = (load_document_pages(project_id).get(document_name or "") or {}).get("pages") or []
+    except (OSError, ValueError):
+        return page_number
+    numbers = [record["page"] for record in pages if _review_filter_match(record, review_filter)]
+    if not numbers:
+        return page_number
+    try:
+        current = int(page_number)
+    except (TypeError, ValueError):
+        return numbers[0]
+    if offset > 0:
+        return next((number for number in numbers if number > current), numbers[0])
+    return next((number for number in reversed(numbers) if number < current), numbers[-1])
+
+
+def step_review_page_for_ui(
+    offset: int, project_id: str, documents: list[dict[str, Any]], document_name: str | None,
+    page_number: Any, review_filter: str,
+) -> tuple[Any, ...]:
+    target = _neighbor_review_page(project_id, document_name, page_number, review_filter, offset)
+    return _review_outputs(project_id, documents, document_name, target, review_filter)
+
+
+def select_review_page_for_ui(
+    project_id: str, documents: list[dict[str, Any]], document_name: str | None,
+    review_filter: str, evt: gr.SelectData,
+) -> tuple[Any, ...]:
+    row = evt.row_value or []
+    page_number = row[0] if row else None
+    return _review_outputs(project_id, documents, document_name, page_number, review_filter)
+
+
+def _update_review_page(
+    project_id: str, document_name: str | None, page_number: Any,
+    change: Callable[[dict[str, Any]], str],
+) -> str:
+    """Apply ``change`` to one stored page record; return a status note."""
+    if not project_id or not document_name:
+        return "❌ 請先選擇文件。"
+    try:
+        page_number = int(page_number)
+        entry = load_document_pages(project_id).get(document_name)
+        if not entry:
+            return "❌ 此文件沒有逐頁解析結果。"
+        record = next(
+            (record for record in entry["pages"] if record["page"] == page_number), None,
+        )
+        if record is None:
+            return f"❌ 找不到第 {page_number} 頁。"
+        before = record.get("text")
+        note = change(record)
+        if record.get("text") != before:
+            entry["chunked"] = False
+        save_document_pages(project_id, document_name, entry)
+    except (OSError, ValueError, TypeError, RuntimeError) as exc:
+        return f"❌ {exc}"
+    return note
+
+
+def save_review_page_for_ui(
+    project_id: str, documents: list[dict[str, Any]], document_name: str | None,
+    page_number: Any, text: str, review_filter: str,
+) -> tuple[Any, ...]:
+    """Save the edited text, mark the page reviewed, then show the next page."""
+    text = str(text or "").strip()
+
+    def change(record: dict[str, Any]) -> str:
+        record["reviewed"] = True
+        if text == record.get("text"):
+            return f"✅ 第 {page_number} 頁已標記為已檢查。"
+        original = record.get("original_text", record.get("text") or "")
+        record["text"] = text
+        if text == original:
+            record.pop("original_text", None)
+        else:
+            record["original_text"] = original
+        return f"✅ 第 {page_number} 頁已儲存修改並標記為已檢查。"
+
+    note = _update_review_page(project_id, document_name, page_number, change)
+    target = page_number if note.startswith("❌") else _neighbor_review_page(
+        project_id, document_name, page_number, review_filter, 1,
+    )
+    return _review_outputs(project_id, documents, document_name, target, review_filter, note)
+
+
+def revert_review_page_for_ui(
+    project_id: str, documents: list[dict[str, Any]], document_name: str | None,
+    page_number: Any, review_filter: str,
+) -> tuple[Any, ...]:
+    def change(record: dict[str, Any]) -> str:
+        if "original_text" not in record:
+            return f"第 {page_number} 頁沒有人工修改，不需還原。"
+        record["text"] = record.pop("original_text")
+        return f"↩ 第 {page_number} 頁已還原為原始解析結果。"
+
+    note = _update_review_page(project_id, document_name, page_number, change)
+    return _review_outputs(project_id, documents, document_name, page_number, review_filter, note)
+
+
+def _replace_review_page_text(
+    project_id: str, documents: list[dict[str, Any]], document_name: str | None,
+    page_number: Any, review_filter: str, source: str,
+    produce: Callable[[Path, int], str],
+) -> tuple[Any, ...]:
+    path = _document_pdf_path(project_id, document_name or "", documents)
+    if path is None:
+        note = f"❌ 找不到「{document_name}」的 PDF。"
+    else:
+        def change(record: dict[str, Any]) -> str:
+            record["text"] = produce(path, int(page_number)).strip()
+            record["source"] = source
+            record["reviewed"] = False
+            record.pop("original_text", None)
+            record.pop("fallback_reason", None)
+            return f"✅ 第 {page_number} 頁已改用{PAGE_SOURCE_LABELS[source]}重新解析，請檢查後再標記。"
+
+        note = _update_review_page(project_id, document_name, page_number, change)
+    return _review_outputs(project_id, documents, document_name, page_number, review_filter, note)
+
+
+def reparse_review_page_with_vision_for_ui(
+    project_id: str, documents: list[dict[str, Any]], document_name: str | None,
+    page_number: Any, review_filter: str, pdf_vision_model: str | None,
+    pdf_vision_reasoning_effort: str | None = DEFAULT_PDF_VISION_REASONING_EFFORT,
+) -> tuple[Any, ...]:
+    if pdf_vision_model in (None, "", PDF_VISION_DISABLED):
+        return _review_outputs(
+            project_id, documents, document_name, page_number, review_filter,
+            "❌ 請先在「① 解析 PDF」選擇 Vision 模型。",
+        )
+    return _replace_review_page_text(
+        project_id, documents, document_name, page_number, review_filter, "vision",
+        lambda path, page: analyze_pdf_page(
+            path, page, pdf_vision_model, pdf_vision_reasoning_effort,
+        ),
+    )
+
+
+def use_text_layer_for_review_page_for_ui(
+    project_id: str, documents: list[dict[str, Any]], document_name: str | None,
+    page_number: Any, review_filter: str,
+) -> tuple[Any, ...]:
+    return _replace_review_page_text(
+        project_id, documents, document_name, page_number, review_filter, "text",
+        extract_page_text_layer,
+    )
+
+
+def _review_tab_after_parse(status: str) -> Any:
+    """Open the review step once a parse added at least one document."""
+    return gr.update(selected="pdf-review") if "✅" in str(status or "") else gr.update()
+
+
+def review_document_choices_for_ui(
+    documents: list[dict[str, Any]], selected: str | None,
+) -> dict[str, Any]:
+    names = [doc.get("file_name", "") for doc in documents or []]
+    value = selected if selected in names else (names[-1] if names else None)
+    return gr.update(choices=names, value=value)
 
 
 def remove_document_for_ui(
@@ -6656,45 +7027,109 @@ def build_app() -> gr.Blocks:
                     env_status = gr.Markdown()
 
             with gr.Tab("1-1 PDF 與參數", interactive=False) as pdf_tab:
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        pdf_file = gr.File(
-                            label="PDF 使用手冊（可一次選取多個檔案）",
-                            file_types=[".pdf"], file_count="multiple", type="filepath",
-                        )
-                        chunk_size = gr.Slider(100, 10000, value=1500, step=100, label="Chunk size（字元）")
-                        chunk_overlap = gr.Slider(0, 2000, value=200, step=50, label="Chunk overlap（字元）")
-                        pdf_vision_model = gr.Dropdown(
-                            choices=_pdf_vision_model_choices(llm_settings),
-                            value=DEFAULT_PDF_VISION_MODEL,
-                            label="PDF 解析模型（Vision）",
-                            info="以多模態模型辨識表格與圖表；停用時只擷取 PDF 文字層，速度快但不含圖表描述。",
-                        )
-                        preview_button = gr.Button("解析並加入專案", variant="primary")
+                gr.Markdown(
+                    "流程：**① 解析 PDF** → **② 逐頁檢查**（對照原頁修正解析結果）→ "
+                    "**③ 切分 chunk**（使用檢查後的頁面內容，不會重新呼叫 Vision）。"
+                )
+                preview_status = gr.Markdown("尚未解析 PDF。可重複上傳多份 PDF，逐一加入同一個專案。")
+                with gr.Tabs(selected="pdf-parse") as pdf_steps:
+                    with gr.Tab("① 解析 PDF", id="pdf-parse"):
                         with gr.Row():
-                            pdf_pause_button = gr.Button("⏸ 暫停")
-                            pdf_stop_button = gr.Button("⏹ 停止", variant="stop")
-                        pdf_run_control_status = gr.Markdown()
-                        pdf_run_control_state = gr.State(RunControl())
-                        gr.Markdown("##### 已加入本專案的 PDF")
-                        documents_table = gr.Dataframe(
-                            headers=["選取", "文件", "頁碼範圍", "Chunk 數"],
-                            datatype=["bool", "str", "str", "number"],
-                            interactive=True, static_columns=[1, 2, 3],
-                            row_count=(0, "fixed"), col_count=(4, "fixed"),
-                            wrap=True,
-                        )
-                        remove_document_selector = gr.Dropdown(
-                            label="選擇要移除的 PDF（可多選）", choices=[],
-                            multiselect=True, interactive=True, visible=False,
-                        )
-                        remove_document_button = gr.Button("移除選定的 PDF", variant="stop")
-                    with gr.Column(scale=3):
-                        preview_status = gr.Markdown("尚未解析 PDF。可重複上傳多份 PDF，逐一加入同一個專案。")
+                            with gr.Column(scale=1):
+                                pdf_file = gr.File(
+                                    label="PDF 使用手冊（可一次選取多個檔案）",
+                                    file_types=[".pdf"], file_count="multiple", type="filepath",
+                                )
+                                pdf_vision_model = gr.Dropdown(
+                                    choices=_pdf_vision_model_choices(llm_settings),
+                                    value=DEFAULT_PDF_VISION_MODEL,
+                                    label="PDF 解析模型（Vision）",
+                                    info="以多模態模型辨識表格與圖表；停用時只擷取 PDF 文字層，速度快但不含圖表描述。",
+                                )
+                                pdf_vision_reasoning_effort = gr.Dropdown(
+                                    choices=list(GPT_6_LUNA_REASONING_EFFORTS),
+                                    value=DEFAULT_PDF_VISION_REASONING_EFFORT,
+                                    label="Vision 推理強度",
+                                    info="預設 none 最快最省；複雜表格或圖表辨識不佳時可調高，但會增加時間與 token。",
+                                    visible=DEFAULT_PDF_VISION_MODEL == GPT_6_LUNA_MODEL,
+                                )
+                                pdf_vision_scope = gr.Radio(
+                                    choices=PDF_VISION_SCOPE_CHOICES, value=DEFAULT_PDF_VISION_SCOPE,
+                                    label="Vision 解析範圍",
+                                    info="不含所選元素的頁面直接使用文字層；送 Vision 的頁面仍整頁轉錄。掃描頁（無文字層）一律送 Vision。",
+                                )
+                                preview_button = gr.Button("解析並加入專案", variant="primary")
+                                with gr.Row():
+                                    pdf_pause_button = gr.Button("⏸ 暫停")
+                                    pdf_stop_button = gr.Button("⏹ 停止", variant="stop")
+                                pdf_run_control_status = gr.Markdown()
+                                pdf_run_control_state = gr.State(RunControl())
+                            with gr.Column(scale=1):
+                                gr.Markdown("##### 已加入本專案的 PDF")
+                                documents_table = gr.Dataframe(
+                                    headers=["選取", "文件", "頁碼範圍", "Chunk 數"],
+                                    datatype=["bool", "str", "str", "number"],
+                                    interactive=True, static_columns=[1, 2, 3],
+                                    row_count=(0, "fixed"), col_count=(4, "fixed"),
+                                    wrap=True,
+                                )
+                                remove_document_selector = gr.Dropdown(
+                                    label="選擇要移除的 PDF（可多選）", choices=[],
+                                    multiselect=True, interactive=True, visible=False,
+                                )
+                                remove_document_button = gr.Button("移除勾選的 PDF", variant="stop")
+                    with gr.Tab("② 逐頁檢查", id="pdf-review"):
+                        with gr.Row(equal_height=True):
+                            review_document = gr.Dropdown(label="文件", choices=[], scale=3)
+                            review_filter = gr.Dropdown(
+                                PAGE_REVIEW_FILTERS, value="全部", label="篩選頁面", scale=2,
+                            )
+                            review_previous_button = gr.Button("◀ 上一頁", scale=1)
+                            review_page = gr.Number(label="頁碼（Enter 跳頁）", precision=0, scale=1)
+                            review_next_button = gr.Button("下一頁 ▶", scale=1)
+                        review_status = gr.Markdown("請先解析 PDF。")
                         with gr.Row():
-                            previous_button = gr.Button("上一份文件", scale=1)
-                            next_button = gr.Button("下一份文件", scale=1)
-                        page_status = gr.Markdown("請先解析 PDF。")
+                            with gr.Column(scale=1):
+                                review_image = gr.Image(
+                                    label="PDF 原頁", type="pil", interactive=False, height=760,
+                                    show_download_button=False,
+                                )
+                            with gr.Column(scale=1):
+                                review_info = gr.Markdown()
+                                review_text = gr.Textbox(
+                                    label="解析結果（可直接修改；切分 chunk 時使用此內容）",
+                                    lines=26, max_lines=40, interactive=False,
+                                )
+                                review_save_button = gr.Button(
+                                    "✔ 儲存並標記已檢查（下一頁）", variant="primary",
+                                )
+                                review_vision_reasoning_effort = gr.Dropdown(
+                                    choices=list(GPT_6_LUNA_REASONING_EFFORTS),
+                                    value=DEFAULT_PDF_VISION_REASONING_EFFORT,
+                                    label="重新解析此頁的推理強度",
+                                    info="只套用到「以 Vision 重新解析此頁」，預設跟隨「① 解析 PDF」的設定；辨識不佳時可單頁調高。",
+                                    visible=DEFAULT_PDF_VISION_MODEL == GPT_6_LUNA_MODEL,
+                                )
+                                with gr.Row():
+                                    review_revert_button = gr.Button("↩ 還原原始解析", size="sm")
+                                    review_vision_button = gr.Button("🔁 以 Vision 重新解析此頁", size="sm")
+                                    review_text_layer_button = gr.Button("📄 改用 PDF 文字層", size="sm")
+                        with gr.Accordion("頁面總覽（點選列可跳到該頁）", open=False):
+                            review_overview = gr.Dataframe(
+                                headers=["頁碼", "解析方式", "圖表", "已檢查", "已修改", "字元數"],
+                                datatype=["number", "str", "str", "str", "str", "number"],
+                                interactive=False, max_height=360,
+                            )
+                    with gr.Tab("③ 切分 chunk", id="pdf-chunk"):
+                        with gr.Row(equal_height=True):
+                            chunk_size = gr.Slider(100, 10000, value=1500, step=100, label="Chunk size（字元）", scale=2)
+                            chunk_overlap = gr.Slider(0, 2000, value=200, step=50, label="Chunk overlap（字元）", scale=2)
+                            chunk_button = gr.Button("依目前頁面內容切分 chunk", variant="primary", scale=1)
+                        chunk_status = gr.Markdown("切分會重新產生所有文件的 chunks；頁面修改後需重新切分才會生效。")
+                        with gr.Row(equal_height=True):
+                            previous_button = gr.Button("◀ 上一份文件", scale=1)
+                            page_status = gr.Markdown("請先解析 PDF。")
+                            next_button = gr.Button("下一份文件 ▶", scale=1)
                         chunk_table = gr.Dataframe(
                             headers=["編號", "文件", "頁碼", "字元數", "內容"],
                             datatype=["number", "str", "str", "number", "str"],
@@ -8427,7 +8862,8 @@ def build_app() -> gr.Blocks:
             extraction_max_concurrent_requests, retrieval_mode,
             top_k, schema_editor,
             extraction_reasoning_effort, answer_reasoning_effort,
-            retrieval_strategy_params_state, pdf_vision_model,
+            retrieval_strategy_params_state, pdf_vision_model, pdf_vision_scope,
+            pdf_vision_reasoning_effort,
         ]
         project_load_outputs = [
             project_state, project_status,
@@ -8446,7 +8882,7 @@ def build_app() -> gr.Blocks:
             entity_table, relationship_table, build_status, import_status,
             extraction_reasoning_effort,
             answer_reasoning_effort, retrieval_strategy_params_state,
-            pdf_vision_model,
+            pdf_vision_model, pdf_vision_scope, pdf_vision_reasoning_effort,
             *retrieval_strategy_parameter_controls,
         ]
         for effort_control in [extraction_reasoning_effort, answer_reasoning_effort]:
@@ -8615,7 +9051,8 @@ def build_app() -> gr.Blocks:
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor, pdf_vision_model,
+            top_k, schema_editor, pdf_vision_model, pdf_vision_scope,
+            pdf_vision_reasoning_effort,
         ]
         for component in auto_save_components:
             component.input(
@@ -8761,6 +9198,17 @@ def build_app() -> gr.Blocks:
                 inputs=[entity_table, relationship_table], outputs=extraction_results_section,
                 show_progress="hidden",
             )
+        for effort_control in (pdf_vision_reasoning_effort, review_vision_reasoning_effort):
+            pdf_vision_model.change(
+                pdf_vision_reasoning_effort_visibility,
+                inputs=pdf_vision_model, outputs=effort_control,
+                show_progress="hidden",
+            )
+        # The single-page effort follows the parse setting until changed for one page.
+        pdf_vision_reasoning_effort.change(
+            lambda effort: effort, inputs=pdf_vision_reasoning_effort,
+            outputs=review_vision_reasoning_effort, show_progress="hidden",
+        )
         extraction_llm_model.change(
             temperature_visibility, inputs=extraction_llm_model, outputs=graph_temperature,
             show_progress="hidden",
@@ -8814,27 +9262,88 @@ def build_app() -> gr.Blocks:
             add_document_for_ui,
             inputs=[
                 pdf_file,
-                chunk_size,
-                chunk_overlap,
                 documents_state,
-                chunk_state,
                 pdf_vision_model,
+                pdf_vision_scope,
                 pdf_run_control_state,
+                project_selector,
+                pdf_vision_reasoning_effort,
             ],
             outputs=[
                 preview_status,
-                chunk_table,
                 documents_state,
-                chunk_state,
-                active_preview_state,
-                active_chunks_state,
-                page_status,
                 documents_table,
                 pdf_file,
                 remove_document_selector,
             ],
             # Show one progress bar on the status message instead of one per output.
             show_progress_on=preview_status,
+        )
+        chunk_event = chunk_button.click(
+            chunk_documents_for_ui,
+            inputs=[
+                project_selector, chunk_size, chunk_overlap,
+                documents_state, chunk_state, active_preview_state,
+            ],
+            outputs=[
+                chunk_status, documents_state, chunk_state, active_preview_state,
+                active_chunks_state, chunk_table, page_status, documents_table,
+            ],
+            show_progress_on=chunk_status,
+        )
+        chunk_event.then(
+            save_project_for_ui, inputs=project_setting_inputs,
+            outputs=[project_state, project_status], show_progress="hidden",
+        )
+        documents_state.change(
+            review_document_choices_for_ui,
+            inputs=[documents_state, review_document], outputs=review_document,
+            show_progress="hidden",
+        )
+        review_outputs = [
+            review_overview, review_image, review_text, review_info, review_page, review_status,
+        ]
+        review_inputs = [project_selector, documents_state, review_document, review_page, review_filter]
+        for review_trigger in (review_document.change, review_filter.change, review_page.submit):
+            review_trigger(
+                show_review_page_for_ui, inputs=review_inputs, outputs=review_outputs,
+                show_progress_on=review_status,
+            )
+        review_previous_button.click(
+            partial(step_review_page_for_ui, -1), inputs=review_inputs, outputs=review_outputs,
+            show_progress_on=review_status,
+        )
+        review_next_button.click(
+            partial(step_review_page_for_ui, 1), inputs=review_inputs, outputs=review_outputs,
+            show_progress_on=review_status,
+        )
+        review_overview.select(
+            select_review_page_for_ui,
+            inputs=[project_selector, documents_state, review_document, review_filter],
+            outputs=review_outputs, show_progress_on=review_status,
+        )
+        review_save_button.click(
+            save_review_page_for_ui,
+            inputs=[project_selector, documents_state, review_document, review_page, review_text, review_filter],
+            outputs=review_outputs, show_progress_on=review_status,
+        )
+        review_revert_button.click(
+            revert_review_page_for_ui, inputs=review_inputs, outputs=review_outputs,
+            show_progress_on=review_status,
+        )
+        review_vision_button.click(
+            reparse_review_page_with_vision_for_ui,
+            inputs=[*review_inputs, pdf_vision_model, review_vision_reasoning_effort],
+            outputs=review_outputs,
+            show_progress_on=review_status,
+        )
+        review_text_layer_button.click(
+            use_text_layer_for_review_page_for_ui, inputs=review_inputs, outputs=review_outputs,
+            show_progress_on=review_status,
+        )
+        preview_event.then(
+            _review_tab_after_parse, inputs=preview_status, outputs=pdf_steps,
+            show_progress="hidden",
         )
         pdf_pause_button.click(
             toggle_pdf_pause_for_ui,
