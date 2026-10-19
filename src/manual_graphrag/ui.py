@@ -4286,18 +4286,24 @@ def generate_experiment_answers_for_ui(
     progress=gr.Progress(),
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], list[list[Any]], list[list[Any]], list[list[Any]]]:
     """Generate answers for every group/question pair without judging or displaying them."""
+
+    def rejected(message: str) -> tuple[str, list[Any], list[Any], list[Any], list[Any], list[Any]]:
+        # experiment_status sits below ③, out of sight of the button; also raise a toast.
+        gr.Warning(message.removeprefix("❌ "))
+        return message, [], [], [], [], []
+
     if not project_id:
-        return "❌ 請先建立或載入專案。", [], [], [], []
+        return rejected("❌ 請先建立或載入專案。")
     if not questions:
-        return "❌ 請先在「0 系統設定」為此專案綁定題目集，再回到 1-5 選擇。", [], [], [], []
+        return rejected("❌ 請先在「0 系統設定」為此專案綁定題目集，再回到 1-5 選擇。")
     if not groups:
-        return "❌ 請至少加入一個實驗組。", [], [], [], []
+        return rejected("❌ 尚未建立實驗組；請先按「＋ 新增實驗組」至少加入一組，再檢索並生成回答。")
     try:
         concurrency = int(max_concurrent_requests)
         if concurrency < 1:
             raise ValueError("最大並行請求數必須大於 0")
     except (TypeError, ValueError, OverflowError) as exc:
-        return f"❌ {exc}", [], [], [], []
+        return rejected(f"❌ {exc}")
     control = run_control or RunControl()
     control.reset()
     control.answer_generation_progress = None
@@ -4305,7 +4311,7 @@ def generate_experiment_answers_for_ui(
     for group in groups:
         endpoint, key = resolve_model_credentials_for_ui(llm_state, group["answer_model"])
         if not endpoint:
-            return f"❌ 無法解析實驗組「{group['name']}」的回答模型服務。", [], [], [], []
+            return rejected(f"❌ 無法解析實驗組「{group['name']}」的回答模型服務。")
         credentials.append((endpoint, key))
     document_ids_by_name = _project_document_ids(project_id)
     tasks = [
@@ -4380,6 +4386,9 @@ def generate_experiment_answers_for_ui(
         })
     except (OSError, TypeError, ValueError) as exc:
         return f"❌ 回答生成或保存失敗：{exc}", [], [], [], [], []
+    finally:
+        # A timer tick still in flight would otherwise re-show a stale "N / N" bar.
+        control.answer_generation_progress = None
     return status, generated, [], [], [], details
 
 

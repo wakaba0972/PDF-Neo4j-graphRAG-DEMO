@@ -3004,6 +3004,47 @@ def test_generate_experiment_answers_populates_table_without_judging(monkeypatch
     assert captured["experiment"]["detail_rows"] == details
 
 
+def test_generate_experiment_answers_clears_inline_progress_when_done(monkeypatch) -> None:
+    monkeypatch.setattr(ui, "resolve_model_credentials_for_ui", lambda *_: ("answer-endpoint", "key"))
+    monkeypatch.setattr(ui, "answer_question_for_ui", lambda *_args, **_kwargs: ("✅ 完成", "A", []))
+    monkeypatch.setattr(ui, "load_project", lambda _project_id: {"experiment": {}})
+    monkeypatch.setattr(ui, "save_project", lambda _project_id, _payload: {})
+    control = ui.RunControl()
+    groups = [{"name": "G", "answer_model": "answer-model", "retrieval_config": _retrieval_config()}]
+
+    ui.generate_experiment_answers_for_ui(
+        "project", [{"number": 1, "question": "Q", "expected_answer": "A"}], groups,
+        1, {}, "embed", "key", "bolt", "database", "user", "pass", control,
+    )
+
+    assert control.answer_generation_progress is None
+    assert ui.experiment_answer_progress_for_ui(control)["visible"] is False
+
+
+@pytest.mark.parametrize(
+    ("project_id", "questions", "groups", "concurrency", "message"),
+    [
+        ("", [{"question": "Q"}], [{"name": "G"}], 1, "請先建立或載入專案"),
+        ("project", [], [{"name": "G"}], 1, "綁定題目集"),
+        ("project", [{"question": "Q"}], [], 1, "尚未建立實驗組"),
+        ("project", [{"question": "Q"}], [{"name": "G"}], 0, "最大並行請求數必須大於 0"),
+    ],
+)
+def test_generate_experiment_answers_rejects_missing_setup_with_all_outputs_and_warning(
+    project_id, questions, groups, concurrency, message,
+) -> None:
+    with pytest.warns(UserWarning, match=message):
+        outputs = ui.generate_experiment_answers_for_ui(
+            project_id, questions, groups, concurrency, {},
+            "embed", "key", "bolt", "database", "user", "pass",
+        )
+
+    # The click handler binds six outputs; a shorter tuple crashes Gradio silently.
+    assert len(outputs) == 6
+    assert outputs[0].startswith("❌") and message in outputs[0]
+    assert outputs[1:] == ([], [], [], [], [])
+
+
 def test_experiment_answer_generation_exposes_failure_in_status_and_reason(monkeypatch) -> None:
     monkeypatch.setattr(ui, "resolve_model_credentials_for_ui", lambda *_: ("answer-endpoint", "key"))
     monkeypatch.setattr(
