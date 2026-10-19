@@ -9096,8 +9096,10 @@ def build_app() -> gr.Blocks:
             graph_temperature, extraction_method,
             max_concurrent_requests,
             extraction_llm_model,
-            extraction_max_concurrent_requests, retrieval_mode,
-            top_k, pdf_vision_model, pdf_vision_scope,
+            # retrieval_mode and top_k are saved by their own handlers below:
+            # retrieval_mode must sync its strategy params before saving.
+            extraction_max_concurrent_requests,
+            pdf_vision_model, pdf_vision_scope,
             pdf_vision_reasoning_effort,
         ]
         for component in auto_save_components:
