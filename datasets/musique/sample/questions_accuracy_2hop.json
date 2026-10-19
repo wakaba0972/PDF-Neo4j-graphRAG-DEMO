@@ -1,0 +1,366 @@
+{
+  "schema_version": 1,
+  "dataset": "MuSiQue-Ans dev — 2-hop accuracy sample (100-question sample)",
+  "questions": [
+    {
+      "number": 1,
+      "question": "How many students attend where Andre Dreiding is employed?",
+      "expected_answer": "nearly 25,000",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__632870_22402",
+      "hops": 2
+    },
+    {
+      "number": 2,
+      "question": "What is the position of the first governor general of India?",
+      "expected_answer": "Governor-General of India",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__75714_148696",
+      "hops": 2
+    },
+    {
+      "number": 3,
+      "question": "The group representing at least 70% of Jews worldwide and Italians may be genetically similar due to what two factors?",
+      "expected_answer": "inter-marriage and conversions in the time of the Roman Empire",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__21104_16335",
+      "hops": 2
+    },
+    {
+      "number": 4,
+      "question": "What does the acronym of the organization that said there is no historical connection to association football with any other game outside of Europe stand for?",
+      "expected_answer": "International Federation of Association Football",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__35418_22458",
+      "hops": 2
+    },
+    {
+      "number": 5,
+      "question": "In a 2010 study, what modern population is most closely related to the group that represents the majority of modern Jewry?",
+      "expected_answer": "modern-day Italians",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__21103_16334",
+      "hops": 2
+    },
+    {
+      "number": 6,
+      "question": "Italians and the group of Jews representing the bulk of modern Jewry may be genetically similar due to what two factors?",
+      "expected_answer": "inter-marriage and conversions in the time of the Roman Empire",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__21103_16335",
+      "hops": 2
+    },
+    {
+      "number": 7,
+      "question": "What two factors might lead to genetic similarity between Ashkenazi Jews and the city's second largest ethnic group?",
+      "expected_answer": "inter-marriage and conversions in the time of the Roman Empire",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__6870_16335",
+      "hops": 2
+    },
+    {
+      "number": 8,
+      "question": "At the end of which year did the tribes in the area where the Ashkenazi Jews can trace their ancestry to Jews who settled there invade the roman empire?",
+      "expected_answer": "406",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__16267_25719",
+      "hops": 2
+    },
+    {
+      "number": 9,
+      "question": "When was Q1 who was impeached in england for acts committed as governor general of india impeached?",
+      "expected_answer": "1786",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__84937_21969",
+      "hops": 2
+    },
+    {
+      "number": 10,
+      "question": "When was the first governor general of India impeached?",
+      "expected_answer": "1786",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__75714_21969",
+      "hops": 2
+    },
+    {
+      "number": 11,
+      "question": "What does the name of the organization the Haiti national football team belongs to stand for?",
+      "expected_answer": "International Federation of Association Football",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__620853_22458",
+      "hops": 2
+    },
+    {
+      "number": 12,
+      "question": "By 1931, what percentage of the world's Jews were the group of Jews that represented the bulk of modern Jewry?",
+      "expected_answer": "92 percent",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__21103_16254",
+      "hops": 2
+    },
+    {
+      "number": 13,
+      "question": "What is the full name of the organization that publishes he Laws of the Game?",
+      "expected_answer": "International Federation of Association Football",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__35445_22458",
+      "hops": 2
+    },
+    {
+      "number": 14,
+      "question": "When was the 1st governor general of India impeached?",
+      "expected_answer": "1786",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__84847_21969",
+      "hops": 2
+    },
+    {
+      "number": 15,
+      "question": "How many students attend the school where Max Huber attended?",
+      "expected_answer": "nearly 25,000",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__650138_22402",
+      "hops": 2
+    },
+    {
+      "number": 16,
+      "question": "How many students attend Daniel Thürer's university?",
+      "expected_answer": "nearly 25,000",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__123214_22402",
+      "hops": 2
+    },
+    {
+      "number": 17,
+      "question": "What is the position of the first Viceroy of the British Empire in India?",
+      "expected_answer": "Governor-General of India",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__80834_148696",
+      "hops": 2
+    },
+    {
+      "number": 18,
+      "question": "How many students attend the school that employs Roberto Andorno?",
+      "expected_answer": "nearly 25,000",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__510860_22402",
+      "hops": 2
+    },
+    {
+      "number": 19,
+      "question": "At the end of what year did the tribes from the place where the Rossen culture is located invade the Roman Empire?",
+      "expected_answer": "406",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__603598_25719",
+      "hops": 2
+    },
+    {
+      "number": 20,
+      "question": "At the end of which year did tribes from the area where Linear Pottery culture was found invade the Roman Empire?",
+      "expected_answer": "406",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__576118_25719",
+      "hops": 2
+    },
+    {
+      "number": 21,
+      "question": "At the end of which year did the tribes from the location of the Lusatia invade the Roman Empire?",
+      "expected_answer": "406",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__818302_25719",
+      "hops": 2
+    },
+    {
+      "number": 22,
+      "question": "At the end of which year did the tribes from where the Michelsberg culture is from invade the Roman Empire?",
+      "expected_answer": "406",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__203955_25719",
+      "hops": 2
+    },
+    {
+      "number": 23,
+      "question": "Why was Common Sense, written by the same author as The Rights of Man, an important work?",
+      "expected_answer": "crystallized the rebellious demand for independence from Great Britain",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__21991_43945",
+      "hops": 2
+    },
+    {
+      "number": 24,
+      "question": "At the end of which year did tribes from the place where the Celts are said to have migrated from invade the Roman empire?",
+      "expected_answer": "406",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__47712_25719",
+      "hops": 2
+    },
+    {
+      "number": 25,
+      "question": "The 2010 study found that what modern population is most closely related to the group that represents at least 70% of Jews worldwide?",
+      "expected_answer": "modern-day Italians",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__21104_16334",
+      "hops": 2
+    },
+    {
+      "number": 26,
+      "question": "By 1931, what percentage of the world's Jews were the group that represents at least 70% of Jews worldwide?",
+      "expected_answer": "92 percent",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__21104_16254",
+      "hops": 2
+    },
+    {
+      "number": 27,
+      "question": "What was the original name of the bank that bought FleetBoston Financial?",
+      "expected_answer": "Bank of Italy",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__6827_49664",
+      "hops": 2
+    },
+    {
+      "number": 28,
+      "question": "When was the person who was the first viceroy of the British Empire in India impeached?",
+      "expected_answer": "1786",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__80834_21969",
+      "hops": 2
+    },
+    {
+      "number": 29,
+      "question": "What does the acronym of the organization Danish Football Union is part of stand for?",
+      "expected_answer": "International Federation of Association Football",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__511176_22458",
+      "hops": 2
+    },
+    {
+      "number": 30,
+      "question": "How many students attend where Rudolf Wolf was educated?",
+      "expected_answer": "nearly 25,000",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__259267_22402",
+      "hops": 2
+    },
+    {
+      "number": 31,
+      "question": "What is the position of the 1st governor general of India?",
+      "expected_answer": "Governor-General of India",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__84847_148696",
+      "hops": 2
+    },
+    {
+      "number": 32,
+      "question": "What does the abbreviated name of the organization that includes the Scottish Football Association as a member, stand for?",
+      "expected_answer": "International Federation of Association Football",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__778212_22458",
+      "hops": 2
+    },
+    {
+      "number": 33,
+      "question": "Common Sense which was written by the author of The Age of Reason was an important work because?",
+      "expected_answer": "crystallized the rebellious demand for independence from Great Britain",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__269766_43945",
+      "hops": 2
+    },
+    {
+      "number": 34,
+      "question": "How many students attend the university employing Marie Theres Fögen?",
+      "expected_answer": "nearly 25,000",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__283298_22402",
+      "hops": 2
+    },
+    {
+      "number": 35,
+      "question": "Why was Common Sense, by the same author as Rights of Man, an important work?",
+      "expected_answer": "crystallized the rebellious demand for independence from Great Britain",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__170341_43945",
+      "hops": 2
+    },
+    {
+      "number": 36,
+      "question": "Why is Common Sense, which was written by an author who encouraged revolt, an important work?",
+      "expected_answer": "crystallized the rebellious demand for independence from Great Britain",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__69765_43945",
+      "hops": 2
+    },
+    {
+      "number": 37,
+      "question": "Ashkenazi Jews and the largest single groups of foreigners in 2010 may be genetically similar due to what two factors?",
+      "expected_answer": "inter-marriage and conversions in the time of the Roman Empire",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__22431_16335",
+      "hops": 2
+    },
+    {
+      "number": 38,
+      "question": "How many students attend the university that Edith Humphrey was educated?",
+      "expected_answer": "nearly 25,000",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__810884_22402",
+      "hops": 2
+    },
+    {
+      "number": 39,
+      "question": "What is the position of the person impeached in England for acts committed as governor general of India?",
+      "expected_answer": "Governor-General of India",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__84937_148696",
+      "hops": 2
+    },
+    {
+      "number": 40,
+      "question": "How many students attend the school that granted Francis Travis a Ph.D.?",
+      "expected_answer": "nearly 25,000",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__474885_22402",
+      "hops": 2
+    }
+  ]
+}

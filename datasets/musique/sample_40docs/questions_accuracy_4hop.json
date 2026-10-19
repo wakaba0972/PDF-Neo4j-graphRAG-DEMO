@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "dataset": "MuSiQue-Ans dev — 4-hop accuracy sample (40-document sample)",
+  "questions": [
+    {
+      "number": 1,
+      "question": "What date did Gaspar reach the region which would be the headquarters of the record label of which the only larger label is the one that signed Desde El Principio?",
+      "expected_answer": "August 3, 1769",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__151650_5274_458768_33633",
+      "hops": 4
+    },
+    {
+      "number": 2,
+      "question": "What day is the Feast in the city where the headquarters of the only group larger than Desde El Principio's record label held on?",
+      "expected_answer": "May 4",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__151650_5274_458768_33632",
+      "hops": 4
+    },
+    {
+      "number": 3,
+      "question": "When did the explorer reach the headquarters location of the only company larger than Langa natter's record label?",
+      "expected_answer": "August 3, 1769",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__152146_5274_458768_33633",
+      "hops": 4
+    },
+    {
+      "number": 4,
+      "question": "When was the most recent Bicycle Friendly Community Award given to the city where the only group larger than the record label of Desde El Principio is headquartered?",
+      "expected_answer": "2013",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__151650_5274_458768_33677",
+      "hops": 4
+    },
+    {
+      "number": 5,
+      "question": "How many ethnic minorities were looked at differently in the city where the headquarters of the only group larger than Vilaiyaadu Mankatha's record label is located?",
+      "expected_answer": "two",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__152562_5274_458768_33637",
+      "hops": 4
+    },
+    {
+      "number": 6,
+      "question": "When was the most recent Bicycle Friendly Community Award given to the city where the headquarters of the only group larger than the company BMG partnered with in 2005-07?",
+      "expected_answer": "2013",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__3496_5274_458768_33677",
+      "hops": 4
+    },
+    {
+      "number": 7,
+      "question": "How many ethnic minorities were looked at differently in the city where the headquarters of the only group larger than Långa nätter's record label is located?",
+      "expected_answer": "two",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__152146_5274_458768_33637",
+      "hops": 4
+    },
+    {
+      "number": 8,
+      "question": "When did the explorer reach the city where the headquarters of the only group larger than Vilaiyaadu Mankatha's record label is located?",
+      "expected_answer": "August 3, 1769",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__152562_5274_458768_33633",
+      "hops": 4
+    },
+    {
+      "number": 9,
+      "question": "When did the explorer reach the city where the only group larger than the record label of The Lost Trident Sessions is headquartered?",
+      "expected_answer": "August 3, 1769",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__151903_5274_458768_33633",
+      "hops": 4
+    },
+    {
+      "number": 10,
+      "question": "How many ethnic minorities were looked at differently where the only group larger than BMG's partner from 2005 to 2007 is headquartered?",
+      "expected_answer": "two",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__3496_5274_458768_33637",
+      "hops": 4
+    },
+    {
+      "number": 11,
+      "question": "What day is the feast held in the city containing the headquarters of the company, that owns the record label that released Study in Brown?",
+      "expected_answer": "May 4",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__567737_141375_458768_33632",
+      "hops": 4
+    },
+    {
+      "number": 12,
+      "question": "What day is the Feast held in the city where the headquarters of the only group larger than Långa nätter's record label is located?",
+      "expected_answer": "May 4",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__152146_5274_458768_33632",
+      "hops": 4
+    },
+    {
+      "number": 13,
+      "question": "When was the most recent Bicycle Friendly Community Award given to the city where the company Study in Brown's record label is part of is headquartered?",
+      "expected_answer": "2013",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__567737_141375_458768_33677",
+      "hops": 4
+    },
+    {
+      "number": 14,
+      "question": "How many ethnic minorities were looked at differently where the only group larger than the record label of The Lost Trident Sessions is headquartered?",
+      "expected_answer": "two",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__151903_5274_458768_33637",
+      "hops": 4
+    },
+    {
+      "number": 15,
+      "question": "Vilaiyaadu Mankatha's record label has just one company that is larger than it. When was the most recent Bicycle Friendly Community award given to the city where the headquarters of that larger company lies?",
+      "expected_answer": "2013",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__152562_5274_458768_33677",
+      "hops": 4
+    },
+    {
+      "number": 16,
+      "question": "How many ethnic minorities were looked at differently in the city where the headquarters of the only group larger than Desde El Principio's record label is located?",
+      "expected_answer": "two",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__151650_5274_458768_33637",
+      "hops": 4
+    },
+    {
+      "number": 17,
+      "question": "What day is the feast held, in the city that holds the headquarters of the only music company that is larger than the record label of Vilaiyaadu Mankatha?",
+      "expected_answer": "May 4",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__152562_5274_458768_33632",
+      "hops": 4
+    },
+    {
+      "number": 18,
+      "question": "How many ethnic minorities were looked at differently in the city where the headquarters of the company that Study in Brown's record label is a part of?",
+      "expected_answer": "two",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__567737_141375_458768_33637",
+      "hops": 4
+    },
+    {
+      "number": 19,
+      "question": "What date did the explorer reach the location of the headquarters of the only company larger than BMG's partner from 2005-2007?",
+      "expected_answer": "August 3, 1769",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__3496_5274_458768_33633",
+      "hops": 4
+    },
+    {
+      "number": 20,
+      "question": "When was the most recent Bicycle Friendly Community Award given to the city where the headquarters of the only group larger than Långa nätter's record label is located?",
+      "expected_answer": "2013",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__152146_5274_458768_33677",
+      "hops": 4
+    },
+    {
+      "number": 21,
+      "question": "When did the explorer reach the headquarters location of the group Study in Brown's record label is part of?",
+      "expected_answer": "August 3, 1769",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__567737_141375_458768_33633",
+      "hops": 4
+    },
+    {
+      "number": 22,
+      "question": "When did the explorer reach the headquarters location of the group Con-Test's record label is part of?",
+      "expected_answer": "August 3, 1769",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__152028_141441_458768_33633",
+      "hops": 4
+    },
+    {
+      "number": 23,
+      "question": "When was the most recent BFC award given to the city where the only record music group larger than the recording label for The Lost Trident Sessions is located?",
+      "expected_answer": "2013",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__151903_5274_458768_33677",
+      "hops": 4
+    }
+  ]
+}

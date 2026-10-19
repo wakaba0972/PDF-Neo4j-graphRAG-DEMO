@@ -1,0 +1,321 @@
+{
+  "schema_version": 1,
+  "dataset": "MuSiQue-Ans dev — 3-hop accuracy sample (100-question sample)",
+  "questions": [
+    {
+      "number": 1,
+      "question": "Where do greyhound buses leave from in the city where the performer of Darlings formed?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__671542_665330_47686",
+      "hops": 3
+    },
+    {
+      "number": 2,
+      "question": "What is the name of the castle in the birth city of the performer on the album Maria?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__702699_792411_51423",
+      "hops": 3
+    },
+    {
+      "number": 3,
+      "question": "What is the name of the castle in the city where the headquarters of the production company of Care Bear: Journey to Joke-a-lot is located?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__572324_568433_51423",
+      "hops": 3
+    },
+    {
+      "number": 4,
+      "question": "Where do Greyhound buses leave from in the city where the creator of Scene in the Northwest: Portrait of John Henry Lefroy lived when he died?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__210639_147339_47686",
+      "hops": 3
+    },
+    {
+      "number": 5,
+      "question": "Where do greyhound buses leave from in the city the performer of Born a Lion formed in?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__726561_132457_47686",
+      "hops": 3
+    },
+    {
+      "number": 6,
+      "question": "What is the name of the castle in the city where the performer of Never Too Loud was formed?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__337705_132457_51423",
+      "hops": 3
+    },
+    {
+      "number": 7,
+      "question": "What is the name of the castle in the place of birth of the performer of When I Was a Boy?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__506062_792411_51423",
+      "hops": 3
+    },
+    {
+      "number": 8,
+      "question": "Where do greyhound buses depart from, in the city where the performer of Sleep Is the Enemy was formed?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__389069_132457_47686",
+      "hops": 3
+    },
+    {
+      "number": 9,
+      "question": "What is the name of the castle in city where the performer of Darlings was formed?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__671542_665330_51423",
+      "hops": 3
+    },
+    {
+      "number": 10,
+      "question": "What is the name of the castle in the birthplace of Harmony's performer?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__408237_400692_51423",
+      "hops": 3
+    },
+    {
+      "number": 11,
+      "question": "Where do greyhound buses leave from in the birthplace of Spirit If...'s performer?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__458916_651917_47686",
+      "hops": 3
+    },
+    {
+      "number": 12,
+      "question": "What is the name of the castle in the birth city of the performer who recorded A Day in the Life?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__602329_792411_51423",
+      "hops": 3
+    },
+    {
+      "number": 13,
+      "question": "What is the name of the castle in the city where the headquarters of the production company of Miss Spider's Sunny Patch Kids is located?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__540585_568433_51423",
+      "hops": 3
+    },
+    {
+      "number": 14,
+      "question": "What is the name of the castle in the city where the performer of Sleep is the Enemy was formed?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__389069_132457_51423",
+      "hops": 3
+    },
+    {
+      "number": 15,
+      "question": "Where do Greyhound buses leave from in the city where Arna Selznick's employer is headquartered?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__241001_568433_47686",
+      "hops": 3
+    },
+    {
+      "number": 16,
+      "question": "Where do greyhound buses leave from in the city where the performer of Darlings was born?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__671542_651917_47686",
+      "hops": 3
+    },
+    {
+      "number": 17,
+      "question": "What is the name of the castle in the city where the performers of Spirit If.. became a band?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__458916_665330_51423",
+      "hops": 3
+    },
+    {
+      "number": 18,
+      "question": "Where do Greyhound buses leave from in the city where the band that recorded the album Never Too Loud formed?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__337705_132457_47686",
+      "hops": 3
+    },
+    {
+      "number": 19,
+      "question": "What is the name of the castle in the city where the performer of We Sweat Blood formed?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__401538_132457_51423",
+      "hops": 3
+    },
+    {
+      "number": 20,
+      "question": "What is the name of the castle in the city where the performer of I'm Alive and on Fire was formed?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__389955_132457_51423",
+      "hops": 3
+    },
+    {
+      "number": 21,
+      "question": "Where do greyhound buses leave from in where the headquarters is located of who owns the hard rock hotel in las vegas?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__83970_685536_47686",
+      "hops": 3
+    },
+    {
+      "number": 22,
+      "question": "What is the name of the castle in the headquarters of the company that employs Arna Selznick?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__241001_568433_51423",
+      "hops": 3
+    },
+    {
+      "number": 23,
+      "question": "Where do greyhound buses leave from in the city where the performer of Spirit If... was formed?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__458916_665330_47686",
+      "hops": 3
+    },
+    {
+      "number": 24,
+      "question": "Where do greyhound buses leave from in the city where the headquarters of Care Bears: Journey to Joke-a-lot's production company is located?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__572324_568433_47686",
+      "hops": 3
+    },
+    {
+      "number": 25,
+      "question": "Where do greyhound buses leave from in the city where the performer of We Sweat Blood was formed?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__401538_132457_47686",
+      "hops": 3
+    },
+    {
+      "number": 26,
+      "question": "What is the name of the castle in the city where the performer of A Collection 1984–1989 was born?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__715607_792411_51423",
+      "hops": 3
+    },
+    {
+      "number": 27,
+      "question": "What is the name of the castle in the city where the creator of Scene in the Northwest: Portrait of John Henry Lefroy died?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__210639_147339_51423",
+      "hops": 3
+    },
+    {
+      "number": 28,
+      "question": "Where do greyhound buses leave from the in the city where the headquarters of the production company which produced A Cosmic Christmas is located?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__305566_568433_47686",
+      "hops": 3
+    },
+    {
+      "number": 29,
+      "question": "Where do greyhound buses leave from in the location of the headquarters of the production company of Miss Spider's Sunny Patch Kids?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__540585_568433_47686",
+      "hops": 3
+    },
+    {
+      "number": 30,
+      "question": "What is the name of the castle in the city where the headquarters of the production company of A Cosmic Christmas is located?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__305566_568433_51423",
+      "hops": 3
+    },
+    {
+      "number": 31,
+      "question": "What is the name of the castle found in the birthplace of the performer of The Speckless Sky?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__862117_792411_51423",
+      "hops": 3
+    },
+    {
+      "number": 32,
+      "question": "Where do Greyhound buses leave from in the city where the band that recorded the album I'm Alive and on Fire formed?",
+      "expected_answer": "Toronto Coach Terminal",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__389955_132457_47686",
+      "hops": 3
+    },
+    {
+      "number": 33,
+      "question": "What is the name of the castle in the city where the performers of Born A Lion was formed?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__726561_132457_51423",
+      "hops": 3
+    },
+    {
+      "number": 34,
+      "question": "What is the name of the castle in the birthplace of the performer of Bound by the Beauty?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__274148_792411_51423",
+      "hops": 3
+    },
+    {
+      "number": 35,
+      "question": "What is the name of the castle in the place where the performer of Dragon Dreams was born?",
+      "expected_answer": "Casa Loma",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "3hop1__699507_792411_51423",
+      "hops": 3
+    }
+  ]
+}
