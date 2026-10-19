@@ -6855,6 +6855,28 @@ def build_app() -> gr.Blocks:
         #login-card h1 {text-align:center; margin-bottom:4px;}
         #login-card .login-subtitle p {text-align:center; color:var(--body-text-color-subdued);}
         .app-header {align-items:flex-start !important;}
+        /* Keep each option label on one line; whole options wrap to the next row instead. */
+        .nowrap-options .wrap {flex-wrap:wrap !important;}
+        .nowrap-options .wrap > label {flex:0 0 auto !important; white-space:nowrap !important;}
+        /* Strategies with more than three parameters use three per row (six tracks, two per
+           control); a short last row stretches to fill the width. */
+        .strategy-params-grid > .form:has(> :nth-child(4)) {display:grid !important;
+            grid-template-columns:repeat(6, minmax(0, 1fr));}
+        .strategy-params-grid > .form:has(> :nth-child(4)) > * {grid-column:span 2;}
+        .strategy-params-grid > .form:has(> :nth-child(4)) > :nth-child(3n+1):nth-last-child(2),
+        .strategy-params-grid > .form:has(> :nth-child(4)) > :nth-child(3n+2):last-child {grid-column:span 3;}
+        .strategy-params-grid > .form:has(> :nth-child(4)) > :nth-child(3n+1):last-child {grid-column:span 6;}
+        .strategy-params-grid [data-testid="block-info"] {white-space:nowrap !important;}
+        .strategy-params-grid label:has(> [data-testid="block-info"]) {flex-shrink:0 !important;}
+        /* 1-1 ① 解析文件: the document table fills the right column so both columns end together. */
+        .parse-documents-column > * {flex:0 0 auto !important;}
+        .parse-documents-column > .parse-documents-table {flex:1 1 auto !important; min-height:0 !important;
+            display:flex !important; flex-direction:column !important;}
+        .parse-documents-table .table-container {flex:1 1 auto; display:flex; flex-direction:column;}
+        .parse-documents-table .table-container > .table-wrap {flex:1 1 auto;}
+        /* Gradio wraps the rows in a drop-target <button>, which centers its content vertically. */
+        .parse-documents-table .table-container > .table-wrap > button {display:flex; flex-direction:column;
+            justify-content:flex-start; width:100%;}
         .compact-file .wrap {min-height:0 !important; padding:8px !important; flex-direction:row !important; gap:8px !important;}
         .compact-file .wrap .icon-wrap {margin:0 !important; width:20px !important;}
         .package-file {height:110px !important; min-height:110px !important; max-height:110px !important; overflow:hidden;}
@@ -7084,7 +7106,7 @@ def build_app() -> gr.Blocks:
                 preview_status = gr.Markdown("尚未解析文件。可重複上傳多份 PDF 或 TXT，逐一加入同一個專案。")
                 with gr.Tabs(selected="pdf-parse") as pdf_steps:
                     with gr.Tab("① 解析文件", id="pdf-parse"):
-                        with gr.Row():
+                        with gr.Row(equal_height=True):
                             with gr.Column(scale=1):
                                 pdf_file = gr.File(
                                     label="文件（PDF 或 UTF-8 TXT，可一次選取多個檔案）",
@@ -7115,14 +7137,14 @@ def build_app() -> gr.Blocks:
                                     pdf_stop_button = gr.Button("⏹ 停止", variant="stop")
                                 pdf_run_control_status = gr.Markdown()
                                 pdf_run_control_state = gr.State(RunControl())
-                            with gr.Column(scale=1):
+                            with gr.Column(scale=1, elem_classes=["parse-documents-column"]):
                                 gr.Markdown("##### 已加入本專案的文件")
                                 documents_table = gr.Dataframe(
                                     headers=["選取", "文件", "頁碼範圍", "Chunk 數"],
                                     datatype=["bool", "str", "str", "number"],
                                     interactive=True, static_columns=[1, 2, 3],
                                     row_count=(0, "fixed"), col_count=(4, "fixed"),
-                                    wrap=True,
+                                    wrap=True, elem_classes=["parse-documents-table"],
                                 )
                                 remove_document_selector = gr.Dropdown(
                                     label="選擇要移除的文件（可多選）", choices=[],
@@ -7321,12 +7343,13 @@ def build_app() -> gr.Blocks:
                     retrieval_mode = gr.Radio(
                         strategy_choices(),
                         value="混合檢索", label="檢索模式",
+                        elem_classes=["nowrap-options"],
                     )
                     with gr.Row(equal_height=True):
-                        top_k = gr.Slider(1, 50, value=8, step=1, label="Top K")
+                        top_k = gr.Slider(1, 50, value=8, step=1, label="Top K", info="\n")
                         use_reranker = gr.Dropdown(
                             choices=list(RERANKER_MODES), value="停用", label="Reranker 模式",
-                            allow_custom_value=False,
+                            info="\n", allow_custom_value=False,
                         )
                         expand_evidence = gr.Dropdown(
                             choices=list(EVIDENCE_EXPANSION_MODES), value="停用", label="證據擴展模式",
@@ -7336,8 +7359,8 @@ def build_app() -> gr.Blocks:
                     retrieval_strategy_params_state = gr.State(
                         _visible_params_for_strategy(default_qa_retrieval)
                     )
-                    # Only the selected strategy's parameters are visible, so they share one row.
-                    with gr.Row(equal_height=True):
+                    # Only the selected strategy's parameters are visible; they share one grid.
+                    with gr.Row(equal_height=True, elem_classes=["strategy-params-grid"]):
                         retrieval_strategy_parameter_controls = _create_experiment_strategy_parameter_controls(
                             initial_strategy_id=default_qa_retrieval.strategy_id,
                         )
