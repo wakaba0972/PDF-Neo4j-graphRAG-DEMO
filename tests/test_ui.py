@@ -1146,7 +1146,7 @@ def test_question_set_manager_imports_centrally_and_binding_is_project_scoped(tm
         if component.get("props", {}).get("label") == "已綁定題目集"
     )
     assert any(
-        (0, "load") in dependency.get("targets", [])
+        (app._id, "load") in dependency.get("targets", [])
         and binding_selector["id"] in dependency.get("outputs", [])
         for dependency in app.config["dependencies"]
     ), "0-0 binding checkbox must be initialized from saved project bindings on page load"
