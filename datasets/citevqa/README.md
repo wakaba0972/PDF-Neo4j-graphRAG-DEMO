@@ -13,7 +13,7 @@ This folder contains the public CiteVQA annotations and PDF catalog, plus a repr
 
 The selected subset currently contains 37 questions across 40 PDFs. Its estimated total PDF size is approximately 74 MB. The candidate has factual-retrieval and complex-synthesis questions and retains the original question IDs.
 
-Run `python3 datasets/musique/citevqa/prepare_text_multidoc_subset.py` from the repository root to rebuild:
+Run `python3 datasets/citevqa/prepare_text_multidoc_subset.py` from the repository root to rebuild:
 
 - `questions_candidate_page_mapping_unverified.json`: project-shaped question set with Gold `answer_sources` grouped by PDF and page;
 - `source_manifest_candidate.json`: source URLs, file sizes, page counts, domains, selected question IDs, and validation caveats.
