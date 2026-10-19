@@ -1,0 +1,851 @@
+{
+  "schema_version": 1,
+  "dataset": "CiteVQA Multi (N-Gold), text-evidence candidate subset",
+  "questions": [
+    {
+      "number": 1,
+      "question": "我们单位在准备天津市东丽区2019年新春亮化工程及视频制作项目的比选材料，想确认一下具体哪些资料是需要固定成册并装入密封袋密封的，还有哪份特定的报价文件是严禁封在袋子里、必须在面谈当天由我们自行带过去的？",
+      "expected_answer": "根据相关文件界定，比选申请文件应统一用A4纸打印并分为正、副本装订成册，随后一并包装密封并在封口处加盖单位公章；而最终报价单则被明确排除在封装的响应文件之外，规定须在盖公章后于磋商当天单独携带。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "6cf843e3-cb99-50ca-ad4d-07a0229bdcca.pdf",
+          "pages": [
+            5,
+            6
+          ]
+        },
+        {
+          "document_name": "9c9a7e04-531b-5aa6-9243-5463bfbbc94b.pdf",
+          "pages": [
+            3
+          ]
+        }
+      ],
+      "dataset_id": "S10__9c9a7e04-531b-5aa6-9243-5463bfbbc94b__fa3e4837-f6d9-5695-bead-5a2128a01805-6cf843e3-cb99-50ca-ad4d-07a0229bdcca-9c0d1125-1418-5e10-904a-9b5b84a37792_2"
+    },
+    {
+      "number": 2,
+      "question": "暨南大学那个消防设施维保项目，去哪里现场申购投标相关的材料？还有，参与天津东丽区2019年新春亮化工程时，如果要把加盖公章的修改申明扫描件反馈给代理机构，应该发送到哪个电子邮箱？",
+      "expected_answer": "暨南大学消防维护保养项目购买招标文件的地点为广东省机电设备招标有限公司10楼1010房（广州市环市中路316号金鹰大厦10楼1010房），天津市东丽区2019年新春亮化工程项目接收“更正公告回执”扫描件的邮箱为xuanfuzhaobiao@163.com。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "9c9a7e04-531b-5aa6-9243-5463bfbbc94b.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "document_name": "fa3e4837-f6d9-5695-bead-5a2128a01805.pdf",
+          "pages": [
+            6
+          ]
+        }
+      ],
+      "dataset_id": "S16__fa3e4837-f6d9-5695-bead-5a2128a01805__9c9a7e04-531b-5aa6-9243-5463bfbbc94b_6"
+    },
+    {
+      "number": 3,
+      "question": "我想了解一下三个特定事项的官方代码信息：天津新春亮化建设项目的备案编号、暨南大学消防系统维保服务的管理号，以及内蒙古下发的非免疫规划疫苗采购通知的具体公文文号分别是什么？",
+      "expected_answer": "天津新春亮化工程的项目编号为XFZB-2018-TJDL-0946，暨南大学消防维保的项目编号为0612-1741C3530408，内蒙古非免疫规划疫苗采购公告的发文编号为内综疾字〔2023〕13号。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "9c0d1125-1418-5e10-904a-9b5b84a37792.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "9c9a7e04-531b-5aa6-9243-5463bfbbc94b.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "document_name": "fa3e4837-f6d9-5695-bead-5a2128a01805.pdf",
+          "pages": [
+            6
+          ]
+        }
+      ],
+      "dataset_id": "S10__9c9a7e04-531b-5aa6-9243-5463bfbbc94b__fa3e4837-f6d9-5695-bead-5a2128a01805-6cf843e3-cb99-50ca-ad4d-07a0229bdcca-9c0d1125-1418-5e10-904a-9b5b84a37792_5"
+    },
+    {
+      "number": 4,
+      "question": "我想确认一下几个项目的详细资料：2019年天津市东丽区那个为了过年搞的灯光布置，它的正式立项全称是怎么写的？关于暨南大学那个在广州市黄埔大道西601号签署的合同，其文件上注明的具体签约地方在哪？最后，内蒙古那边针对那些不在国家免费防疫目录里的疫苗进行的统一购买，官方给出的完整项目名称是什么？",
+      "expected_answer": "天津亮化工程的全称为天津市东丽区2019年新春亮化工程项目，暨南大学项目的合同签约地点位于广州市黄埔大道西601号，而内蒙古疫苗采购项目的全称为内蒙古自治区非免疫规划疫苗集中采购。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "9c0d1125-1418-5e10-904a-9b5b84a37792.pdf",
+          "pages": [
+            9
+          ]
+        },
+        {
+          "document_name": "9c9a7e04-531b-5aa6-9243-5463bfbbc94b.pdf",
+          "pages": [
+            32
+          ]
+        },
+        {
+          "document_name": "fa3e4837-f6d9-5695-bead-5a2128a01805.pdf",
+          "pages": [
+            44
+          ]
+        }
+      ],
+      "dataset_id": "S13__9c9a7e04-531b-5aa6-9243-5463bfbbc94b__fa3e4837-f6d9-5695-bead-5a2128a01805-6cf843e3-cb99-50ca-ad4d-07a0229bdcca-9c0d1125-1418-5e10-904a-9b5b84a37792_2"
+    },
+    {
+      "number": 5,
+      "question": "请问四川成渝高速那家公司拍宣传片的项目全称是什么？另外，内蒙古针对非强制性计划内疫苗开展统一采买工作的那个项目官方名称叫什么？还有，由天津烜福工程招标公司参与递交的那份配套材料，其页面的正式标题是什么？",
+      "expected_answer": "具体标题名称分别是“四川成渝高速公路股份有限公司宣传视频制作服务项目”、“内蒙古自治区非免疫规划疫苗集中采购”和“响应文件”。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "6cf843e3-cb99-50ca-ad4d-07a0229bdcca.pdf",
+          "pages": [
+            11
+          ]
+        },
+        {
+          "document_name": "9c0d1125-1418-5e10-904a-9b5b84a37792.pdf",
+          "pages": [
+            9
+          ]
+        },
+        {
+          "document_name": "9c9a7e04-531b-5aa6-9243-5463bfbbc94b.pdf",
+          "pages": [
+            33
+          ]
+        }
+      ],
+      "dataset_id": "S2__6cf843e3-cb99-50ca-ad4d-07a0229bdcca__9c9a7e04-531b-5aa6-9243-5463bfbbc94b-fa3e4837-f6d9-5695-bead-5a2128a01805-9c0d1125-1418-5e10-904a-9b5b84a37792_14"
+    },
+    {
+      "number": 6,
+      "question": "麻烦帮我核实一下这几个事项的时间点：消防维保项目招标登记的最后一天，灯光亮化工程要求全部完工的日期，高速路比选文件递交的最晚时间，以及非免疫规划类疫苗办理集中挂网报名的具体日子。",
+      "expected_answer": "消防项目报名截止日期为2017年7月25日，亮化工程施工完毕期限为2019年1月26日，高速公路比选文件递交截止于2022年7月27日，非免疫规划疫苗采购报名日期为2023年1月10日。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "6cf843e3-cb99-50ca-ad4d-07a0229bdcca.pdf",
+          "pages": [
+            7
+          ]
+        },
+        {
+          "document_name": "9c0d1125-1418-5e10-904a-9b5b84a37792.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "document_name": "9c9a7e04-531b-5aa6-9243-5463bfbbc94b.pdf",
+          "pages": [
+            4
+          ]
+        },
+        {
+          "document_name": "fa3e4837-f6d9-5695-bead-5a2128a01805.pdf",
+          "pages": [
+            6
+          ]
+        }
+      ],
+      "dataset_id": "S5__9c0d1125-1418-5e10-904a-9b5b84a37792__9c9a7e04-531b-5aa6-9243-5463bfbbc94b-fa3e4837-f6d9-5695-bead-5a2128a01805-6cf843e3-cb99-50ca-ad4d-07a0229bdcca_9"
+    },
+    {
+      "number": 7,
+      "question": "如果要整理一份关于暨南大学消防系统日常维护报名、某比选项目材料递交截止，以及内蒙古非免疫规划疫苗挂网登记的任务清单，并按照它们各自要求的具体办理日期从早到晚进行排序，这三个项目的时间先后逻辑是怎样的？",
+      "expected_answer": "根据文件陈述，事件的时间顺序依次为：2017年7月18日至25日进行暨南大学2017-2019消防维护保养项目的报名；随后是2022年7月27日上午11:00截止比选文件的递交；最后在2023年1月10日进行非免疫规划疫苗集中挂网采购的报名。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "6cf843e3-cb99-50ca-ad4d-07a0229bdcca.pdf",
+          "pages": [
+            7
+          ]
+        },
+        {
+          "document_name": "9c0d1125-1418-5e10-904a-9b5b84a37792.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "document_name": "fa3e4837-f6d9-5695-bead-5a2128a01805.pdf",
+          "pages": [
+            6
+          ]
+        }
+      ],
+      "dataset_id": "S16__fa3e4837-f6d9-5695-bead-5a2128a01805__9c9a7e04-531b-5aa6-9243-5463bfbbc94b-6cf843e3-cb99-50ca-ad4d-07a0229bdcca-9c0d1125-1418-5e10-904a-9b5b84a37792_10"
+    },
+    {
+      "number": 8,
+      "question": "Identify the name of the social gathering centered around morning treats from the local announcements and the specific venue address where the neighborhood bowling league meets for their Monday night matches.",
+      "expected_answer": "Coffee and Donut Social; Boardwalk Bowl on East Colonial Drive.",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "0b5f36c3-af92-59da-943d-1a0b27ef63ec.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "d1694932-2723-5ea6-ab83-44d3cbf8e867.pdf",
+          "pages": [
+            1
+          ]
+        }
+      ],
+      "dataset_id": "S119__d1694932-2723-5ea6-ab83-44d3cbf8e867__0b5f36c3-af92-59da-943d-1a0b27ef63ec_8"
+    },
+    {
+      "number": 9,
+      "question": "Who is the doctor performing their general practice training at Mapua Health Centre, and who is the staff member overseeing the administrative functions for the North Lake Health District?",
+      "expected_answer": "The GP registrar for Mapua Health Centre is Bridget MacDonald and the Office Manager for North Lake Health District is Kelly McCord.",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "d1694932-2723-5ea6-ab83-44d3cbf8e867.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "document_name": "f586f28e-0174-5188-bf6b-4c7e6b85a10b.pdf",
+          "pages": [
+            11
+          ]
+        }
+      ],
+      "dataset_id": "S142__f586f28e-0174-5188-bf6b-4c7e6b85a10b__6305cc50-752b-56cc-b270-43ca28b3a8e9-d1694932-2723-5ea6-ab83-44d3cbf8e867_2"
+    },
+    {
+      "number": 10,
+      "question": "How frequently is the Wedgefield Homeowners Association's bulletin issued, and what are the contact methods—including phone, email, or social media tags—for Mariann Young, Glenna Wade, and Verlyn Foster as described in the Barford and Christmas Valley community updates?",
+      "expected_answer": "The Wedgefield Homeowners Association produces a monthly newsletter for its community; Mariann Young serves as the editor for the Barford News with contact details including a phone number (01869 338 570) and email address (barfordnews@gmail.com); Glenna Wade provides her Facebook handle [glennasonly] for volunteering inquiries in the Christmas Valley area; and Verlyn Foster provides the email dodgemanl269@gmail.com for his automotive repair services in the same region.",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "0b5f36c3-af92-59da-943d-1a0b27ef63ec.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "3b761a95-4431-510a-bb82-8edcbcd90e41.pdf",
+          "pages": [
+            24
+          ]
+        },
+        {
+          "document_name": "d1694932-2723-5ea6-ab83-44d3cbf8e867.pdf",
+          "pages": [
+            6
+          ]
+        }
+      ],
+      "dataset_id": "S6__0b5f36c3-af92-59da-943d-1a0b27ef63ec__3b761a95-4431-510a-bb82-8edcbcd90e41-d1694932-2723-5ea6-ab83-44d3cbf8e867_5"
+    },
+    {
+      "number": 11,
+      "question": "请帮我核实一下这几项记录的具体日期：Temple-Inland公司正式向法院发起针对特拉华州官员的控告是在哪一天？芝加哥警署委员会为了Gonzalez涉及的那场喷雾剂冲突而召开内部不公开审理会议是哪天？以及被投诉人Gonzalez最后真正拿到那份正式调查报告副本是哪天？",
+      "expected_answer": "Temple-Inland Inc. 于 2014-05-21 提起诉讼，警察局委员会于 2013-11-21 针对催泪瓦斯事件举行了非公开听证会，而 Gonzalez 最终于 2013-12-31 收到调查结果。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "340e1c7a-d440-594f-b1b8-aa2b6ce2a966.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "document_name": "6ddba77a-ffdc-5d2f-baff-8220938877c3.pdf",
+          "pages": [
+            2
+          ]
+        }
+      ],
+      "dataset_id": "S11__6ddba77a-ffdc-5d2f-baff-8220938877c3__727a2eac-f415-53e4-ac1a-b3e3af8f8ad9-340e1c7a-d440-594f-b1b8-aa2b6ce2a966_10"
+    },
+    {
+      "number": 12,
+      "question": "请帮我核查两份历史法律卷宗的信息：第一项是关于2015-03-11发生在特拉华州当地法院的诉讼，当时是哪家律所在代理控方，其总部位于哪个城市？第二项是针对2020-07-09在华盛顿特区巡回法庭的案子，Sullivan法官所雇佣的法律代理机构叫什么名字，他们接收信件的具体街道门牌号以及所属的邮政区号又是多少？",
+      "expected_answer": "根据文件内容分析，2015-03-11案件的原告Temple-Inland, Inc.由位于特拉华州威尔明顿的Reed Smith LLP代理；而2020-07-09案件中的Sullivan法官由Wilkinson Walsh LLP代表，其详细地址为华盛顿特区M街西北2001号（2001 M Street N.W., Washington, DC 20036）。两份文件共同展示了在特定日期和司法管辖区内，当事人及其法律代理机构之间的地域关联。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "6ddba77a-ffdc-5d2f-baff-8220938877c3.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "ff294475-8d8c-5d36-80e8-df896769961a.pdf",
+          "pages": [
+            1
+          ]
+        }
+      ],
+      "dataset_id": "S13__727a2eac-f415-53e4-ac1a-b3e3af8f8ad9__340e1c7a-d440-594f-b1b8-aa2b6ce2a966-6ddba77a-ffdc-5d2f-baff-8220938877c3-ff294475-8d8c-5d36-80e8-df896769961a_4"
+    },
+    {
+      "number": 13,
+      "question": "请整理一份2013年度跨区域警务申诉的处理时间轴，具体包含昆士兰法庭对QPS相关争议的定夺，以及芝加哥警察局委员会对Gonzalez违规案件从举行听证、媒体报导直至最终送达裁决书的全部流程。",
+      "expected_answer": "在2013年期间，首先昆士兰民事与行政法庭（QCAT）于2013-06-04裁定废除信息专员公署（OIC）关于QPS信息的决定，随后芝加哥警察局委员会于2013-11-21举行了关于Gonzalez的听证会，DNAInfo.com于2013-12-18报道了裁定结果，最后Gonzalez于2013-12-31收到了裁决副本。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "0385d221-68dc-587a-8231-c96493cf5da1.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "document_name": "340e1c7a-d440-594f-b1b8-aa2b6ce2a966.pdf",
+          "pages": [
+            2
+          ]
+        }
+      ],
+      "dataset_id": "S1__0385d221-68dc-587a-8231-c96493cf5da1__c34ab362-a1ad-5440-b493-b0291bf25570-340e1c7a-d440-594f-b1b8-aa2b6ce2a966_0"
+    },
+    {
+      "number": 14,
+      "question": "在省级机关选拔和山西省中职毕业生专项进修考试的相关文件中，提到的具体笔试测验名称分别是什么？",
+      "expected_answer": "示例包括《行政职业能力测验》（省级）以及《机械基础（D类）》。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "a83e7f6b-6f48-52be-ab18-b70256a6af04.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "e8e65e12-bddc-5f6d-a214-027d4d1e48a4.pdf",
+          "pages": [
+            1
+          ]
+        }
+      ],
+      "dataset_id": "S11__cec71222-8bb0-5f56-b699-fcb537570a18__e8e65e12-bddc-5f6d-a214-027d4d1e48a4-a83e7f6b-6f48-52be-ab18-b70256a6af04-383b2ef9-d115-51ae-9b90-16c3037cb3d5_4"
+    },
+    {
+      "number": 15,
+      "question": "在2021年国家公务员录用考试的相关解析中，对于那个旨在通过自主创新实现高质量增长的宏观经济布局是如何界定的？这种全国性的发展思路在山西省中等职业学校针对加工制造类D类考生的专业课测试范围中又是如何体现其具体应用的？",
+      "expected_answer": "“新发展格局”是党中央深刻把握世界大势、着眼经济中长期发展而作出的重大战略部署，在2021年公务员考试解析中被定义为实现高质量发展、依靠创新驱动突破核心技术的关键。该战略在地方教育中通过《机械基础》考试得到落地实施，即针对山西省中等职业学校“加工制造类”毕业生进行专业基础知识考核，从而为制造业的技术突破提供必要的专业人才储备。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "a83e7f6b-6f48-52be-ab18-b70256a6af04.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "e8e65e12-bddc-5f6d-a214-027d4d1e48a4.pdf",
+          "pages": [
+            1
+          ]
+        }
+      ],
+      "dataset_id": "S11__cec71222-8bb0-5f56-b699-fcb537570a18__e8e65e12-bddc-5f6d-a214-027d4d1e48a4-a83e7f6b-6f48-52be-ab18-b70256a6af04-383b2ef9-d115-51ae-9b90-16c3037cb3d5_1"
+    },
+    {
+      "number": 16,
+      "question": "如果我要准备2021年的省公务员招录考试以及HSK四级测试，在录入考生身份资料和操作答题纸时有哪些具体的工具和流程要求？要是忘了把试题册上的那个标识贴码粘贴到指定位置，后果会有多严重？此外，关于汉语水平考试听力环节结束后的答题卡填涂，官方给出的具体时间安排是怎样的？",
+      "expected_answer": "考生需在指定位置使用黑色笔与2B铅笔填写个人信息并按规范处理条形码；国考（省级）明确规定未贴条形码的答题卡作废且成绩记为0分，而HSK（四级）规定在听力部分结束后专门安排5分钟时间用于填写答题卡。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "383b2ef9-d115-51ae-9b90-16c3037cb3d5.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "e8e65e12-bddc-5f6d-a214-027d4d1e48a4.pdf",
+          "pages": [
+            1
+          ]
+        }
+      ],
+      "dataset_id": "S12__cec71222-8bb0-5f56-b699-fcb537570a18__e8e65e12-bddc-5f6d-a214-027d4d1e48a4-383b2ef9-d115-51ae-9b90-16c3037cb3d5-d135da8f-b46b-5ecd-9d82-ab920a4fbe67_1"
+    },
+    {
+      "number": 17,
+      "question": "麻烦帮我查一下，在H41001和H41003这两份卷子里，听力最初那个环节的第五个小题分别给出了什么样的句子内容？",
+      "expected_answer": "H41001 试卷“听力第一部分”第 5 题的原始题干文本为“5.★小刘受到了表扬。”；H41003 试卷“听力第一部分”第 5 题的原始题干文本为“5.★参观时间是一小时。”。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "383b2ef9-d115-51ae-9b90-16c3037cb3d5.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "document_name": "d135da8f-b46b-5ecd-9d82-ab920a4fbe67.pdf",
+          "pages": [
+            2
+          ]
+        }
+      ],
+      "dataset_id": "S14__d96872d0-7358-5732-8e02-cf06d84f8411__383b2ef9-d115-51ae-9b90-16c3037cb3d5-d135da8f-b46b-5ecd-9d82-ab920a4fbe67_1"
+    },
+    {
+      "number": 18,
+      "question": "在2013年那份17省市联考卷子的“一、常识判断”这一项里，第4个题目是怎么写的？另外，2021年中央和国家机关公考行测省级真题的“第一部分 常识判断”中，排在第2位的题干内容是什么？",
+      "expected_answer": "“4. 下列哪项没有运用热胀冷缩原理？（）”和“2. 习近平总书记指出，要强化对市场主体的金融支持，发展普惠金融，有效缓解企业特别是中小微企业融资难融资贵的问题。下列哪个措施最有助于新增融资重点流向中小微企业？”",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "3e444f62-0429-5a04-b40c-509152c781a6.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "document_name": "e8e65e12-bddc-5f6d-a214-027d4d1e48a4.pdf",
+          "pages": [
+            1
+          ]
+        }
+      ],
+      "dataset_id": "S18__e8e65e12-bddc-5f6d-a214-027d4d1e48a4__3e444f62-0429-5a04-b40c-509152c781a6_0"
+    },
+    {
+      "number": 19,
+      "question": "对比一下H41001和H61002这两套题目里，关于小刘和小李的个人遭遇，他们分别碰到了什么事情？这两者的境遇有什么截然不同的地方？",
+      "expected_answer": "H41001中的小刘处于受到了表扬的状态，而H61002中的小李则面临被罚款、事情没办完或没找到车位等情况。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "383b2ef9-d115-51ae-9b90-16c3037cb3d5.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "document_name": "d96872d0-7358-5732-8e02-cf06d84f8411.pdf",
+          "pages": [
+            2
+          ]
+        }
+      ],
+      "dataset_id": "S3__383b2ef9-d115-51ae-9b90-16c3037cb3d5__d135da8f-b46b-5ecd-9d82-ab920a4fbe67-d96872d0-7358-5732-8e02-cf06d84f8411_10"
+    },
+    {
+      "number": 20,
+      "question": "我需要对比一下两份不同文件里对写作环节的详细考查要求。其中一份提到了题量和分配的时间，另一份则规定了字数下限、题目素材类型以及考查的核心能力，能把相关的原始要求内容完整列出来吗？",
+      "expected_answer": "“3．书写（1 题，45 分钟）”；“要求考生按照命题、所给提纲或背景图、表写出一篇不少于 200 字的短文。目的是测试考生用英语表达思想或传递信息的能力及对英文写作基础知识的实际运用。”",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "d96872d0-7358-5732-8e02-cf06d84f8411.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "e6bd712b-65da-5226-97b8-3cb678c23db2.pdf",
+          "pages": [
+            2
+          ]
+        }
+      ],
+      "dataset_id": "S3__383b2ef9-d115-51ae-9b90-16c3037cb3d5__d135da8f-b46b-5ecd-9d82-ab920a4fbe67-d96872d0-7358-5732-8e02-cf06d84f8411-e6bd712b-65da-5226-97b8-3cb678c23db2_8"
+    },
+    {
+      "number": 21,
+      "question": "对比HSK四级、HSK六级以及那项评估英语表达与基础知识运用的测试，它们在文字产出环节的任务设置和考评标准上有哪些不同？请具体说明这三类考试在题目总数、答题限时，以及对作答篇幅或能力侧重点的差异。",
+      "expected_answer": "HSK（四级）书写部分为15题并限时25分钟，HSK（六级）书写部分为1题且限时45分钟，而文档e6bd712b中的考试写作部分则要求考生写出一篇不少于200字的短文，旨在测试其英语表达能力及写作基础知识的实际运用。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "383b2ef9-d115-51ae-9b90-16c3037cb3d5.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "d96872d0-7358-5732-8e02-cf06d84f8411.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "e6bd712b-65da-5226-97b8-3cb678c23db2.pdf",
+          "pages": [
+            2
+          ]
+        }
+      ],
+      "dataset_id": "S3__383b2ef9-d115-51ae-9b90-16c3037cb3d5__d135da8f-b46b-5ecd-9d82-ab920a4fbe67-d96872d0-7358-5732-8e02-cf06d84f8411-e6bd712b-65da-5226-97b8-3cb678c23db2_9"
+    },
+    {
+      "number": 22,
+      "question": "对比一下国科大博士研究生英语入学一卷中的单词测试板块与GESP图形化三级评估卷，它们在给出的作答限时以及该部分（或全卷）的最高得分设定上，具体有哪些差异？",
+      "expected_answer": "中国科学院大学博士研究生入学英语考试（试卷一）词汇部分建议用时为15分钟，总分为10分；而GESP图形化三级试卷的考试时间为120分钟，满分为100分。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "c3b3e47b-8182-5018-865d-54badd5e73bd.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "e6bd712b-65da-5226-97b8-3cb678c23db2.pdf",
+          "pages": [
+            4
+          ]
+        }
+      ],
+      "dataset_id": "S16__e6bd712b-65da-5226-97b8-3cb678c23db2__1f6facfe-4f31-5dea-9dd5-a718d309654a-c3b3e47b-8182-5018-865d-54badd5e73bd_2"
+    },
+    {
+      "number": 23,
+      "question": "在针对路桥等基础交通设施材料进行质量把控，以及为古迹修复筛选高兼容性砂浆的过程中，分别采用了哪些技术准则或实验体系？请说明在处理道路建材采样后的具体工作规范，以及为了验证修缮灰浆在实际应用中的持久性，需要执行哪些涉及物理受力与温湿度变化的模拟测试？",
+      "expected_answer": "公路材料测试引用 ASTM 或 AASHTO 标准，要求技术员采样、制样并使用指定设备进行标准测试与结果报告；而历史建筑砂浆研究引用了都灵理工大学设立的实验程序，要求通过对单样至混合试样的静态和循环测试来模拟机械与湿热应力，以识别最具兼容性并能确保耐久性的产品。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "5f1908b7-a586-5ed9-b512-c01ef2028770.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "document_name": "b6f98a20-4b08-5383-8c23-9c25bda184b2.pdf",
+          "pages": [
+            25
+          ]
+        }
+      ],
+      "dataset_id": "S13__5f1908b7-a586-5ed9-b512-c01ef2028770__df682417-f653-512e-9afa-2015356db73b-74b6126e-4b3c-5929-a517-4b51f3d4d938-b6f98a20-4b08-5383-8c23-9c25bda184b2_7"
+    },
+    {
+      "number": 24,
+      "question": "在现行的路桥工程体系中，那些专门负责建材采样及实验室标准分析的岗位具体扮演什么角色？考虑到行业目前对交付成果规范的重视以及建设活动的增多，此类技术人员在实际操作中会针对哪些特定的基建组件和建筑砖石（例如爱荷华州常见的干压型建材或特定产地如韦伯斯特市的砖块）开展检测工作？",
+      "expected_answer": "施工材料技术员在公路建设行业中主要负责采集道路、涵洞、桥梁等工程材料的样本，并在现场或实验室进行制备和标准测试（如ASTM或AASHTO），以应对行业内因“最终结果”规范（\"end result\" specifications）推行和建设活动增加而产生的强烈需求。其工作涉及的测试结构组件涵盖了对特定材料的专业化检测，具体测试对象包括爱荷华州常用的干压建筑砖（dry press building brick）以及韦伯斯特市砖（Webster City brick）等，这些测试结果需进行报告以满足政府和私营行业标准。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "b6f98a20-4b08-5383-8c23-9c25bda184b2.pdf",
+          "pages": [
+            25
+          ]
+        },
+        {
+          "document_name": "df682417-f653-512e-9afa-2015356db73b.pdf",
+          "pages": [
+            3
+          ]
+        }
+      ],
+      "dataset_id": "S31__b6f98a20-4b08-5383-8c23-9c25bda184b2__df682417-f653-512e-9afa-2015356db73b_1"
+    },
+    {
+      "number": 25,
+      "question": "我想核实两项不同任务的财务安排：一项是萨兰加尼省的小型蓄水设施修建工程，另一项是中俄勒冈州跨政府委员会提供的专业咨询服务。这两者的钱款分别是由哪个组织或法案拨付的？此外，它们在合同期内允许支出的最高金额分别是多少？",
+      "expected_answer": "萨兰加尼省项目的资金来源为 2024 财年《一般拨款法案》（GAA），项目预算为 1,172,000.00 比索；而 COIC 项目的资金来源为福特家族基金会，其三年期的最高潜在合同价值预计不超过 450,000 美元。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "b5b44073-8687-58f6-8ffb-aaa1c3f5e2d4.pdf",
+          "pages": [
+            2
+          ]
+        },
+        {
+          "document_name": "e39be70a-f577-5b7d-a05d-70b0e375287d.pdf",
+          "pages": [
+            10
+          ]
+        }
+      ],
+      "dataset_id": "S14__69176b7b-0088-59b2-b9a5-d599d30c12ae__c94cc830-e155-5333-8dbf-5ae65225fe08-e39be70a-f577-5b7d-a05d-70b0e375287d-b5b44073-8687-58f6-8ffb-aaa1c3f5e2d4_8"
+    },
+    {
+      "number": 26,
+      "question": "在核算项目中的本土化占比时，我该使用哪家机构在公示当天几点公布的货币折算率？另外，如果需要获取全套的投标申请文件，可以在哪个网址下载？",
+      "expected_answer": "招标文件可通过访问 denrpenrosarangani.com 进行下载，且在计算本地生产及内容时，必须采用南非储备银行在招标公告发布当日12:00公布的汇率。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "c94cc830-e155-5333-8dbf-5ae65225fe08.pdf",
+          "pages": [
+            9
+          ]
+        },
+        {
+          "document_name": "e39be70a-f577-5b7d-a05d-70b0e375287d.pdf",
+          "pages": [
+            12
+          ]
+        }
+      ],
+      "dataset_id": "S16__69176b7b-0088-59b2-b9a5-d599d30c12ae__c94cc830-e155-5333-8dbf-5ae65225fe08-e39be70a-f577-5b7d-a05d-70b0e375287d_0"
+    },
+    {
+      "number": 27,
+      "question": "如果我需要就加利福尼亚州的建筑结构资质认证、菲律宾萨兰加尼省的小型蓄水设施施工，以及俄勒冈州社区导师专业顾问指导这三项事宜分别进行沟通，应该向哪些电子信箱发送邮件？",
+      "expected_answer": "加州项目的联系邮箱为occmrfq@jud.ca.gov，菲律宾项目的联系邮箱为denrpenro_alabel@yahoo.com.ph，俄勒冈州项目的联系邮箱为jtruehl@coic.org。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "69176b7b-0088-59b2-b9a5-d599d30c12ae.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "b5b44073-8687-58f6-8ffb-aaa1c3f5e2d4.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "e39be70a-f577-5b7d-a05d-70b0e375287d.pdf",
+          "pages": [
+            10
+          ]
+        }
+      ],
+      "dataset_id": "S14__69176b7b-0088-59b2-b9a5-d599d30c12ae__c94cc830-e155-5333-8dbf-5ae65225fe08-e39be70a-f577-5b7d-a05d-70b0e375287d-b5b44073-8687-58f6-8ffb-aaa1c3f5e2d4_15"
+    },
+    {
+      "number": 28,
+      "question": "我想了解有关任务复盘、高频交易快捷键以及行情研判量化参数的资料，对应的具体章节目录标题分别叫什么？",
+      "expected_answer": "项目回顾、4.21 炒单热键 15、4.29 技术分析指标 ..... 19",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "0ec6df7b-4bd2-56f1-a354-50a298f15c99.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "document_name": "cffafca3-8aa6-51a1-80be-8127fcc269f8.pdf",
+          "pages": [
+            2
+          ]
+        }
+      ],
+      "dataset_id": "S14__cffafca3-8aa6-51a1-80be-8127fcc269f8__0ec6df7b-4bd2-56f1-a354-50a298f15c99_0"
+    },
+    {
+      "number": 29,
+      "question": "我在研究 cfltrader 的操作指南，想知道如果需要让系统恢复到先前的状态，那个具体的功能术语叫什么？同时，为了评估 SYNERGITA 的可靠性，请问该平台声称其遵循了哪项安全规范，并成功通过了哪类专门的安全审查？",
+      "expected_answer": "cfltrader 软件手册中用于回退系统的功能是“版本回滚”，而 SYNERGITA 声明其符合 OWASP 标准并通过了 VERACODE 安全测试。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "0ec6df7b-4bd2-56f1-a354-50a298f15c99.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "document_name": "5f2c52fc-4df9-5167-8620-960d5d27c26e.pdf",
+          "pages": [
+            21
+          ]
+        }
+      ],
+      "dataset_id": "S5__0ec6df7b-4bd2-56f1-a354-50a298f15c99__5f2c52fc-4df9-5167-8620-960d5d27c26e_4"
+    },
+    {
+      "number": 30,
+      "question": "在复盘线下活动执行的缺陷、分析消费者在电商平台下单流程中的风险点，以及了解促使人力资源部决定在三个月内推行考核体系的直接导火索时，这些内容分别涉及了哪些具体的负面状况或执行障碍？",
+      "expected_answer": "“项目总结——不足”中提到了活动场地临时管控、物料制作周期紧张、人员分工不明确及团队缺乏磨合；“常见的转化场景”指出搜索、浏览、结算及支付等环节均可能导致失败；而“转折点”则提到了员工在内部市政厅宣扬不满的情绪风险。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "461eb1b5-c02e-55e4-bab5-3900c7949c6d.pdf",
+          "pages": [
+            5
+          ]
+        },
+        {
+          "document_name": "5f2c52fc-4df9-5167-8620-960d5d27c26e.pdf",
+          "pages": [
+            26
+          ]
+        },
+        {
+          "document_name": "cffafca3-8aa6-51a1-80be-8127fcc269f8.pdf",
+          "pages": [
+            37
+          ]
+        }
+      ],
+      "dataset_id": "S13__cffafca3-8aa6-51a1-80be-8127fcc269f8__461eb1b5-c02e-55e4-bab5-3900c7949c6d-5f2c52fc-4df9-5167-8620-960d5d27c26e_5"
+    },
+    {
+      "number": 31,
+      "question": "在各类移动端软件的业务链条里，促成新用户成功创号这一环扮演着怎样的角色？以“鸟枪操盘手”为例，为了保证大家能顺畅通过这道门槛，它在收集个人资料进行身份核验，以及处理动态码接收失败等突发技术问题上，分别设计了哪些具体的填报要求与后续支援手段？",
+      "expected_answer": "“注册转化”是移动应用中常见的核心转化场景。在“鸟枪操盘手”应用中，该环节要求用户实名填写手机号及邮箱以获取验证码完成注册；为防止因技术故障（如收不到验证码）导致转化失败，系统提供了90秒内重新获取验证码的机制，并设有客服电话（0755-23334885）及客户经理联系方式作为异常处理保障，从而确保注册流程的闭环和转化目标的实现。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "0ec6df7b-4bd2-56f1-a354-50a298f15c99.pdf",
+          "pages": [
+            6,
+            7
+          ]
+        },
+        {
+          "document_name": "461eb1b5-c02e-55e4-bab5-3900c7949c6d.pdf",
+          "pages": [
+            5
+          ]
+        }
+      ],
+      "dataset_id": "S6__461eb1b5-c02e-55e4-bab5-3900c7949c6d__cffafca3-8aa6-51a1-80be-8127fcc269f8-0ec6df7b-4bd2-56f1-a354-50a298f15c99-5f2c52fc-4df9-5167-8620-960d5d27c26e_0"
+    },
+    {
+      "number": 32,
+      "question": "在分析跨国金融市场的区域差异以及评估 1964 年至 2012 年间资本投入领域的技术波动时，文中具体提炼出了哪几类与政策导向、政府信用以及新增资本成本相关的风险要素？",
+      "expected_answer": "文献中提到了与各国货币政策相关的汇率风险（currency risk）、由政府财政行为产生的感知主权风险（perceived sovereign risk），以及宏观金融文献中用于捕捉投资新资本成本冲击的IST风险（IST risk）。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "27a82365-d321-57dc-a36d-5c03aabb77a9.pdf",
+          "pages": [
+            3
+          ]
+        },
+        {
+          "document_name": "e9702cff-840a-5be8-acb0-e2cf0acda90e.pdf",
+          "pages": [
+            4
+          ]
+        }
+      ],
+      "dataset_id": "S16__27a82365-d321-57dc-a36d-5c03aabb77a9__158fdc06-d64d-5632-889d-4abe94cbfe52-e9702cff-840a-5be8-acb0-e2cf0acda90e_3"
+    },
+    {
+      "number": 33,
+      "question": "在探讨全球资产定价的逻辑以及研究发展中经济体所面临的分析瓶颈时，相关论述中明确指出了哪些会影响收益表现或资产评估的具体不确定性成分和风险因子？",
+      "expected_answer": "文中提到的具体风险或风险因素包括新兴市场回报的波动性、本地风险因素以及国内和全球风险因素。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "158fdc06-d64d-5632-889d-4abe94cbfe52.pdf",
+          "pages": [
+            4
+          ]
+        },
+        {
+          "document_name": "27a82365-d321-57dc-a36d-5c03aabb77a9.pdf",
+          "pages": [
+            1
+          ]
+        }
+      ],
+      "dataset_id": "S80__e6b0ca09-6494-5b86-b33f-fe3c4f833d5d__158fdc06-d64d-5632-889d-4abe94cbfe52-7bfe7335-bc95-5497-913e-61ce03f648bd-27a82365-d321-57dc-a36d-5c03aabb77a9_2"
+    },
+    {
+      "number": 34,
+      "question": "在评估权益类资产的风险敞口时，针对投资特定技术产生的风险溢价进行测算，为了剔除掉宏观经济里那种普遍存在的、总括性的环境因素，研究者具体采用了哪三个指标来作为这种经济整体影响因子的量化替代？",
+      "expected_answer": "衡量经济中共同总因素的三个指标分别是：市场超额收益（MKT）、全要素生产率（TFP）的增长率以及消费（gC）的增长率。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "e9702cff-840a-5be8-acb0-e2cf0acda90e.pdf",
+          "pages": [
+            13
+          ]
+        },
+        {
+          "document_name": "f7ced7b0-f8ba-57e1-87a8-61c7876838b5.pdf",
+          "pages": [
+            31
+          ]
+        }
+      ],
+      "dataset_id": "S89__f7ced7b0-f8ba-57e1-87a8-61c7876838b5__e9702cff-840a-5be8-acb0-e2cf0acda90e_2"
+    },
+    {
+      "number": 35,
+      "question": "我想核实一下 Caterpillar yellow L226 四合一漆单瓶的容量，以及 Barricade 65WG 包装上标注的具体份量是多少？",
+      "expected_answer": "厚膜漆 4-in-1 Caterpillar yellow L226 的净含量为 400 ml，Barricade 65WG 的净含量为 3 pounds。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "6b6178c5-a4c4-5f1c-9715-097b9b7830ee.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "d3fbaa11-ea68-5477-9a4d-a3e87698754f.pdf",
+          "pages": [
+            1
+          ]
+        }
+      ],
+      "dataset_id": "S18__99de099a-fd71-5105-9209-9072410dbc56__6b6178c5-a4c4-5f1c-9715-097b9b7830ee-d3fbaa11-ea68-5477-9a4d-a3e87698754f_2"
+    },
+    {
+      "number": 36,
+      "question": "我在核对 832TC-A、Thick Film Lacquer 4-in-1 以及 Barricade 65WG 这几样产品的技术材料，请帮我找下资料里显式记录的如下信息：832TC-A 的最初颁发时间与纸质输出日期，Thick Film Lacquer 4-in-1 对应的更新版本日期和生成 PDF 的时间，以及 Barricade 65WG 那个以 SCP 开头的身份识别码。",
+      "expected_answer": "832TC-A的Issue Date为02/07/2019，Print Date为12/05/2020；Thick Film Lacquer 4-in-1的Revision date为30.09.2022，PDF print date为01.10.2022；Barricade 65WG的SCP代码为SCP 834A-M4E 0909 4012003。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "6b6178c5-a4c4-5f1c-9715-097b9b7830ee.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "99de099a-fd71-5105-9209-9072410dbc56.pdf",
+          "pages": [
+            1
+          ]
+        },
+        {
+          "document_name": "d3fbaa11-ea68-5477-9a4d-a3e87698754f.pdf",
+          "pages": [
+            1
+          ]
+        }
+      ],
+      "dataset_id": "S18__99de099a-fd71-5105-9209-9072410dbc56__6b6178c5-a4c4-5f1c-9715-097b9b7830ee-d3fbaa11-ea68-5477-9a4d-a3e87698754f_5"
+    },
+    {
+      "number": 37,
+      "question": "索引号为[13]和[24]的这两篇华中科技大学论文，它们具体研究的科研方向分别是什么，对应的成果产出年份又分别是哪一年？",
+      "expected_answer": "参考文献[24]揭示了伍巍在2016年研究的“超稳激光真空系统热时间常数”，而参考文献[13]揭示了董珊在2007年研究的“微透镜扫描器”。",
+      "question_sources": [],
+      "answer_sources": [
+        {
+          "document_name": "598102d79df8854781a32cd04a77af69b309bbf956e9d010810d11728ae50c86.pdf",
+          "pages": [
+            7
+          ]
+        },
+        {
+          "document_name": "5b1e29c141e4013f7942587f8a73b57de1657683a0f5d1f324190500ed8261d8.pdf",
+          "pages": [
+            6
+          ]
+        }
+      ],
+      "dataset_id": "S19__5b1e29c141e4013f7942587f8a73b57de1657683a0f5d1f324190500ed8261d8__598102d79df8854781a32cd04a77af69b309bbf956e9d010810d11728ae50c86_0"
+    }
+  ]
+}
