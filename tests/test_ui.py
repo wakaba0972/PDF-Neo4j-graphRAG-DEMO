@@ -1141,8 +1141,18 @@ def test_question_set_manager_imports_centrally_and_binding_is_project_scoped(tm
     assert "中央測試集" in refreshed_status
     assert refreshed_selector["value"] == [question_set_id]
 
-    components = build_app().config["components"]
+    app = build_app()
+    components = app.config["components"]
     assert any(component.get("props", {}).get("value") == "刪除" for component in components)
+    binding_selector = next(
+        component for component in components
+        if component.get("props", {}).get("label") == "已綁定題目集"
+    )
+    assert any(
+        (0, "load") in dependency.get("targets", [])
+        and binding_selector["id"] in dependency.get("outputs", [])
+        for dependency in app.config["dependencies"]
+    ), "0-0 binding checkbox must be initialized from saved project bindings on page load"
 
 
 def test_central_question_set_delete_requires_confirmation_and_refreshes(tmp_path, monkeypatch) -> None:

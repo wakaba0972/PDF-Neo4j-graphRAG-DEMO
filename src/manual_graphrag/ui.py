@@ -8257,6 +8257,20 @@ def build_app() -> gr.Blocks:
         )
         project_tab.select(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
         app.load(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
+        # The 0-0 system-settings tab may be the initially selected tab, in
+        # which case Gradio does not always emit Tab.select on page load.
+        # Populate the binding selector from persisted project bindings on
+        # every initial page load so previously-bound sets appear checked.
+        app.load(
+            refresh_binding_project_choices_for_ui,
+            inputs=binding_project_selector,
+            outputs=[
+                binding_project_selector,
+                binding_question_set_status,
+                binding_question_set_selector,
+            ],
+            show_progress="hidden",
+        )
         load_graph_details_button.click(
             load_graph_tables_for_project_ui,
             inputs=[project_selector, graph_state],
