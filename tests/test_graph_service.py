@@ -94,6 +94,41 @@ def test_extract_graph_without_schema_keeps_model_assigned_types(monkeypatch) ->
     assert "You are a knowledge-graph information extraction system" in system_prompts[0]
 
 
+def test_name_only_extraction_merges_same_normalized_name_and_generates_provenance(monkeypatch) -> None:
+    responses = iter([
+        {"entities": [{"name": " Acme   Controller ", "description": "first"}],
+         "relationships": []},
+        {"entities": [{"name": "acme controller", "description": "second"}],
+         "relationships": [{"source": "acme controller", "target": "Motor",
+                             "type": "drives", "description": "explicit"}]},
+    ])
+    prompts = []
+
+    def fake_chat(*args, **kwargs):
+        prompts.append(args[4])
+        return next(responses)
+
+    monkeypatch.setattr(graph_service, "_chat_json", fake_chat)
+    extraction = graph_service.extract_graph(
+        "https://api.openai.com/v1", "key", "model",
+        [TextChunk(1, "first", (2,), "a.pdf"), TextChunk(2, "second", (5,), "b.pdf")],
+        "name_only",
+    )
+
+    assert len(extraction.entities) == 1
+    entity = extraction.entities[0]
+    assert "type" not in entity
+    assert entity["entity_id"]
+    assert entity["source_references"] == [
+        {"document_id": "", "document": "a.pdf", "chunk_numbers": [1], "pages": [2]},
+        {"document_id": "", "document": "b.pdf", "chunk_numbers": [2], "pages": [5]},
+    ]
+    relation = extraction.relationships[0]
+    assert relation["relationship_id"]
+    assert relation["source_entity_id"] == entity["entity_id"]
+    assert '"type":"..."' not in prompts[0].split("relationships")[0]
+
+
 def test_schema_planning_analyzes_all_chunks_and_merges_hierarchically(monkeypatch) -> None:
     monkeypatch.setattr(graph_service, "SCHEMA_CONTEXT_LIMIT", 100)
     chunks = [TextChunk(number, "x" * 20, (number,)) for number in range(1, 11)]
@@ -271,7 +306,7 @@ def test_extract_graph_reports_rate_limit_wait_via_progress(monkeypatch) -> None
     progress_updates: list[tuple[float | None, str]] = []
 
     graph_service.extract_graph(
-        "http://models/v1", "", "llm", [TextChunk(1, "text", (1,))], SCHEMA,
+        "http://models/v1", "", "llm", [TextChunk(1, "text", (1,))], "typed_name",
         progress_callback=lambda value, description: progress_updates.append(
             (value, description)
         ),
@@ -326,7 +361,7 @@ def test_extract_graph_stops_immediately_when_already_cancelled(monkeypatch) -> 
 
     with pytest.raises(graph_service.RunCancelled):
         graph_service.extract_graph(
-            "http://models/v1", "", "llm", [TextChunk(1, "text", (1,))], SCHEMA,
+                "http://models/v1", "", "llm", [TextChunk(1, "text", (1,))], "typed_name",
             control=control,
         )
 
@@ -440,14 +475,14 @@ def test_extract_graph_uses_one_chunk_per_request_and_records_sources(monkeypatc
     monkeypatch.setattr(graph_service, "_chat_json", fake_chat)
 
     extraction = graph_service.extract_graph(
-        "http://models/v1", "", "llm", chunks, SCHEMA
+        "http://models/v1", "", "llm", chunks, "typed_name"
     )
 
     assert extraction.processed_chunks == 2
     assert len(prompts) == len(chunks)
     assert all(prompt.count("[CHUNK ") == 1 for prompt in prompts)
-    assert "Source chunk provenance is recorded by the program" in prompts[0]
-    assert len(extraction.entities) == 2
+    assert "Source chunk provenance and all entity/relationship identifiers are assigned by the program" in prompts[0]
+    assert len(extraction.entities) == 3
     assert extraction.entities[0]["source_chunk_numbers"] == [1, 2]
     assert extraction.entities[0]["source_pages"] == [1, 2]
     assert extraction.entities[0]["source_documents"] == ["manual-a.pdf", "manual-b.pdf"]
@@ -455,20 +490,11 @@ def test_extract_graph_uses_one_chunk_per_request_and_records_sources(monkeypatc
         {"document_id": "", "document": "manual-a.pdf", "chunk_numbers": [1], "pages": [1]},
         {"document_id": "", "document": "manual-b.pdf", "chunk_numbers": [2], "pages": [2]},
     ]
-    assert extraction.relationships == [
-        {
-            "source": "設備 A",
-            "type": "USES",
-            "target": "設備 B",
-            "description": "搭配使用",
-            "source_chunk_numbers": [2],
-            "source_pages": [2],
-            "source_documents": ["manual-b.pdf"],
-            "source_references": [
-                {"document_id": "", "document": "manual-b.pdf", "chunk_numbers": [2], "pages": [2]}
-            ],
-        }
-    ]
+    assert extraction.entities[2]["type"] == "UNKNOWN"
+    assert extraction.relationships[0]["source"] == "設備 A"
+    assert extraction.relationships[0]["target"] == "設備 B"
+    assert extraction.relationships[0]["source_entity_id"] == extraction.entities[0]["entity_id"]
+    assert extraction.relationships[0]["target_entity_id"] == extraction.entities[1]["entity_id"]
 
 
 def test_validate_schema_rejects_missing_types() -> None:

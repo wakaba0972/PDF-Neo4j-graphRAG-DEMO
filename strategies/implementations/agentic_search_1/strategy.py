@@ -29,7 +29,7 @@ def _format_record(record: Any) -> RetrieverResultItem:
     evidence.update({
         "score": score,
         "fusion_score": score,
-        "matched_by": ["agentic-search-3-seed"],
+        "matched_by": ["agentic-search-1-seed"],
     })
     return RetrieverResultItem(content=evidence, metadata={"score": score})
 
@@ -113,10 +113,10 @@ _SYSTEM_PROMPT = (
 )
 
 
-class AgenticSearch3RetrievalStrategy:
+class AgenticSearch1RetrievalStrategy:
     """Let the LLM autonomously choose among safe, code-owned retrieval tools."""
 
-    strategy_id = "agentic_search_3"
+    strategy_id = "agentic_search_1"
     result_formatter = staticmethod(_format_record)
 
     @staticmethod
@@ -139,7 +139,7 @@ class AgenticSearch3RetrievalStrategy:
             return []
         # The index name is application-owned, never model-controlled. Query
         # values are parameters, and each returned node is scoped to this run.
-        return AgenticSearch3RetrievalStrategy._read(
+        return AgenticSearch1RetrievalStrategy._read(
             context,
             f"""
             CALL db.index.fulltext.queryNodes($index_name, $query, {{limit: $search_limit}})
@@ -163,7 +163,7 @@ class AgenticSearch3RetrievalStrategy:
     ) -> list[dict[str, Any]]:
         if not evidence_ids:
             return []
-        return AgenticSearch3RetrievalStrategy._read(
+        return AgenticSearch1RetrievalStrategy._read(
             context,
             f"""
             MATCH (seed:GraphEvidence)
@@ -195,7 +195,7 @@ class AgenticSearch3RetrievalStrategy:
     ) -> list[dict[str, Any]]:
         if not evidence_ids:
             return []
-        return AgenticSearch3RetrievalStrategy._read(
+        return AgenticSearch1RetrievalStrategy._read(
             context,
             f"""
             MATCH (source:GraphEvidence)
@@ -228,7 +228,7 @@ class AgenticSearch3RetrievalStrategy:
             query = arguments.get("query")
             if not isinstance(query, str) or len(query) > 500:
                 raise ValueError("query 必須是 500 字元內的文字")
-            return AgenticSearch3RetrievalStrategy._search_text(context, query, limit)
+            return AgenticSearch1RetrievalStrategy._search_text(context, query, limit)
         if name in {"follow_graph_connections", "fetch_source_chunks"}:
             ids = arguments.get("evidence_ids")
             if (
@@ -237,8 +237,8 @@ class AgenticSearch3RetrievalStrategy:
             ):
                 raise ValueError("evidence_ids 只能包含本次已找到的證據 ID")
             if name == "follow_graph_connections":
-                return AgenticSearch3RetrievalStrategy._follow_connections(context, ids, limit)
-            return AgenticSearch3RetrievalStrategy._fetch_chunks(context, ids, limit)
+                return AgenticSearch1RetrievalStrategy._follow_connections(context, ids, limit)
+            return AgenticSearch1RetrievalStrategy._fetch_chunks(context, ids, limit)
         raise ValueError("不允許的工具名稱")
 
     @staticmethod
@@ -246,7 +246,7 @@ class AgenticSearch3RetrievalStrategy:
         context: RetrievalContext, messages: list[dict[str, Any]],
     ) -> dict[str, Any]:
         if not context.model_base_url.strip() or not context.model_api_key.strip() or not context.model.strip():
-            raise ValueError("Agentic Search 3 需要可用的 OpenAI 問答模型設定")
+            raise ValueError("Agentic Search 1 需要可用的 OpenAI 問答模型設定")
         payload: dict[str, Any] = {
             "model": context.model.strip(),
             "messages": messages,
@@ -256,7 +256,7 @@ class AgenticSearch3RetrievalStrategy:
         if context.model.strip().casefold() == GPT_6_LUNA_MODEL:
             effort = context.reasoning_effort or "low"
             if effort not in GPT_6_LUNA_REASONING_EFFORTS:
-                raise ValueError("Agentic Search 3 的 GPT-6 Luna 推理強度設定無效")
+                raise ValueError("Agentic Search 1 的 GPT-6 Luna 推理強度設定無效")
             payload["reasoning_effort"] = effort
             if effort == "none":
                 payload["temperature"] = 0
@@ -269,10 +269,10 @@ class AgenticSearch3RetrievalStrategy:
         )
         choices = response.get("choices") if isinstance(response, dict) else None
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise ValueError("Agentic Search 3 收到無效的模型回應")
+            raise ValueError("Agentic Search 1 收到無效的模型回應")
         message = choices[0].get("message")
         if not isinstance(message, dict):
-            raise ValueError("Agentic Search 3 回應缺少 message")
+            raise ValueError("Agentic Search 1 回應缺少 message")
         return message
 
     @staticmethod
@@ -280,10 +280,10 @@ class AgenticSearch3RetrievalStrategy:
         context: RetrievalContext, input_items: list[dict[str, Any]],
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         if not context.model_base_url.strip() or not context.model_api_key.strip() or not context.model.strip():
-            raise ValueError("Agentic Search 3 需要可用的 OpenAI 問答模型設定")
+            raise ValueError("Agentic Search 1 需要可用的 OpenAI 問答模型設定")
         effort = context.reasoning_effort or "low"
         if effort not in GPT_6_LUNA_REASONING_EFFORTS:
-            raise ValueError("Agentic Search 3 的 GPT-6 Luna 推理強度設定無效")
+            raise ValueError("Agentic Search 1 的 GPT-6 Luna 推理強度設定無效")
         response = _post_json(
             _api_url(context.model_base_url, "responses"),
             {
@@ -299,7 +299,7 @@ class AgenticSearch3RetrievalStrategy:
         )
         output = response.get("output") if isinstance(response, dict) else None
         if not isinstance(output, list):
-            raise ValueError("Agentic Search 3 Responses API 回應缺少 output 清單")
+            raise ValueError("Agentic Search 1 Responses API 回應缺少 output 清單")
         tool_calls = []
         for item in output:
             if not isinstance(item, dict) or item.get("type") != "function_call":
@@ -426,7 +426,7 @@ class AgenticSearch3RetrievalStrategy:
                             **evidence,
                             "score": score,
                             "fusion_score": score,
-                            "matched_by": [f"agentic-search-3-{name}"],
+                            "matched_by": [f"agentic-search-1-{name}"],
                             "agentic_search_tool": name,
                             "agentic_search_round": tool_calls_used,
                         }

@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "dataset": "MuSiQue-Ans dev — 2-hop accuracy sample (40-document sample)",
+  "questions": [
+    {
+      "number": 1,
+      "question": "Who did the Huguenots in the state primary Edwards won outside of Georgia buy land from?",
+      "expected_answer": "Edmund Bellinger",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__29339_40482",
+      "hops": 2
+    },
+    {
+      "number": 2,
+      "question": "which professional sports team would you not see play a home game in the venue that held the 2004 Republican National Convention?",
+      "expected_answer": "Brooklyn Nets NBA",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__840174_78851",
+      "hops": 2
+    },
+    {
+      "number": 3,
+      "question": "Which professional sports team does not play their home games at the same location where the Amateur Boxing Golden Gloves event is held?",
+      "expected_answer": "Brooklyn Nets NBA",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__2148_78851",
+      "hops": 2
+    },
+    {
+      "number": 4,
+      "question": "What percentage did the Dow Jones fall in the historical era where the book takes place?",
+      "expected_answer": "54.7%",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__2299_38663",
+      "hops": 2
+    },
+    {
+      "number": 5,
+      "question": "What was the population of the founder of New Amsterdam before influx of Huguenot refugees?",
+      "expected_answer": "2 million",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__1667_40502",
+      "hops": 2
+    },
+    {
+      "number": 6,
+      "question": "What is the population of the borough that contains the neighborhood of Riverdale?",
+      "expected_answer": "1,438,159",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__1845_38366",
+      "hops": 2
+    },
+    {
+      "number": 7,
+      "question": "Which professional sports team would you not see play a home game where Jim Foster came up with the idea for arena football?",
+      "expected_answer": "Brooklyn Nets NBA",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__7906_78851",
+      "hops": 2
+    },
+    {
+      "number": 8,
+      "question": "From whom did the Huguenots in the state encompassing Zubly Cemetery purchase land from?",
+      "expected_answer": "Edmund Bellinger",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__129721_40482",
+      "hops": 2
+    },
+    {
+      "number": 9,
+      "question": "Who was mayor of New York when the first cake mix came out?",
+      "expected_answer": "Fiorello La Guardia",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__60229_1783",
+      "hops": 2
+    },
+    {
+      "number": 10,
+      "question": "What former contestant did the performer of Addicted ask to marry him?",
+      "expected_answer": "Diana DeGarmo",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__538735_3296",
+      "hops": 2
+    },
+    {
+      "number": 11,
+      "question": "How many refugees emigrated to the country that Clara Peeters is a citizen of?",
+      "expected_answer": "75,000 to 100,000",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__104095_40501",
+      "hops": 2
+    },
+    {
+      "number": 12,
+      "question": "Which professional sports team would you not see play a home game in where the Amateur Boxing Golden Gloves takes place?",
+      "expected_answer": "Brooklyn Nets NBA",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__2150_78851",
+      "hops": 2
+    },
+    {
+      "number": 13,
+      "question": "What was the percentage the Dow Jones fell during the time the first cake mix come out?",
+      "expected_answer": "54.7%",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__60229_38663",
+      "hops": 2
+    },
+    {
+      "number": 14,
+      "question": "What was the population of the republic that participated in The Battle of the Kentish Knock before this emigration?",
+      "expected_answer": "2 million",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__487706_40502",
+      "hops": 2
+    },
+    {
+      "number": 15,
+      "question": "What season was the performer of Blue Skies on?",
+      "expected_answer": "season three",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__811015_3300",
+      "hops": 2
+    },
+    {
+      "number": 16,
+      "question": "How many refugees emigrated to the nation that founded New Amsterdam?",
+      "expected_answer": "75,000 to 100,000",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__1667_40501",
+      "hops": 2
+    },
+    {
+      "number": 17,
+      "question": "How many refugees emigrated to the participant of Battle of Kentish Knock?",
+      "expected_answer": "75,000 to 100,000",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__487706_40501",
+      "hops": 2
+    },
+    {
+      "number": 18,
+      "question": "What season was the performer of Addicted a part of?",
+      "expected_answer": "season five",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__538735_3299",
+      "hops": 2
+    },
+    {
+      "number": 19,
+      "question": "Before this emigration what was the population of Clara Peeters's country of citizenship?",
+      "expected_answer": "2 million",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__104095_40502",
+      "hops": 2
+    },
+    {
+      "number": 20,
+      "question": "Who was New York's mayor during the book's historical period?",
+      "expected_answer": "Fiorello La Guardia",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "2hop__2299_1783",
+      "hops": 2
+    }
+  ]
+}

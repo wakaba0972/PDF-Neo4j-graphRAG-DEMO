@@ -126,7 +126,6 @@ def test_experiment_member_summary_does_not_show_graph_partition_mode(monkeypatc
     monkeypatch.setattr(ui, "load_project_summary", lambda _project_id: {
         "created_by": "57", "document_count": 2, "chunk_count": 10,
         "question_count": 0, "chunk_size": 1500, "chunk_overlap": 200,
-        "schema_granularity": None,
     })
     monkeypatch.setattr(ui, "migrate_project_question_sets", lambda _project_id: [])
 
@@ -134,7 +133,7 @@ def test_experiment_member_summary_does_not_show_graph_partition_mode(monkeypatc
 
     assert row[0] == "車型 A"
     assert row[4] == 10
-    assert len(row) == 11
+    assert len(row) == 10
 
 
 def test_current_project_banner_reflects_project_name() -> None:
@@ -144,7 +143,9 @@ def test_current_project_banner_reflects_project_name() -> None:
 
 def test_retrieval_strategies_are_not_filtered_by_graph_partition_mode() -> None:
     assert ui.strategy_choices() == [
-        "基本向量檢索", "混合檢索", "Agentic Search", "Agentic Search 3",
+        "基本向量檢索", "混合檢索", "Agentic Search 1", "Agentic Search 2",
+        "Greedy DFS Agentic Search",
+        "Greedy DFS Agentic Search 2",
     ]
 
 
@@ -153,7 +154,7 @@ def test_reranker_and_expansion_controls_are_strategy_specific() -> None:
         "基本向量檢索", "LLM Reranker", "證據擴展",
     )
     unsupported = ui._postprocessing_control_updates(
-        "Agentic Search", "LLM Reranker", "證據擴展",
+        "Agentic Search 1", "LLM Reranker", "證據擴展",
     )
 
     assert supported[0]["interactive"] is True
@@ -416,7 +417,7 @@ def test_schema_planner_is_removed_from_graph_build_ui() -> None:
     assert "Schema 規劃 LLM" not in labels
     assert "用於規劃 Schema 的 PDF" not in labels
     assert "分析文件並規劃 Schema（可選）" not in values
-    assert "自訂 Schema 約束（選填 JSON；留白時直接依文本抽取）" in labels
+    assert "抽取方法" in labels
 
 
 def test_project_page_uses_automatic_refresh_and_save() -> None:
@@ -497,9 +498,10 @@ def test_pdf_upload_starts_with_valid_multi_document_controls() -> None:
         for component in app.config["components"]
     }
 
-    upload = fields["PDF 使用手冊（可一次選取多個檔案）"]["props"]
+    upload = fields["文件（PDF 或 UTF-8 TXT，可一次選取多個檔案）"]["props"]
     assert upload["file_count"] == "multiple"
-    assert fields["選擇要移除的 PDF（可多選）"]["props"]["choices"] == []
+    assert upload["file_types"] == [".pdf", ".txt"]
+    assert fields["選擇要移除的文件（可多選）"]["props"]["choices"] == []
     assert any(
         component.get("props", {}).get("headers")
         == ["選取", "文件", "頁碼範圍", "Chunk 數"]
@@ -577,7 +579,7 @@ def test_evaluation_results_table_uses_smaller_font_class() -> None:
 def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate(monkeypatch) -> None:
     app = build_app()
     protected_labels = {
-        "1-1 PDF 與參數", "1-2 建圖",
+        "1-1 文件與參數", "1-2 建圖",
         "1-3 問答測試", "1-4 從 PDF 生題",
         "1-5 單一專案實驗",
     }
@@ -627,7 +629,7 @@ def test_single_and_experiment_pages_follow_active_workspace_and_connection_gate
         component.get("props", {}).get("label") for component in app.config["components"]
     }
     assert {
-        "1-0 專案設定", "1-1 PDF 與參數", "1-2 建圖",
+        "1-0 專案設定", "1-1 文件與參數", "1-2 建圖",
         "1-3 問答測試", "1-4 從 PDF 生題", "1-5 單一專案實驗",
         "2-0 跨專案實驗",
     } <= page_labels
@@ -870,7 +872,7 @@ def test_build_app_has_automatic_evaluation_page() -> None:
     assert "0-4 API Key 設定" not in labels
     assert "1-7 單一專案實驗" not in labels
     assert "1-1 連線設定" not in labels
-    assert labels.index("1-0 專案設定") < labels.index("Neo4j 連線設定") < labels.index("1-1 PDF 與參數")
+    assert labels.index("1-0 專案設定") < labels.index("Neo4j 連線設定") < labels.index("1-1 文件與參數")
     assert labels.index("1-3 問答測試") < labels.index("1-4 從 PDF 生題")
     assert "1-6 匯入問題集" not in labels
     assert labels.index("1-4 從 PDF 生題") < labels.index("1-5 單一專案實驗")
@@ -1136,8 +1138,18 @@ def test_question_set_manager_imports_centrally_and_binding_is_project_scoped(tm
     assert "中央測試集" in refreshed_status
     assert refreshed_selector["value"] == [question_set_id]
 
-    components = build_app().config["components"]
+    app = build_app()
+    components = app.config["components"]
     assert any(component.get("props", {}).get("value") == "刪除" for component in components)
+    binding_selector = next(
+        component for component in components
+        if component.get("props", {}).get("label") == "已綁定題目集"
+    )
+    assert any(
+        (0, "load") in dependency.get("targets", [])
+        and binding_selector["id"] in dependency.get("outputs", [])
+        for dependency in app.config["dependencies"]
+    ), "0-0 binding checkbox must be initialized from saved project bindings on page load"
 
 
 def test_central_question_set_delete_requires_confirmation_and_refreshes(tmp_path, monkeypatch) -> None:
@@ -1369,8 +1381,8 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
         },
         "bolt://db", "neo4j", "user", "pass", "http://models", "key",
         "build", "embed", "answer", 1200, 100, 0.2,
-        "詳細", 2, "extract", 2,
-        "混合檢索", 6, '{"entity_types": []}',
+        "typed_name", 2, "extract", 2,
+        "混合檢索", 6,
         ui.DEFAULT_REASONING_EFFORT,
         ui.DEFAULT_REASONING_EFFORT, '{"effective_search_ratio": 6}',
         ui.PDF_VISION_DISABLED, ui.VISION_SCOPE_ALL, "high",
@@ -1381,13 +1393,13 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert Path(saved["documents"][0]["path"]).read_bytes() == b"pdf"
     assert loaded[0]["project_id"] == created["project_id"]
     assert loaded[11:13] == (1200, 100)
-    assert loaded[22][0].text == "內容"
-    assert loaded[36] == {"effective_search_ratio": 6}
-    assert loaded[37]["value"] == ui.PDF_VISION_DISABLED
-    assert ui.PDF_VISION_DISABLED in [value for _, value in loaded[37]["choices"]]
-    assert loaded[38] == ui.VISION_SCOPE_ALL
+    assert loaded[21][0].text == "內容"
+    assert loaded[35] == {"effective_search_ratio": 6}
+    assert loaded[36]["value"] == ui.PDF_VISION_DISABLED
+    assert ui.PDF_VISION_DISABLED in [value for _, value in loaded[36]["choices"]]
+    assert loaded[37] == ui.VISION_SCOPE_ALL
     # The effort is kept but hidden while Vision is disabled.
-    assert loaded[39]["value"] == "high" and loaded[39]["visible"] is False
+    assert loaded[38]["value"] == "high" and loaded[38]["visible"] is False
     parameter_entries = ui._strategy_parameter_entries()
     hybrid_ratio = next(
         update for (strategy_id, name, _spec), update
@@ -1401,12 +1413,12 @@ def test_project_ui_create_save_and_load(tmp_path, monkeypatch) -> None:
     assert "graph_partition_mode" not in stored_project["settings"]
     assert stored_project["graph_state"]["entities"][0]["name"] == "設備"
     assert stored_project["graph_state"]["relationships"][0]["type"] == "USES"
-    assert loaded[30] == [] and loaded[31] == []
+    assert loaded[29] == [] and loaded[30] == []
     entity_rows, relationship_rows = ui.render_graph_tables_for_ui(stored_project["graph_state"])
     assert entity_rows[0][:2] == ["設備", "DEVICE"]
     assert relationship_rows[0][:3] == ["設備", "USES", "零件"]
-    assert "1 個實體、1 筆關係" in loaded[32]
-    assert "已匯入 Neo4j" in loaded[33]
+    assert "1 個實體、1 筆關係" in loaded[31]
+    assert "已匯入 Neo4j" in loaded[32]
 
 
 def test_saved_graph_details_load_only_after_explicit_request(tmp_path, monkeypatch) -> None:
@@ -2517,15 +2529,22 @@ def test_inline_experiment_groups_round_trip_strategy_specific_params() -> None:
     assert restored == [group]
 
 
-def test_experiment_group_table_shows_strategy_parameter_labels_only_on_first_row() -> None:
+def test_single_project_experiment_groups_show_strategy_parameter_labels_on_every_card() -> None:
     app = build_app()
     hidden_ratio_labels = [
         item for item in app.config["components"]
         if item.get("props", {}).get("label") == "有效搜尋比例"
         and item.get("props", {}).get("show_label") is False
     ]
-    # 1-5 and 2-0 table rows after the first hide labels; vector and hybrid both declare this label.
-    assert len(hidden_ratio_labels) == (ui.EXPERIMENT_GROUP_LIMIT - 1) * 2 * 2
+    visible_ratio_labels = [
+        item for item in app.config["components"]
+        if item.get("props", {}).get("label") == "有效搜尋比例"
+        and item.get("props", {}).get("show_label") is True
+    ]
+    # 1-5 shows a label on every card; 2-0 retains its compact table-style labels.
+    # Both vector and hybrid strategies declare this parameter.
+    assert len(hidden_ratio_labels) == (ui.EXPERIMENT_GROUP_LIMIT - 1) * 2
+    assert len(visible_ratio_labels) == 30
 
 
 def test_experiment_group_cards_use_number_boxes_instead_of_sliders() -> None:
@@ -2546,8 +2565,8 @@ def test_strategy_parameter_controls_are_native_gradio_components() -> None:
     assert len(controls) == len(ui._visible_strategy_parameters())
     controls_by_label = {control.label: control for control in controls}
     assert isinstance(controls_by_label["有效搜尋比例"], ui.gr.Slider)
-    assert isinstance(controls_by_label["最大圖譜跳數"], ui.gr.Slider)
-    assert controls_by_label["最大圖譜跳數"].maximum == 4
+    assert isinstance(controls_by_label["向量起始證據數"], ui.gr.Slider)
+    assert controls_by_label["向量起始證據數"].maximum == 20
 
 
 def test_strategy_specific_params_are_validated_from_json() -> None:
@@ -2567,7 +2586,7 @@ def test_declared_strategy_parameters_render_as_native_gradio_controls() -> None
 
     controls_by_label = {control.label: control for control in controls}
     assert controls_by_label["有效搜尋比例"].get_config().get("value") == 3
-    assert controls_by_label["最大圖譜跳數"].get_config().get("value") == 2
+    assert controls_by_label["向量起始證據數"].get_config().get("value") == 6
 
 
 def test_native_strategy_parameter_value_is_saved_without_json_encoding() -> None:
@@ -2607,7 +2626,7 @@ def test_single_evaluation_strategy_controls_sync_active_parameters() -> None:
 
 
 def test_same_named_strategy_controls_keep_values_within_each_strategy_limits() -> None:
-    saved = _retrieval_config("Agentic Search", 8)
+    saved = _retrieval_config("Agentic Search 2", 8)
     saved["params"]["seed_top_k"] = 30
     config = ui.RetrievalConfig.from_dict(saved)
     entries = ui._strategy_parameter_entries()
@@ -2621,7 +2640,7 @@ def test_same_named_strategy_controls_keep_values_within_each_strategy_limits() 
     for index, (strategy_id, name, spec) in enumerate(entries):
         if name != "seed_top_k":
             continue
-        expected = 30 if strategy_id == "agentic" else spec.default
+        expected = 30 if strategy_id == "agentic_search_2" else spec.default
         assert experiment_updates[index]["value"] == expected
         assert single_updates[index + 1]["value"] == expected
         assert group_updates[ui.EXPERIMENT_GROUP_FIELDS + index]["value"] == expected
@@ -3142,13 +3161,51 @@ def test_removing_last_group_hides_postprocessors_for_project(
     assert removed[second_row + 6]["visible"] is False
 
 
+def test_deleted_experiment_group_strategy_event_cannot_reveal_postprocessors():
+    hidden = ui._experiment_group_postprocessing_control_updates(
+        "混合檢索", "停用", "停用", "",
+    )
+    visible = ui._experiment_group_postprocessing_control_updates(
+        "混合檢索", "停用", "停用", "實驗組 1",
+    )
+
+    assert hidden[0]["visible"] is False
+    assert hidden[1]["visible"] is False
+    assert visible[0]["visible"] is True
+    assert visible[1]["visible"] is True
+
+
+def test_removing_last_experiment_project_group_hides_postprocessors(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    project = ui.create_experiment_project("partitioned-experiment-project")
+    llm_state = settings.load_service_settings("llm")
+    project["groups"] = [{
+        "name": "實驗組 1", "answer_model": "gpt-4o-mini",
+        "retrieval_config": _retrieval_config(),
+    }]
+    values = ui._inline_group_values(project["groups"])
+
+    removed = ui.remove_experiment_project_inline_group_for_ui(
+        0, project, llm_state, *values,
+    )
+
+    assert removed[-2]["groups"] == []
+    assert removed[5]["visible"] is False
+    assert removed[6]["visible"] is False
+    second_row = ui.EXPERIMENT_GROUP_COMPONENTS
+    assert removed[second_row + 5]["visible"] is False
+    assert removed[second_row + 6]["visible"] is False
+
+
 def test_remove_inline_group_accepts_integral_value_for_float_strategy_parameter(
     tmp_path, monkeypatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     project = ui.create_project("experiment-float-parameter")
     agentic_config = ui._retrieval_config_from_controls(
-        ui.RETRIEVAL_STRATEGIES.labels["agentic_search_3"],
+            ui.RETRIEVAL_STRATEGIES.labels["agentic_search_1"],
         10, "停用", "停用", {"max_runtime_seconds": 45.0},
     )
     groups = [
@@ -3158,7 +3215,7 @@ def test_remove_inline_group_accepts_integral_value_for_float_strategy_parameter
     values = ui._inline_group_values(groups)
     parameter_index = next(
         index for index, (strategy_id, name, _) in enumerate(ui._strategy_parameter_entries())
-        if strategy_id == "agentic_search_3" and name == "max_runtime_seconds"
+        if strategy_id == "agentic_search_1" and name == "max_runtime_seconds"
     )
     values[ui.EXPERIMENT_GROUP_COMPONENTS + ui.EXPERIMENT_GROUP_FIELDS + parameter_index] = 45
 
@@ -3584,7 +3641,7 @@ def test_switch_document_wraps_around_and_handles_empty_list() -> None:
     assert doc == {}
     assert doc_chunks == []
     assert rows == []
-    assert status == "尚未解析任何 PDF。"
+    assert status == "尚未解析任何文件。"
 
 
 def _pdf_project(tmp_path, monkeypatch) -> str:
@@ -3635,6 +3692,33 @@ def test_add_document_for_ui_parses_pages_without_chunking(tmp_path, monkeypatch
          "fallback_reason": "HTTP 500"},
         {"page": 4, "text": "four", "source": "text", "reviewed": False, "has_figures": False},
     ]
+
+
+def test_add_document_for_ui_accepts_txt_as_one_synthetic_page(tmp_path, monkeypatch) -> None:
+    project_id = _pdf_project(tmp_path, monkeypatch)
+    text_path = tmp_path / "article.txt"
+    text_path.write_text("A sufficiently long source text for chunking.", encoding="utf-8")
+    monkeypatch.setattr(
+        ui, "extract_text_file",
+        lambda path: ([PageText(1, "A sufficiently long source text for chunking.")], []),
+    )
+    monkeypatch.setattr(
+        ui, "extract_pdf_with_report", lambda path, **kwargs: pytest.fail("TXT 不應走 PDF 解析"),
+    )
+
+    status, documents, rows, *_ = ui.add_document_for_ui(str(text_path), [], project_id=project_id)
+
+    assert status.startswith("✅「article.txt」TXT 全文作為單一來源頁")
+    assert "Vision" not in status
+    assert documents[0]["source_format"] == "txt"
+    assert documents[0]["page_count"] == 1
+    assert rows[0][2] == "TXT（合成來源頁 1）"
+
+    _, documents, chunks, active, active_chunks, _, page_status, _ = ui.chunk_documents_for_ui(
+        project_id, 100, 0, documents, [], {},
+    )
+    assert chunks and all(chunk.pages == (1,) for chunk in chunks)
+    assert "TXT 全文視為單一來源頁" in page_status
 
 
 def test_add_document_for_ui_requires_project_and_rejects_duplicates(monkeypatch) -> None:
@@ -3842,8 +3926,30 @@ def test_document_table_dataframe_selection_removes_checked_pdf(monkeypatch) -> 
 
 def test_new_project_resets_pdf_status_message() -> None:
     assert ui.reset_new_project_pdf_status_for_ui() == (
-        "尚未解析 PDF。可重複上傳多份 PDF，逐一加入同一個專案。"
+        "尚未解析文件。可重複上傳多份 PDF 或 TXT，逐一加入同一個專案。"
     )
+
+
+def test_question_import_accepts_accuracy_only_json_without_source_pages(tmp_path) -> None:
+    question_file = tmp_path / "accuracy.json"
+    question_file.write_text(json.dumps({
+        "schema_version": 1,
+        "questions": [{
+            "number": 1,
+            "question": "Which two passages connect the facts?",
+            "expected_answer": "The answer",
+            "question_sources": [],
+            "answer_sources": [],
+            "hops": 3,
+        }],
+    }), encoding="utf-8")
+
+    questions = ui._questions_from_file(str(question_file))
+
+    assert len(questions) == 1
+    assert questions[0]["expected_answer"] == "The answer"
+    assert questions[0]["answer_sources"] == []
+    assert questions[0]["answer_source_pages"] == []
 
 def test_remove_document_for_ui_prunes_documents_and_chunks_without_project(monkeypatch) -> None:
     monkeypatch.setattr(
@@ -4069,11 +4175,9 @@ def test_extract_graph_for_ui_reports_stopped_status(monkeypatch) -> None:
         ui, "extract_graph",
         lambda *args, **kwargs: (_ for _ in ()).throw(ui.RunCancelled("stopped")),
     )
-    schema = {"entity_types": [{"name": "DEVICE"}], "relationship_types": [{"name": "USES"}]}
-
     result = ui.extract_graph_for_ui(
         "http://models/v1", "key", "llm", 0.2, 3,
-        [TextChunk(1, "text", (1,))], json.dumps(schema), {}, ui.RunControl(),
+        [TextChunk(1, "text", (1,))], "typed_name", {}, ui.RunControl(),
     )
 
     assert result == ("⏹ 已停止（使用者中止抽取）。", [], [], {})
@@ -4115,11 +4219,6 @@ def test_extract_graph_for_ui_formats_tables_and_state(monkeypatch) -> None:
         "import_extraction",
         lambda *args: (_ for _ in ()).throw(AssertionError("抽取時不應匯入 Neo4j")),
     )
-    schema = {
-        "entity_types": [{"name": "DEVICE"}],
-        "relationship_types": [{"name": "USES"}],
-    }
-
     status, entities, relationships, state = ui.extract_graph_for_ui(
         "http://models/v1",
         "key",
@@ -4127,7 +4226,7 @@ def test_extract_graph_for_ui_formats_tables_and_state(monkeypatch) -> None:
         0.2,
         3,
         [TextChunk(1, "text", (3,))],
-        json.dumps(schema),
+        "typed_name",
         [{"file_name": "manual.pdf"}],
         ui.RunControl(),
     )
@@ -4160,16 +4259,15 @@ def test_extract_graph_for_ui_defaults_to_direct_text_extraction(monkeypatch) ->
 
     status, _, _, state = ui.extract_graph_for_ui(
         "https://api.openai.com/v1", "key", "model", 0, 2,
-        [TextChunk(1, "manual text", (1,), "manual.pdf")], "", [], ui.RunControl(),
-        1500, 200, "詳細",
+        [TextChunk(1, "manual text", (1,), "manual.pdf")], "typed_name", [], ui.RunControl(),
+        1500, 200, "low",
     )
 
     assert status.startswith("✅")
-    assert captured["schema"] is None
+    assert captured["schema"] == "typed_name"
     assert state["build_config"] == {
         "chunk_size": 1500,
         "chunk_overlap": 200,
-        "schema_granularity": None,
     }
 
 
@@ -4189,7 +4287,7 @@ def test_extract_graph_for_ui_extracts_all_documents_into_one_graph(monkeypatch)
             TextChunk(1, "a1", (1,), "a.pdf", "doc-a"),
             TextChunk(2, "a2", (2,), "a.pdf", "doc-a"),
             TextChunk(3, "b1", (1,), "b.pdf", "doc-b"),
-        ], "", [], ui.RunControl(),
+        ], "typed_name", [], ui.RunControl(),
     )
 
     assert status.startswith("✅")
@@ -4204,16 +4302,14 @@ def test_project_name_suffix_uses_build_settings_and_planned_granularity() -> No
         "build_config": {
             "chunk_size": 1500,
             "chunk_overlap": 200,
-            "schema_granularity": None,
         }
-    }) == "61 | s25 | 1500-200-None"
+    }) == "61 | s25 | 1500-200"
     assert ui._project_name_for_build(project, {
         "build_config": {
             "chunk_size": 1000,
             "chunk_overlap": 100,
-            "schema_granularity": "粗略",
         }
-    }) == "61 | s25 | 1000-100-粗略"
+    }) == "61 | s25 | 1000-100"
 
 
 def test_graph_evidence_separates_merged_sources_by_pdf() -> None:
@@ -4245,12 +4341,19 @@ def test_graph_evidence_separates_merged_sources_by_pdf() -> None:
     assert all(len(item["source_references"]) == 1 for item in evidence)
 
 
-def test_extract_graph_for_ui_rejects_invalid_schema() -> None:
+def test_extract_graph_for_ui_accepts_registered_extraction_method(monkeypatch) -> None:
+    from manual_graphrag.graph_service import GraphExtraction
+
+    monkeypatch.setattr(
+        ui, "extract_graph",
+        lambda *args, **kwargs: GraphExtraction([], [], 1, args[4]),
+    )
     result = ui.extract_graph_for_ui(
-        "http://models/v1", "", "llm", 0.2, 3, [], "not-json", {}, ui.RunControl()
+        "http://models/v1", "", "llm", 0.2, 3,
+        [TextChunk(1, "text", (1,))], "typed_name", {}, ui.RunControl()
     )
 
-    assert result == ("❌ schema 不是有效 JSON。", [], [], {})
+    assert result[0].startswith("✅")
 
 
 def _importable_graph_state() -> dict:
@@ -4285,7 +4388,7 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
 
     def fake_import(*args, **kwargs):
         captured["args"] = args
-        captured["batches"] = list(args[10])
+        captured["batches"] = list(args[9])
         captured["progress"] = kwargs.get("progress")
         return ImportSummary(2, 1, 1)
 
@@ -4313,8 +4416,8 @@ def test_import_graph_for_ui_imports_saved_extraction(monkeypatch) -> None:
     assert state["vector_index_name"] == "graph_evidence_embedding_1"
     assert provisioned == [("bolt://db", "neo4j", "user", "password")]
     assert captured["args"][4] == "manual.pdf"
-    assert captured["args"][8][0]["document_id"] == ""
-    assert captured["args"][8][0]["source_references"][0]["document_id"] == "doc-a"
+    assert captured["args"][7][0]["document_id"] == ""
+    assert captured["args"][7][0]["source_references"][0]["document_id"] == "doc-a"
     assert captured["batches"][0][0]["source_references"][0]["document_id"] == "doc-a"
     assert [len(batch) for batch in captured["batches"]] == [2]
     assert all("embedding" in item for batch in captured["batches"] for item in batch)
@@ -4327,8 +4430,8 @@ def test_import_graph_for_ui_merges_entities_across_documents(monkeypatch) -> No
     captured = {}
 
     def fake_import(*args, **kwargs):
-        captured["entities"] = args[8]
-        captured["evidence"] = [item for batch in args[10] for item in batch]
+        captured["entities"] = args[7]
+        captured["evidence"] = [item for batch in args[9] for item in batch]
         return ImportSummary(2, 0, 1)
 
     graph_state = {
@@ -4479,17 +4582,18 @@ def test_answer_question_for_ui_passes_model_context_to_agentic_strategy(tmp_pat
     status, answer, rows = ui.answer_question_for_ui(
         "https://api.example/v1", "secret", "https://api.example/v1", "embed-key",
         "bolt://db", "neo4j", "user", "password", "gpt-4.1-mini", "問題？",
-        "Agentic Search", 5, "停用", "停用", "low",
+        "Agentic Search 1", 5, "停用", "停用", "low",
         strategy_params={
-            "candidate_top_k": 5, "seed_top_k": 2, "max_hops": 1,
-            "max_branches": 3, "hop_decay": 0.7, "effective_search_ratio": 2,
+            "candidate_top_k": 5, "seed_top_k": 2, "max_tool_calls": 4,
+            "result_limit": 3, "max_runtime_seconds": 45.0,
+            "effective_search_ratio": 2,
         },
     )
 
     assert status.startswith("✅ Agentic Search")
     assert answer == "根據路徑原文回答。"
-    assert captured["config"].strategy_id == "agentic"
-    assert captured["config"].params["max_hops"] == 1
+    assert captured["config"].strategy_id == "agentic_search_1"
+    assert captured["config"].params["max_tool_calls"] == 4
     assert captured["model_context"] == {
         "model_base_url": "https://api.example/v1", "model_api_key": "secret",
         "model": "gpt-4.1-mini", "reasoning_effort": "low",
@@ -4799,7 +4903,7 @@ def test_experiment_project_members_require_existing_built_graphs(tmp_path, monk
     assert state["members"] == [built["project_id"]]
     assert rows == [[
         "已建圖車型", built["project_id"], "未知", 1, 1, 0,
-        1500, 200, "粗略", built["neo4j_database"], "未測試",
+        1500, 200, built["neo4j_database"], "未測試",
     ]]
     summary_file = tmp_path / "data" / "projects" / built["project_id"] / "summary.json"
     assert summary_file.is_file()

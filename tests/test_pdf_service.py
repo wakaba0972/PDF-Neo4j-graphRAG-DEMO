@@ -878,3 +878,35 @@ def test_extract_pdf_passes_detected_language_to_every_vision_call(
     assert pdf_service.format_vision_report(report) == (
         "Vision（gpt-6-luna）解析 2 頁。圖表描述語言：繁體中文。"
     )
+
+
+def test_extract_text_file_reads_utf8_and_uses_one_synthetic_page(tmp_path: Path) -> None:
+    text_path = tmp_path / "article.txt"
+    text_path.write_bytes(b"\xef\xbb\xbfFirst paragraph\n\nSecond paragraph\n")
+
+    pages, empty_pages = pdf_service.extract_text_file(text_path)
+
+    assert [(page.page, page.text) for page in pages] == [
+        (1, "First paragraph\n\nSecond paragraph"),
+    ]
+    assert empty_pages == []
+
+
+def test_extract_text_file_marks_empty_document(tmp_path: Path) -> None:
+    text_path = tmp_path / "empty.txt"
+    text_path.write_text(" \n", encoding="utf-8")
+
+    pages, empty_pages = pdf_service.extract_text_file(text_path)
+
+    assert [(page.page, page.text) for page in pages] == [(1, "")]
+    assert empty_pages == [1]
+
+
+def test_extract_text_file_rejects_invalid_encoding_and_extension(tmp_path: Path) -> None:
+    invalid_text = tmp_path / "invalid.txt"
+    invalid_text.write_bytes(b"\xff")
+    with pytest.raises(ValueError, match="TXT 必須使用 UTF-8 編碼"):
+        pdf_service.extract_text_file(invalid_text)
+
+    with pytest.raises(ValueError, match="僅支援 TXT 檔案"):
+        pdf_service.extract_text_file(tmp_path / "manual.pdf")

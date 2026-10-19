@@ -1,0 +1,48 @@
+id: agentic_search_1
+name: Agentic Search 1
+order: 50
+implementation:
+  file: agentic_search_1/strategy.py
+  class: AgenticSearch1RetrievalStrategy
+parameters:
+  candidate_top_k:
+    type: integer
+    minimum: 1
+    maximum: 50
+    minimum_is_top_k: true
+    visible: false
+  seed_top_k:
+    type: integer
+    label: 向量起始證據數
+    default: 6
+    minimum: 1
+    maximum: 20
+    control: slider
+  max_tool_calls:
+    type: integer
+    label: Agent 工具呼叫上限
+    default: 8
+    minimum: 1
+    maximum: 20
+    control: slider
+  result_limit:
+    type: integer
+    label: 每次工具最多回傳證據數
+    default: 8
+    minimum: 1
+    maximum: 20
+    control: slider
+  max_runtime_seconds:
+    type: number
+    label: 搜尋總時間上限（秒）
+    default: 45.0
+    minimum: 5
+    maximum: 120
+    control: slider
+  effective_search_ratio:
+    type: integer
+    label: 起始有效搜尋比例
+    default: 3
+    minimum: 1
+    maximum: 10
+    control: slider

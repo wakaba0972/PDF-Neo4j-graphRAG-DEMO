@@ -189,15 +189,18 @@ class FakeDriver:
         return self.session_instance
 
 
-def test_document_partition_writes_scope_nodes_and_relationship_endpoints() -> None:
+def test_batched_graph_write_links_nodes_without_document_partition() -> None:
     transaction = FakeTransaction()
 
     neo4j_service._write_entity_batch(transaction, [{
+        "entity_id": "entity-a",
         "document_id": "doc-a", "name": "零件", "type": "PART",
         "description": "A 文件中的零件", "source_chunk_numbers": [1],
         "source_pages": [2], "source_documents": ["a.pdf"],
     }])
     neo4j_service._write_relationship_batch(transaction, [{
+        "relationship_id": "rel-a", "source_entity_id": "entity-a",
+        "target_entity_id": "entity-b",
         "document_id": "doc-a", "source": "零件", "type": "USES", "target": "工具",
         "description": "關係", "source_chunk_numbers": [1],
         "source_pages": [2], "source_documents": ["a.pdf"],
@@ -206,12 +209,12 @@ def test_document_partition_writes_scope_nodes_and_relationship_endpoints() -> N
     entity_query, entity_params = transaction.calls[0]
     relation_query, relation_params = transaction.calls[1]
     assert "MATCH (document:GraphDocument)" in entity_query
-    assert "coalesce(document.document_id, '') = item.document_id" in entity_query
-    assert "document_id: item.document_id" in entity_query
-    assert entity_params["entities"][0]["document_id"] == "doc-a"
-    assert "source:ExtractedEntity {document_id: item.document_id" in relation_query
-    assert "target:ExtractedEntity {document_id: item.document_id" in relation_query
-    assert relation_params["relationships"][0]["document_id"] == "doc-a"
+    assert "coalesce(document.document_id" not in entity_query
+    assert "entity_id: item.entity_id" in entity_query
+    assert "source:ExtractedEntity {entity_id: item.source_entity_id}" in relation_query
+    assert "target:ExtractedEntity {entity_id: item.target_entity_id}" in relation_query
+    assert entity_params["entities"][0]["entity_id"] == "entity-a"
+    assert relation_params["relationships"][0]["source_entity_id"]
 
 
 def test_graph_import_creates_single_merged_graph_document() -> None:
@@ -220,7 +223,7 @@ def test_graph_import_creates_single_merged_graph_document() -> None:
     neo4j_service._create_graph_document(
         transaction,
         "manual.pdf",
-        "llm", "embed", {}, 1536, "graph_evidence_embedding_1536",
+        "llm", "embed", 1536, "graph_evidence_embedding_1536",
     )
 
     query, parameters = transaction.calls[0]
@@ -323,7 +326,6 @@ def test_import_extraction_writes_document_entities_and_relationships(monkeypatc
         "manual.pdf",
         "llm",
         "embed",
-        {"entity_types": [{"name": "DEVICE"}]},
         entities,
         relationships,
         [{
@@ -396,7 +398,7 @@ def test_import_extraction_batched_writes_evidence_in_separate_transactions(monk
 
     summary = neo4j_service.import_extraction_batched(
         "bolt://db", "neo4j", "user", "password",
-        "manual.pdf", "llm", "embed", {},
+        "manual.pdf", "llm", "embed",
         [
             {"name": "A", "type": "PART", "source_chunk_numbers": [1]},
             {"name": "B", "type": "PART", "source_chunk_numbers": [2]},
@@ -466,7 +468,6 @@ def test_import_extraction_validates_connection_fields(values, message) -> None:
             "manual.pdf",
             "llm",
             "embed",
-            {},
             [],
             [],
             [],
@@ -488,7 +489,6 @@ def test_import_extraction_wraps_driver_errors(monkeypatch) -> None:
             "manual.pdf",
             "llm",
             "embed",
-            {},
             [],
             [],
             [{"embedding": [0.1]}],

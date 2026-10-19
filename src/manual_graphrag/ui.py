@@ -41,6 +41,7 @@ from .evaluation_service import (
     sample_random_page_context,
     verify_evaluation_judgment,
 )
+from .extraction_methods import EXTRACTION_METHODS
 from .graph_service import (
     GPT_6_LUNA_MODEL,
     GPT_6_LUNA_REASONING_EFFORTS,
@@ -48,7 +49,6 @@ from .graph_service import (
     RunControl,
     check_model_connection,
     extract_graph,
-    validate_schema,
 )
 from .human_review import (
     create_human_review,
@@ -73,6 +73,7 @@ from .pdf_service import (
     PdfExtraction,
     analyze_pdf_page,
     extract_page_text_layer,
+    extract_text_file,
     extract_pdf_with_report,
     format_vision_report,
     render_pdf_figures,
@@ -812,7 +813,7 @@ def close_new_project_row_for_ui(status: str = "✅") -> tuple[dict[str, Any], d
 
 
 def reset_new_project_pdf_status_for_ui() -> str:
-    return "尚未解析 PDF。可重複上傳多份 PDF，逐一加入同一個專案。"
+    return "尚未解析文件。可重複上傳多份 PDF 或 TXT，逐一加入同一個專案。"
 
 
 def _chunk_dicts(chunks: list[TextChunk]) -> list[dict[str, Any]]:
@@ -860,7 +861,8 @@ def _document_rows(documents: list[dict[str, Any]]) -> list[list[object]]:
         [
             False,
             doc.get("file_name", ""),
-            f"{doc.get('page_start', '')}–{doc.get('page_end', '')}",
+            ("TXT（合成來源頁 1）" if doc.get("source_format") == "txt"
+             else f"{doc.get('page_start', '')}–{doc.get('page_end', '')}"),
             doc.get("chunk_count", 0),
         ]
         for doc in documents
@@ -895,7 +897,8 @@ def _document_pdf_path(
         if item.get("file_name") == document_name
     )
     for candidate in candidates:
-        if candidate and Path(candidate).is_file():
+        # TXT documents have no page images or figures to render.
+        if candidate and Path(candidate).suffix.lower() == ".pdf" and Path(candidate).is_file():
             return Path(candidate)
     return None
 
@@ -990,8 +993,10 @@ def show_source_figures_for_ui(
 
 def _document_status(index: int, total: int, doc: dict[str, Any], chunk_count: int) -> str:
     if not total:
-        return "尚未解析任何 PDF。"
+        return "尚未解析任何文件。"
     name = doc.get("file_name", "")
+    if doc.get("source_format") == "txt":
+        return f"文件 {index + 1} / {total}：{name}（TXT 全文視為單一來源頁）共 {chunk_count} 個 chunk。"
     page_range = f"{doc.get('page_start', '')}–{doc.get('page_end', '')}"
     return f"文件 {index + 1} / {total}：{name}（第 {page_range} 頁），共 {chunk_count} 個 chunk。"
 
@@ -1309,10 +1314,9 @@ def _project_name_for_build(
         return None
     try:
         base_name = str(project.get("base_name") or project.get("name") or "")
-        granularity = build_config.get("schema_granularity") or "None"
         return (
             f"{base_name} | {int(build_config['chunk_size'])}-"
-            f"{int(build_config['chunk_overlap'])}-{granularity}"
+            f"{int(build_config['chunk_overlap'])}"
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -1326,10 +1330,10 @@ def save_project_for_ui(
     graph_embedding_model: str, answer_model: str,
     chunk_size: int, chunk_overlap: int,
     graph_temperature: float,
-    schema_granularity: str,
+    extraction_method_id: str,
     max_concurrent_requests: int, extraction_llm_model: str,
     extraction_max_concurrent_requests: int,
-    retrieval_mode: str, top_k: int, schema_text: str,
+    retrieval_mode: str, top_k: int,
     extraction_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     answer_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     retrieval_strategy_params_json: Any = None,
@@ -1346,7 +1350,7 @@ def save_project_for_ui(
         "answer_model": answer_model,
         "chunk_size": int(chunk_size), "chunk_overlap": int(chunk_overlap),
         "graph_temperature": float(graph_temperature),
-        "schema_granularity": None,
+        "extraction_method_id": extraction_method_id,
         "max_concurrent_requests": int(max_concurrent_requests),
         "extraction_llm_model": extraction_llm_model,
         "extraction_max_concurrent_requests": int(extraction_max_concurrent_requests),
@@ -1354,7 +1358,6 @@ def save_project_for_ui(
             retrieval_mode, int(top_k), "停用", "停用",
             retrieval_strategy_params_json,
         ).to_dict(),
-        "schema_text": schema_text or "",
         "extraction_reasoning_effort": extraction_reasoning_effort or DEFAULT_REASONING_EFFORT,
         "answer_reasoning_effort": answer_reasoning_effort or DEFAULT_REASONING_EFFORT,
         "pdf_vision_model": pdf_vision_model or DEFAULT_PDF_VISION_MODEL,
@@ -1413,7 +1416,7 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
     ] if active_preview else []
     document_status = (
         _document_status(len(documents) - 1, len(documents), active_preview, len(active_chunks))
-        if documents else "請先解析 PDF。"
+        if documents else "請先解析文件。"
     )
     if graph.get("document") or graph.get("graph_data_file"):
         graph_status = (
@@ -1442,11 +1445,14 @@ def load_project_for_ui(project_id: str) -> tuple[Any, ...]:
             value=get("graph_temperature", 0),
             visible=str(get("extraction_llm_model", DEFAULT_LLM_MODEL) or "").casefold() != GPT_6_LUNA_MODEL,
         ),
-        get("schema_granularity", "平衡"),
+        gr.update(
+            choices=[(spec.label, spec.method_id) for spec in EXTRACTION_METHODS.specs.values()],
+            value=get("extraction_method_id", graph.get("extraction_method_id", "typed_name")),
+        ),
         get("max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
         get("extraction_llm_model", DEFAULT_LLM_MODEL),
         get("extraction_max_concurrent_requests", DEFAULT_MAX_CONCURRENT_REQUESTS),
-        gr.update(choices=strategy_choices(), value=selected_strategy), project_retrieval.top_k, "",
+        gr.update(choices=strategy_choices(), value=selected_strategy), project_retrieval.top_k,
         documents, chunks, graph, active_preview, active_chunks,
         _document_rows(documents), _document_choices(documents),
         _chunk_rows(active_chunks), document_status,
@@ -2297,7 +2303,6 @@ def _experiment_member_summary_row(project_id: str, connection_result: str = EXP
         question_count,
         summary.get("chunk_size") if summary.get("chunk_size") is not None else "",
         summary.get("chunk_overlap") if summary.get("chunk_overlap") is not None else "",
-        summary.get("schema_granularity") or "None",
         member.get("neo4j_database", ""),
         connection_result,
     ]
@@ -2711,6 +2716,16 @@ def _postprocessing_control_updates(
             interactive=supports_expansion,
             visible=row_visible and supports_expansion,
         ),
+    )
+
+
+def _experiment_group_postprocessing_control_updates(
+    strategy: str | None, reranker: str | None, expansion: str | None,
+    group_name: str | None,
+) -> tuple[Any, Any]:
+    """Do not let a strategy-change event reveal controls in a deleted row."""
+    return _postprocessing_control_updates(
+        strategy, reranker, expansion, row_visible=bool(str(group_name or "").strip()),
     )
 
 
@@ -3566,7 +3581,7 @@ def generate_evaluation_for_ui(
             chunks_by_document.setdefault(chunk.document, []).append(chunk)
         document_chunks = list(chunks_by_document.values())
         if not document_chunks:
-            raise ValueError("請先解析 PDF 並產生 chunks")
+            raise ValueError("請先解析文件並產生 chunks")
         existing_evaluation = dict(load_project(project_id).get("evaluation") or {})
         accepted_questions: list[dict[str, Any]] = []
         accepted_lock = Lock()
@@ -5742,21 +5757,32 @@ def _add_single_document(
     if any(doc.get("file_name") == file_name for doc in documents):
         return f"❌「{file_name}」：專案中已有同名文件，請先移除或重新命名後再上傳。", None, []
     try:
-        document_id = hashlib.sha256(Path(file_path).read_bytes()).hexdigest()
-        extraction = extract_pdf_with_report(
-            file_path, vision_model=vision_model, vision_scope=vision_scope,
-            vision_reasoning_effort=vision_reasoning_effort,
-            progress_callback=progress_callback, control=run_control,
-        )
+        source_path = Path(file_path)
+        document_id = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        source_format = source_path.suffix.lower().lstrip(".")
+        if source_format == "pdf":
+            extraction = extract_pdf_with_report(
+                file_path, vision_model=vision_model, vision_scope=vision_scope,
+                vision_reasoning_effort=vision_reasoning_effort,
+                progress_callback=progress_callback, control=run_control,
+            )
+        elif source_format == "txt":
+            extraction = PdfExtraction(*extract_text_file(file_path))
+        else:
+            raise ValueError("僅支援 PDF 或 UTF-8 TXT 檔案")
         pages, empty_pages = extraction.pages, extraction.empty_pages
         if not pages or len(empty_pages) == len(pages):
-            raise ValueError("PDF 沒有可解析文字；掃描文件請改用 Vision 解析。")
+            raise ValueError(
+                "文件沒有可解析文字。" if source_format == "txt"
+                else "PDF 沒有可解析文字；掃描文件請改用 Vision 解析。"
+            )
     except (ValueError, TypeError) as exc:
         return f"❌「{file_name}」：{exc}", None, []
     parsed_start, parsed_end = pages[0].page, pages[-1].page
     doc_state = {
         "file_path": file_path,
         "file_name": file_name,
+        "source_format": source_format,
         "document_id": document_id,
         "page_count": len(pages),
         "page_start": parsed_start,
@@ -5768,10 +5794,15 @@ def _add_single_document(
         "vision_reasoning_effort": extraction.vision_reasoning_effort,
         "vision_fallback_pages": sorted(extraction.fallback_pages),
     }
-    note = f"✅「{file_name}」解析第 {parsed_start}–{parsed_end} 頁。"
+    note = (
+        f"✅「{file_name}」TXT 全文作為單一來源頁。"
+        if source_format == "txt" else
+        f"✅「{file_name}」解析第 {parsed_start}–{parsed_end} 頁。"
+    )
     if empty_pages:
         note += f" 無文字頁面：{', '.join(map(str, empty_pages))}。"
-    note += f" {format_vision_report(extraction)}"
+    if source_format == "pdf":
+        note += f" {format_vision_report(extraction)}"
     return note, doc_state, _page_records(extraction)
 
 
@@ -5998,7 +6029,8 @@ def _review_outputs(
     image = None
     path = _document_pdf_path(project_id, document_name, documents)
     if path is None:
-        status += " ⚠️ 找不到 PDF，無法顯示頁面影像。"
+        if not str(document_name or "").lower().endswith(".txt"):
+            status += " ⚠️ 找不到 PDF，無法顯示頁面影像。"
     else:
         try:
             image = Image.open(BytesIO(render_pdf_page(path, page_number)))
@@ -6216,8 +6248,8 @@ def remove_document_for_ui(
         names = [str(name) for name in values if isinstance(name, str) and name]
     if not names:
         return (
-            "請先選擇要移除的 PDF。", documents, chunks, {}, [],
-            "請先解析 PDF。", _document_rows(documents),
+            "請先選擇要移除的文件。", documents, chunks, {}, [],
+            "請先解析文件。", _document_rows(documents),
             _document_choices(documents), [],
         )
     if project_id:
@@ -6227,7 +6259,7 @@ def remove_document_for_ui(
             except (OSError, ValueError) as exc:
                 return (
                     f"❌ {exc}", documents, chunks, {}, [],
-                    "請先解析 PDF。", _document_rows(documents),
+                    "請先解析文件。", _document_rows(documents),
                     _document_choices(documents), [],
                 )
     name_set = set(names)
@@ -6243,7 +6275,7 @@ def remove_document_for_ui(
     )
     document_status = (
         _document_status(len(documents) - 1, len(documents), active_preview, len(active_chunks))
-        if documents else "請先解析 PDF。"
+        if documents else "請先解析文件。"
     )
     return (
         status,
@@ -6266,7 +6298,7 @@ def switch_document(
 ) -> tuple[dict[str, Any], list[TextChunk], list[list[object]], str]:
     documents = documents or []
     if not documents:
-        return {}, [], [], "尚未解析任何 PDF。"
+        return {}, [], [], "尚未解析任何文件。"
     names = [doc.get("file_name", "") for doc in documents]
     current_name = (active or {}).get("file_name", "")
     current_index = names.index(current_name) if current_name in names else len(documents) - 1
@@ -6298,12 +6330,11 @@ def extract_graph_for_ui(
     temperature: float,
     max_concurrent_requests: int,
     chunks: list[TextChunk],
-    schema_text: str,
+    extraction_method_id: str,
     documents: list[dict[str, Any]],
     run_control: RunControl,
     chunk_size: int = 0,
     chunk_overlap: int = 0,
-    schema_granularity: str = "平衡",
     reasoning_effort: str | None = None,
     progress=gr.Progress(),
 ) -> tuple[str, list[list[object]], list[list[object]], dict[str, Any]]:
@@ -6311,19 +6342,13 @@ def extract_graph_for_ui(
         return "❌ 請先勾選並選擇知識圖譜抽取 LLM。", [], [], {}
     run_control.reset()
     try:
-        schema = None
-        if str(schema_text or "").strip():
-            raw_schema = json.loads(schema_text)
-            if not isinstance(raw_schema, dict):
-                raise ValueError("schema 必須是 JSON 物件")
-            schema = validate_schema(raw_schema)
         extraction_progress = lambda value, description: progress(value, desc=description)
         extraction = extract_graph(
             model_endpoint,
             api_key,
             llm_model,
             chunks,
-            schema,
+            extraction_method_id,
             float(temperature),
             int(max_concurrent_requests),
             extraction_progress,
@@ -6332,15 +6357,13 @@ def extract_graph_for_ui(
         )
     except RunCancelled:
         return "⏹ 已停止（使用者中止抽取）。", [], [], {}
-    except json.JSONDecodeError:
-        return "❌ schema 不是有效 JSON。", [], [], {}
     except (ValueError, RuntimeError) as exc:
         return f"❌ {exc}", [], [], {}
 
     entity_rows = [
         [
             item["name"],
-            item["type"],
+            item.get("type", ""),
             item["description"],
             *_source_display(item),
         ]
@@ -6349,7 +6372,7 @@ def extract_graph_for_ui(
     relationship_rows = [
         [
             item["source"],
-            item["type"],
+            item.get("type", ""),
             item["target"],
             item["description"],
             *_source_display(item),
@@ -6360,13 +6383,12 @@ def extract_graph_for_ui(
     graph_state = {
         "document": document_name,
         "llm_model": llm_model,
+        "extraction_method_id": extraction.extraction_method_id,
         "temperature": float(temperature),
         "max_concurrent_requests": int(max_concurrent_requests),
-        "schema": schema,
         "build_config": {
             "chunk_size": int(chunk_size),
             "chunk_overlap": int(chunk_overlap),
-            "schema_granularity": schema_granularity if schema is not None else None,
         },
         "entities": extraction.entities,
         "relationships": extraction.relationships,
@@ -6383,7 +6405,9 @@ def extract_graph_for_ui(
     status = (
         f"✅ 已處理 {extraction.processed_chunks} 個 chunk，抽取 "
         f"{len(extraction.entities)} 個實體與 "
-        f"{len(extraction.relationships)} 筆關係（所有來源文件共用一張圖譜；"
+        f"{len(extraction.relationships)} 筆關係；抽取方法："
+        f"{EXTRACTION_METHODS.get_spec(extraction.extraction_method_id).label}"
+        f"（所有來源文件共用一張圖譜；"
         f"最大並行請求數：{int(max_concurrent_requests)}）。請確認結果後進行 Embedding 並匯入 Neo4j。"
     )
     return status, entity_rows, relationship_rows, graph_state
@@ -6461,6 +6485,7 @@ def _build_graph_evidence(
             evidence.append({
                 "evidence_id": f"entity-{index}-{source_index}", "kind": "實體",
                 "document_id": document_id,
+                "entity_id": item.get("entity_id", ""),
                 "name": item.get("name", ""), "source": "", "target": "",
                 "text": "Entity: {}; Type: {}; Description: {}".format(
                     item.get("name", ""), item.get("type", ""), item.get("description", "")
@@ -6474,6 +6499,9 @@ def _build_graph_evidence(
                 "evidence_id": f"relationship-{index}-{source_index}",
                 "document_id": document_id,
                 "kind": "關係", "name": "",
+                "relationship_id": item.get("relationship_id", ""),
+                "source_entity_id": item.get("source_entity_id", ""),
+                "target_entity_id": item.get("target_entity_id", ""),
                 "source": item.get("source", ""), "target": item.get("target", ""),
                 "text": "Relationship: {} -[{}]-> {}; Description: {}".format(
                     item.get("source", ""), item.get("type", ""),
@@ -6482,6 +6510,28 @@ def _build_graph_evidence(
                 **sources,
             })
     return evidence
+
+
+def _ensure_graph_ids(graph_state: dict[str, Any]) -> dict[str, Any]:
+    """Assign stable program-generated IDs and reconnect legacy relationship endpoints."""
+    entities = graph_state.get("entities") or []
+    relationships = graph_state.get("relationships") or []
+    by_name: dict[str, str] = {}
+    for entity in entities:
+        entity_id = str(entity.get("entity_id") or uuid4().hex)
+        entity["entity_id"] = entity_id
+        by_name.setdefault(str(entity.get("name", "")).casefold(), entity_id)
+    for relationship in relationships:
+        relationship["relationship_id"] = str(
+            relationship.get("relationship_id") or uuid4().hex
+        )
+        relationship.setdefault(
+            "source_entity_id", by_name.get(str(relationship.get("source", "")).casefold(), "")
+        )
+        relationship.setdefault(
+            "target_entity_id", by_name.get(str(relationship.get("target", "")).casefold(), "")
+        )
+    return graph_state
 
 
 def _embedded_evidence_batches(
@@ -6569,6 +6619,7 @@ def import_graph_for_ui(
     if not (embedding_model or "").strip():
         return "❌ 請選擇 Embedding 模型。", graph_state
     updated_state = deepcopy(graph_state)
+    _ensure_graph_ids(updated_state)
     updated_state["embedding_model"] = embedding_model.strip()
     try:
         progress(0, desc="準備向量證據…")
@@ -6597,7 +6648,6 @@ def import_graph_for_ui(
             updated_state.get("document", ""),
             updated_state.get("llm_model", ""),
             updated_state.get("embedding_model", ""),
-            updated_state["schema"],
             updated_state["entities"],
             updated_state["relationships"],
             _embedded_evidence_batches(
@@ -7026,19 +7076,19 @@ def build_app() -> gr.Blocks:
                     gr.Markdown("Neo4j 連線設定隨專案保存，欄位修改後會自動儲存。模型與 Embedding API 請至「0 系統設定」管理。")
                     env_status = gr.Markdown()
 
-            with gr.Tab("1-1 PDF 與參數", interactive=False) as pdf_tab:
+            with gr.Tab("1-1 文件與參數", interactive=False) as pdf_tab:
                 gr.Markdown(
-                    "流程：**① 解析 PDF** → **② 逐頁檢查**（對照原頁修正解析結果）→ "
+                    "流程：**① 解析文件** → **② 逐頁檢查**（對照原頁修正解析結果）→ "
                     "**③ 切分 chunk**（使用檢查後的頁面內容，不會重新呼叫 Vision）。"
                 )
-                preview_status = gr.Markdown("尚未解析 PDF。可重複上傳多份 PDF，逐一加入同一個專案。")
+                preview_status = gr.Markdown("尚未解析文件。可重複上傳多份 PDF 或 TXT，逐一加入同一個專案。")
                 with gr.Tabs(selected="pdf-parse") as pdf_steps:
-                    with gr.Tab("① 解析 PDF", id="pdf-parse"):
+                    with gr.Tab("① 解析文件", id="pdf-parse"):
                         with gr.Row():
                             with gr.Column(scale=1):
                                 pdf_file = gr.File(
-                                    label="PDF 使用手冊（可一次選取多個檔案）",
-                                    file_types=[".pdf"], file_count="multiple", type="filepath",
+                                    label="文件（PDF 或 UTF-8 TXT，可一次選取多個檔案）",
+                                    file_types=[".pdf", ".txt"], file_count="multiple", type="filepath",
                                 )
                                 pdf_vision_model = gr.Dropdown(
                                     choices=_pdf_vision_model_choices(llm_settings),
@@ -7058,6 +7108,7 @@ def build_app() -> gr.Blocks:
                                     label="Vision 解析範圍",
                                     info="不含所選元素的頁面直接使用文字層；送 Vision 的頁面仍整頁轉錄。掃描頁（無文字層）一律送 Vision。",
                                 )
+                                gr.Markdown("TXT 會以整份文件作為單一合成來源頁供 chunk 追蹤，不使用 Vision；此題庫只評答案正確率，不使用頁碼證據指標。")
                                 preview_button = gr.Button("解析並加入專案", variant="primary")
                                 with gr.Row():
                                     pdf_pause_button = gr.Button("⏸ 暫停")
@@ -7065,7 +7116,7 @@ def build_app() -> gr.Blocks:
                                 pdf_run_control_status = gr.Markdown()
                                 pdf_run_control_state = gr.State(RunControl())
                             with gr.Column(scale=1):
-                                gr.Markdown("##### 已加入本專案的 PDF")
+                                gr.Markdown("##### 已加入本專案的文件")
                                 documents_table = gr.Dataframe(
                                     headers=["選取", "文件", "頁碼範圍", "Chunk 數"],
                                     datatype=["bool", "str", "str", "number"],
@@ -7074,10 +7125,10 @@ def build_app() -> gr.Blocks:
                                     wrap=True,
                                 )
                                 remove_document_selector = gr.Dropdown(
-                                    label="選擇要移除的 PDF（可多選）", choices=[],
+                                    label="選擇要移除的文件（可多選）", choices=[],
                                     multiselect=True, interactive=True, visible=False,
                                 )
-                                remove_document_button = gr.Button("移除勾選的 PDF", variant="stop")
+                                remove_document_button = gr.Button("移除勾選的文件", variant="stop")
                     with gr.Tab("② 逐頁檢查", id="pdf-review"):
                         with gr.Row(equal_height=True):
                             review_document = gr.Dropdown(label="文件", choices=[], scale=3)
@@ -7128,7 +7179,7 @@ def build_app() -> gr.Blocks:
                         chunk_status = gr.Markdown("切分會重新產生所有文件的 chunks；頁面修改後需重新切分才會生效。")
                         with gr.Row(equal_height=True):
                             previous_button = gr.Button("◀ 上一份文件", scale=1)
-                            page_status = gr.Markdown("請先解析 PDF。")
+                            page_status = gr.Markdown("請先解析文件。")
                             next_button = gr.Button("下一份文件 ▶", scale=1)
                         chunk_table = gr.Dataframe(
                             headers=["編號", "文件", "頁碼", "字元數", "內容"],
@@ -7154,13 +7205,8 @@ def build_app() -> gr.Blocks:
                     "執行中都可使用：暫停只會停止送出新批次（已送出的批次仍會跑完）；"
                     "停止會盡快中止整個流程。"
                 )
-                # Retain old project-setting slots for loading/saving compatibility.
-                # Schema planning has been removed; extraction uses the model below.
                 graph_llm_model = gr.Dropdown(
                     choices=llm_choices, value=preferred_llm, visible=False,
-                )
-                schema_granularity = gr.Radio(
-                    ["粗略", "平衡", "詳細"], value="平衡", visible=False,
                 )
                 max_concurrent_requests = gr.Number(
                     value=DEFAULT_MAX_CONCURRENT_REQUESTS, minimum=1,
@@ -7169,10 +7215,17 @@ def build_app() -> gr.Blocks:
                 with gr.Group(elem_classes="graph-step-group"):
                     gr.Markdown("#### ① 抽取實體與關係")
                     gr.Markdown(
-                        "系統會直接閱讀已解析的文件文本並抽取實體與關係；不需要先規劃 Schema。"
-                        "檢查結果後，再手動匯入 Neo4j。"
+                        "選擇抽取方法後，系統會逐 chunk 抽取實體與關係；頁碼、Chunk 編號及各項 ID 均由程式依來源記錄或產生，"
+                        "不會交由 LLM 生成。抽取完成後再檢查結果並手動匯入 Neo4j。"
                     )
                     with gr.Row(equal_height=True):
+                        extraction_method = gr.Dropdown(
+                            choices=[(spec.label, spec.method_id)
+                                     for spec in EXTRACTION_METHODS.specs.values()],
+                            value="typed_name",
+                            label="抽取方法",
+                            info="類型＋名稱合併：同名且實體類型相同才合併。僅名稱合併：不抽實體類型，同名實體直接合併。",
+                        )
                         extraction_llm_model = gr.Dropdown(
                             choices=llm_choices,
                             value=preferred_llm,
@@ -7194,26 +7247,6 @@ def build_app() -> gr.Blocks:
                             precision=0,
                             label="最大並行請求數",
                         )
-                    gr.HTML(
-                        """
-                        <style>
-                        .schema-scroll-editor .cm-content {
-                            font-size: 17px;
-                            line-height: 1.6;
-                        }
-                        </style>
-                        """,
-                        padding=False,
-                    )
-                    schema_editor = gr.Code(
-                        label="自訂 Schema 約束（選填 JSON；留白時直接依文本抽取）",
-                        language="json",
-                        interactive=True,
-                        lines=18,
-                        max_lines=18,
-                        wrap_lines=False,
-                        elem_classes="schema-scroll-editor",
-                    )
                     generate_graph_button = gr.Button(
                         "抽取實體與關係", variant="primary"
                     )
@@ -7226,7 +7259,7 @@ def build_app() -> gr.Blocks:
                     with gr.Column(visible=False) as extraction_results_section:
                         gr.Markdown("##### 抽取結果")
                         entity_table = gr.Dataframe(
-                            headers=["實體", "類型", "說明", "來源 Chunks", "來源頁碼", "來源文件"],
+                            headers=["實體", "類型（依抽取方法）", "說明", "來源 Chunks", "來源頁碼", "來源文件"],
                             interactive=False,
                             wrap=True,
                         )
@@ -7267,8 +7300,9 @@ def build_app() -> gr.Blocks:
                 gr.Markdown(
                     "直接使用連線設定中的 Neo4j；預設查詢最近更新的建圖結果。"
                     "可選擇使用 LLM Reranker 重排候選，或啟用證據擴展。"
-                    "Agentic Search 以 LLM 選擇圖譜候選路徑；Agentic Search 3 透過固定唯讀工具自主搜尋，"
-                    "程式會限定圖譜標籤、工具呼叫數與執行時間。"
+                    "Agentic Search 1 透過固定唯讀工具自主搜尋；程式會限定圖譜標籤、工具呼叫數與執行時間。"
+                    "Agentic Search 2 會讓 Agent 選擇擴展分支，"
+                    "累積較大的候選池後再由 Agent 挑選最終 Top K。"
                 )
                 with gr.Accordion("① 問答模型", open=True):
                     with gr.Row(equal_height=True):
@@ -7557,35 +7591,33 @@ def build_app() -> gr.Blocks:
                     experiment_group_rows: list[list[Any]] = []
                     with gr.Column(elem_classes="experiment-group-table"):
                         for row_index in range(EXPERIMENT_GROUP_LIMIT):
-                            # Groups render as one table: only the first row shows column labels.
-                            header = row_index == 0
                             with gr.Row(elem_classes="experiment-group-row"):
-                                group_name = gr.Textbox(label="實驗組名稱", show_label=header, min_width=110, placeholder=f"實驗組 {row_index + 1}", visible=False, scale=2)
+                                group_name = gr.Textbox(label="實驗組名稱", show_label=True, min_width=110, placeholder=f"實驗組 {row_index + 1}", visible=False, scale=2)
                                 group_model = gr.Dropdown(
                                     choices=llm_choices, value=None, allow_custom_value=False,
-                                    label="回答模型", show_label=header, min_width=110, visible=False, scale=2,
+                                    label="回答模型", show_label=True, min_width=110, visible=False, scale=2,
                                 )
                                 group_answer_effort = gr.Dropdown(
                                     choices=list(GPT_6_LUNA_REASONING_EFFORTS),
-                                    value=DEFAULT_REASONING_EFFORT, label="回答推理強度", show_label=header, min_width=110,
+                                    value=DEFAULT_REASONING_EFFORT, label="回答推理強度", show_label=True, min_width=110,
                                     visible=False, scale=1,
                                 )
                                 group_retrieval = gr.Dropdown(
                                     choices=strategy_choices(), value="混合檢索",
-                                    label="檢索策略", show_label=header, min_width=110, visible=False, scale=2,
+                                    label="檢索策略", show_label=True, min_width=110, visible=False, scale=2,
                                 )
-                                group_top_k = gr.Number(value=8, minimum=1, maximum=50, precision=0, label="Top K", show_label=header, min_width=110, visible=False, scale=1)
+                                group_top_k = gr.Number(value=8, minimum=1, maximum=50, precision=0, label="Top K", show_label=True, min_width=110, visible=False, scale=1)
                                 group_reranker = gr.Dropdown(
-                                    choices=list(RERANKER_MODES), value="停用", label="Reranker", show_label=header, min_width=110,
+                                    choices=list(RERANKER_MODES), value="停用", label="Reranker", show_label=True, min_width=110,
                                     visible=False, scale=2,
                                 )
                                 group_expansion = gr.Dropdown(
                                     choices=list(EVIDENCE_EXPANSION_MODES), value="停用",
-                                    label="證據擴展", show_label=header, min_width=110, visible=False, scale=2,
+                                    label="證據擴展", show_label=True, min_width=110, visible=False, scale=2,
                                 )
                                 group_strategy_params = gr.State({})
                                 group_strategy_parameter_controls = _create_experiment_strategy_parameter_controls(
-                                    numeric_inputs=True, show_label=header,
+                                    numeric_inputs=True, show_label=True,
                                 )
                                 delete_group_button = gr.Button(
                                     "移除", size="sm", visible=False, scale=0, min_width=72,
@@ -7735,9 +7767,9 @@ def build_app() -> gr.Blocks:
                         experiment_project_members_table = gr.Dataframe(
                             headers=[
                                 "專案", "專案 ID", "建立者", "文件數", "Chunk 數", "問題集題數",
-                                "Chunk Size", "Overlap", "Schema 粒度", "Neo4j Database", "連線結果",
+                                "Chunk Size", "Overlap", "Neo4j Database", "連線結果",
                             ],
-                            datatype=["str", "str", "str", "number", "str", "number", "number", "number", "number", "str", "str", "str"],
+                            datatype=["str", "str", "str", "number", "str", "number", "number", "number", "str", "str"],
                             interactive=False, wrap=True,
                         )
                 with gr.Accordion("③ 成員專案連線測試", open=True):
@@ -7984,8 +8016,8 @@ def build_app() -> gr.Blocks:
                             interactive=False, wrap=True,
                         )
 
-        schema_model_endpoint = gr.State(initial_llm_credentials[0][0])
-        schema_model_key = gr.State(initial_llm_credentials[0][1])
+        graph_model_endpoint = gr.State(initial_llm_credentials[0][0])
+        graph_model_key = gr.State(initial_llm_credentials[0][1])
         extraction_model_endpoint = gr.State(initial_llm_credentials[1][0])
         extraction_model_key = gr.State(initial_llm_credentials[1][1])
         generation_model_endpoint = gr.State(initial_llm_credentials[2][0])
@@ -8856,11 +8888,11 @@ def build_app() -> gr.Blocks:
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
             model_endpoint, api_key, graph_llm_model, graph_embedding_model,
             answer_model, chunk_size, chunk_overlap,
-            graph_temperature, schema_granularity,
+            graph_temperature, extraction_method,
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor,
+            top_k,
             extraction_reasoning_effort, answer_reasoning_effort,
             retrieval_strategy_params_state, pdf_vision_model, pdf_vision_scope,
             pdf_vision_reasoning_effort,
@@ -8870,11 +8902,11 @@ def build_app() -> gr.Blocks:
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
             model_endpoint, api_key, graph_llm_model, graph_embedding_model,
             answer_model, chunk_size, chunk_overlap,
-            graph_temperature, schema_granularity,
+            graph_temperature, extraction_method,
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor,
+            top_k,
             documents_state, chunk_state, graph_state,
             active_preview_state, active_chunks_state,
             documents_table, remove_document_selector,
@@ -8925,6 +8957,20 @@ def build_app() -> gr.Blocks:
         )
         project_tab.select(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
         app.load(refresh_projects_for_ui, inputs=project_state, outputs=project_selector)
+        # The 0-0 system-settings tab may be the initially selected tab, in
+        # which case Gradio does not always emit Tab.select on page load.
+        # Populate the binding selector from persisted project bindings on
+        # every initial page load so previously-bound sets appear checked.
+        app.load(
+            refresh_binding_project_choices_for_ui,
+            inputs=binding_project_selector,
+            outputs=[
+                binding_project_selector,
+                binding_question_set_status,
+                binding_question_set_selector,
+            ],
+            show_progress="hidden",
+        )
         load_graph_details_button.click(
             load_graph_tables_for_project_ui,
             inputs=[project_selector, graph_state],
@@ -9047,11 +9093,11 @@ def build_app() -> gr.Blocks:
             neo4j_uri, neo4j_database, neo4j_username, neo4j_password,
             graph_llm_model, graph_embedding_model,
             answer_model, chunk_size, chunk_overlap,
-            graph_temperature, schema_granularity,
+            graph_temperature, extraction_method,
             max_concurrent_requests,
             extraction_llm_model,
             extraction_max_concurrent_requests, retrieval_mode,
-            top_k, schema_editor, pdf_vision_model, pdf_vision_scope,
+            top_k, pdf_vision_model, pdf_vision_scope,
             pdf_vision_reasoning_effort,
         ]
         for component in auto_save_components:
@@ -9063,13 +9109,18 @@ def build_app() -> gr.Blocks:
         for strategy_control, reranker_control, expansion_control in [
             (retrieval_mode, use_reranker, expand_evidence),
             (evaluation_retrieval_mode, evaluation_use_reranker, evaluation_expand_evidence),
-            *[(row[3], row[5], row[6]) for row in experiment_group_rows],
-            *[(row[3], row[5], row[6]) for row in experiment_project_group_rows],
         ]:
             strategy_control.change(
                 _postprocessing_control_updates,
                 inputs=[strategy_control, reranker_control, expansion_control],
                 outputs=[reranker_control, expansion_control],
+                show_progress="hidden",
+            )
+        for row in [*experiment_group_rows, *experiment_project_group_rows]:
+            row[3].change(
+                _experiment_group_postprocessing_control_updates,
+                inputs=[row[3], row[5], row[6], row[0]],
+                outputs=[row[5], row[6]],
                 show_progress="hidden",
             )
 
@@ -9108,7 +9159,7 @@ def build_app() -> gr.Blocks:
             graph_embedding_model,
         ]
         credential_refresh_outputs = [
-            schema_model_endpoint, schema_model_key,
+            graph_model_endpoint, graph_model_key,
             extraction_model_endpoint, extraction_model_key,
             generation_model_endpoint, generation_model_key,
             evaluation_model_endpoint, evaluation_model_key,
@@ -9168,7 +9219,7 @@ def build_app() -> gr.Blocks:
                 show_progress="hidden",
             )
         for field, endpoint_state, key_state in [
-            (graph_llm_model, schema_model_endpoint, schema_model_key),
+            (graph_llm_model, graph_model_endpoint, graph_model_key),
             (extraction_llm_model, extraction_model_endpoint, extraction_model_key),
             (evaluation_generation_model, generation_model_endpoint, generation_model_key),
             (evaluation_test_model, evaluation_model_endpoint, evaluation_model_key),
@@ -9413,12 +9464,11 @@ def build_app() -> gr.Blocks:
                 graph_temperature,
                 extraction_max_concurrent_requests,
                 chunk_state,
-                schema_editor,
+                extraction_method,
                 documents_state,
                 run_control_state,
                 chunk_size,
                 chunk_overlap,
-                schema_granularity,
                 extraction_reasoning_effort,
             ],
             outputs=[build_status, entity_table, relationship_table, graph_state],

@@ -1,43 +1,44 @@
-id: agentic_search_3
-name: Agentic Search 3
-order: 50
+id: agentic_search_2
+name: Agentic Search 2
+order: 60
 implementation:
-  file: agentic_search_3/strategy.py
-  class: AgenticSearch3RetrievalStrategy
+  file: agentic_search_2/strategy.py
+  class: AgenticSearch2RetrievalStrategy
 parameters:
-  candidate_top_k:
-    type: integer
-    minimum: 1
-    maximum: 50
-    minimum_is_top_k: true
-    visible: false
   seed_top_k:
     type: integer
-    label: 向量起始證據數
-    default: 6
+    label: 起始證據數
+    default: 8
     minimum: 1
-    maximum: 20
+    maximum: 30
+    control: slider
+  candidate_pool_ratio:
+    type: integer
+    label: 候選池倍數（相對 Top K）
+    default: 4
+    minimum: 2
+    maximum: 8
     control: slider
   max_tool_calls:
     type: integer
     label: Agent 工具呼叫上限
-    default: 8
+    default: 10
     minimum: 1
-    maximum: 20
+    maximum: 30
     control: slider
   result_limit:
     type: integer
     label: 每次工具最多回傳證據數
     default: 8
     minimum: 1
-    maximum: 20
+    maximum: 30
     control: slider
   max_runtime_seconds:
     type: number
     label: 搜尋總時間上限（秒）
-    default: 45.0
+    default: 60.0
     minimum: 5
-    maximum: 120
+    maximum: 180
     control: slider
   effective_search_ratio:
     type: integer

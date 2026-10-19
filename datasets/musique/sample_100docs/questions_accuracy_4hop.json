@@ -1,0 +1,231 @@
+{
+  "schema_version": 1,
+  "dataset": "MuSiQue-Ans dev — 4-hop accuracy sample (100-question sample)",
+  "questions": [
+    {
+      "number": 1,
+      "question": "When was the country established that lies immediately north of the Persian Gulf and the region where the country containing Urim is located?",
+      "expected_answer": "1932",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__343844_17130_70784_61381",
+      "hops": 4
+    },
+    {
+      "number": 2,
+      "question": "When was the region that lies to the north of where israel is located and the body of water where Kharg Island is located established?",
+      "expected_answer": "1932",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop2__71753_623626_70784_61381",
+      "hops": 4
+    },
+    {
+      "number": 3,
+      "question": "When was the region immediately north of the region of the country in Strangers No More and the Persian Gulf established?",
+      "expected_answer": "1932",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__105401_17130_70784_61381",
+      "hops": 4
+    },
+    {
+      "number": 4,
+      "question": "When was the region that lies to the north of the where Israel is located and the location of Shamal created?",
+      "expected_answer": "1930",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop2__71753_261673_70784_79935",
+      "hops": 4
+    },
+    {
+      "number": 5,
+      "question": "When was the region that lies to the north of where Eyal Golan is located and the Persian Gulf created?",
+      "expected_answer": "1930",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__105688_17130_70784_79935",
+      "hops": 4
+    },
+    {
+      "number": 6,
+      "question": "When was the region immediately north of the region where Israel is located and the final destination for the export crops established?",
+      "expected_answer": "1932",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop2__71753_158279_70784_61381",
+      "hops": 4
+    },
+    {
+      "number": 7,
+      "question": "The country that Eyal Golan is from lies within a certain region. When was the area that lies immediately to the north of that region established?",
+      "expected_answer": "1932",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__105688_17130_70784_61381",
+      "hops": 4
+    },
+    {
+      "number": 8,
+      "question": "When was the region immediately north of the region where the country in which Aluf can be found is located and the Persian Gulf established?",
+      "expected_answer": "1932",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__638988_17130_70784_61381",
+      "hops": 4
+    },
+    {
+      "number": 9,
+      "question": "When does daylight savings end in the country near the country where the author of The Book Thief is from?",
+      "expected_answer": "the first Sunday in April",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__58323_375563_161848_83118",
+      "hops": 4
+    },
+    {
+      "number": 10,
+      "question": "How many stars are on the flag of the nation that first participated in the 1952 Olympics, located near the citizen country of the author of the 2005 novel Thief?",
+      "expected_answer": "four",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__58323_375563_161848_67585",
+      "hops": 4
+    },
+    {
+      "number": 11,
+      "question": "What continent is the country located near the country of citizenship of The Book Thief's author part of?",
+      "expected_answer": "submerged continent of Zealandia",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__58323_375563_161848_61344",
+      "hops": 4
+    },
+    {
+      "number": 12,
+      "question": "When did the Dutch arrive in the country near the country where the author of The Book Thief is a citizen of?",
+      "expected_answer": "13 December 1642",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__58323_375563_161848_84681",
+      "hops": 4
+    },
+    {
+      "number": 13,
+      "question": "When was the region immediately north of the area where the country that released Atalia is located and the Persian Gulf established?",
+      "expected_answer": "1932",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__105002_17130_70784_61381",
+      "hops": 4
+    },
+    {
+      "number": 14,
+      "question": "When was the region immediately north of the region home to Israel and the location of Operation Earnest Will established?",
+      "expected_answer": "1932",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop2__71753_729371_70784_61381",
+      "hops": 4
+    },
+    {
+      "number": 15,
+      "question": "Where was Popper's academic appointment in the country near the country of citizenship of the person who wrote The Book Thief?",
+      "expected_answer": "Canterbury University College of the University of New Zealand",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__58323_375563_161848_28750",
+      "hops": 4
+    },
+    {
+      "number": 16,
+      "question": "When was the death penalty abolished in the country near the country where the writer of The Book Thief is a citizen of?",
+      "expected_answer": "1989",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__58323_375563_161848_53331",
+      "hops": 4
+    },
+    {
+      "number": 17,
+      "question": "When was the region immediately north of the region where Israel is located and the site of the most growth in desalination for agricultural use established?",
+      "expected_answer": "1932",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop2__71753_158985_70784_61381",
+      "hops": 4
+    },
+    {
+      "number": 18,
+      "question": "When was the region that lies to the north of the country where Sar-El is located and the Persian Gulf established?",
+      "expected_answer": "1932",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__443274_17130_70784_61381",
+      "hops": 4
+    },
+    {
+      "number": 19,
+      "question": "When was the region that lies to the north of where Israel is located and where Shamal is located established?",
+      "expected_answer": "1932",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop2__71753_261673_70784_61381",
+      "hops": 4
+    },
+    {
+      "number": 20,
+      "question": "Who discovered the country near the country of citizenship of the author of The Book Thief for the Dutch?",
+      "expected_answer": "Abel Tasman",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__58323_375563_161848_20546",
+      "hops": 4
+    },
+    {
+      "number": 21,
+      "question": "When was the region that lies to the north of what where Israel is located and the body of water where Kharg Island is found created?",
+      "expected_answer": "1930",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop2__71753_623626_70784_79935",
+      "hops": 4
+    },
+    {
+      "number": 22,
+      "question": "When was the region that lies to the north of the region where Strangers No More took place and the Persian Gulf created?",
+      "expected_answer": "1930",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__105401_17130_70784_79935",
+      "hops": 4
+    },
+    {
+      "number": 23,
+      "question": "When was the region that lies to the north of the region Israel is located and where the Battle of Qurah and Umm al Maradim is took place established?",
+      "expected_answer": "1932",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop2__71753_648517_70784_61381",
+      "hops": 4
+    },
+    {
+      "number": 24,
+      "question": "During WW2, who was the leader of the country near the country of citizenship of the writer of The Book Thief?",
+      "expected_answer": "Michael Joseph Savage",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop1__58323_375563_161848_44231",
+      "hops": 4
+    },
+    {
+      "number": 25,
+      "question": "When was the region that lies to the north of where Israel is located and where The World is located established?",
+      "expected_answer": "1932",
+      "question_sources": [],
+      "answer_sources": [],
+      "dataset_id": "4hop2__71753_685934_70784_61381",
+      "hops": 4
+    }
+  ]
+}
