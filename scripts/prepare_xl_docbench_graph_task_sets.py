@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -22,7 +23,7 @@ SELECTED = {
         "adubench_single_000100",
         "adubench_single_000706",
         "adubench_single_000625",
-        "adubench_single_000672",
+        "adubench_single_000858",
     ],
     "aggregation": [
         "adubench_cross_000070",
@@ -32,9 +33,9 @@ SELECTED = {
         "adubench_single_000055",
         "adubench_single_000850",
         "adubench_single_001023",
-        "adubench_single_000685",
+        "adubench_single_000901",
+        "adubench_single_000031",
         "adubench_single_001278",
-        "adubench_single_000390",
     ],
     "comparison": [
         "adubench_single_000707",
@@ -55,6 +56,7 @@ EXPECTED_LABELS = {
     "aggregation": "aggregation",
     "comparison": "comparison",
 }
+VISUAL_TASK_TERMS = re.compile(r"\b(chart|table|figure|diagram|graph|slide|map)\b", re.IGNORECASE)
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -87,6 +89,8 @@ def main() -> None:
                 raise ValueError(f"Unexpected unanswerable question: {question_id}")
             if row["metadata"].get("evidence_sources") != ["Text"]:
                 raise ValueError(f"Question is not text-only: {question_id}")
+            if VISUAL_TASK_TERMS.search(row["question"]):
+                raise ValueError(f"Question explicitly refers to visual evidence: {question_id}")
 
             source_rows = [row["document"]] if "document" in row else row["documents"]
             refs = []
