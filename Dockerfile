@@ -18,6 +18,7 @@ RUN python -m pip install --no-cache-dir --requirement requirements.txt
 
 COPY src/ ./src/
 COPY strategies/ ./strategies/
+COPY extraction_methods/ ./extraction_methods/
 COPY config/ ./config/
 RUN mkdir -p /app/data
 

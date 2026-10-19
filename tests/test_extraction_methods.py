@@ -5,11 +5,19 @@ from manual_graphrag.extraction_methods import (
     load_extraction_method_specs,
 )
 
+PROJECT_ROOT = Path(__file__).parents[1]
+
 
 def test_default_methods_are_loaded_from_yaml_and_implementations() -> None:
     assert set(EXTRACTION_METHODS.specs) == {"typed_name", "name_only"}
     assert EXTRACTION_METHODS.get("typed_name").requires_entity_type is True
     assert EXTRACTION_METHODS.get("name_only").requires_entity_type is False
+
+
+def test_docker_image_includes_extraction_method_specs_and_implementations() -> None:
+    dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "COPY extraction_methods/ ./extraction_methods/" in dockerfile
 
 
 def test_name_only_method_merges_name_variants_without_entity_type() -> None:
