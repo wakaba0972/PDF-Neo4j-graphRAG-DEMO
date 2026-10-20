@@ -214,6 +214,13 @@ def test_vision_prompt_is_not_limited_to_automotive_manuals() -> None:
     assert "same language as the page text" in prompt
 
 
+def test_vision_prompt_asks_for_label_positions() -> None:
+    prompt = pdf_service.VISION_SYSTEM_PROMPT
+    assert "which view it is" in prompt
+    assert "For every labeled component, state where it is on the object" in prompt
+    assert "relative to nearby labeled components" in prompt
+
+
 def test_extract_pdf_runs_vision_calls_concurrently_and_keeps_page_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -747,6 +754,20 @@ def test_page_has_figures_matches_detect_page_figures(tmp_path: Path) -> None:
                 page.insert_text((x, y), f"r{row}c{column}")
         assert _real_page_has_figures(page, ("table",)) is True
         assert _real_page_has_figures(page, pdf_service.DIAGRAM_KINDS) is False
+
+
+def test_table_without_outer_side_borders_is_detected() -> None:
+    with pdf_service.pymupdf.open() as document:
+        page = document.new_page(width=600, height=800)
+        # Horizontal rules and one inner column line, but no left or right border.
+        for y in (200, 230, 290, 340):
+            page.draw_line((60, y), (540, y))
+        page.draw_line((200, 200), (200, 340))
+        for y in (220, 260, 320):
+            page.insert_text((70, y), "Button")
+            page.insert_text((210, y), "Function")
+        assert _real_page_has_figures(page, ("table",)) is True
+        assert [figure.kind for figure in pdf_service.detect_page_figures(page)] == ["table"]
 
 
 def test_table_needs_ruled_top_and_bottom_edges() -> None:

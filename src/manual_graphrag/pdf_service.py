@@ -55,7 +55,7 @@ VISION_SYSTEM_PROMPT = """You are an expert assistant for transcribing technical
 Follow these rules strictly:
 1. Transcribe all visible text completely, in its original language and script, without translating, summarizing, or omitting anything.
 2. Convert every table, including specification tables, into Markdown table syntax.
-3. For each diagram, figure, photo, exploded view, wiring diagram, flowchart, or screen illustration, write a concise description in the same language as the page text. State what the figure shows and list its labeled components, callouts, or steps, copying every label exactly as printed; never translate a label. Do not invent labels that are not visible.
+3. For each diagram, figure, photo, exploded view, wiring diagram, flowchart, or screen illustration, write a description in the same language as the page text. State what the figure shows and which view it is (for example front, back, side, top, bottom, or screen), then go through its labeled components, callouts, or steps one by one, copying every label exactly as printed; never translate a label. For every labeled component, state where it is on the object: its position (top, bottom, left, right, center, corner, edge, front or back face) and its position relative to nearby labeled components (above, below, beside, between, next to). For a flowchart or sequence of steps, state the order and the connections between them. Do not invent labels that are not visible, and do not guess positions that the figure does not show.
 4. Add content items in visual top-to-bottom order. Each item must have a type of text, table, or diagram and a string data field.
 5. Return exactly one valid JSON object and no Markdown fences or explanation."""
 
@@ -517,6 +517,8 @@ FIGURE_PADDING = 6.0
 # callout leader lines around an illustration are often mistaken for a grid.
 TABLE_BORDER_COVERAGE = 0.9
 TABLE_BORDER_TOLERANCE = 2.0
+# Horizontal rules at least this share of the page width can bound an open-sided table.
+TABLE_RULE_MIN_WIDTH = 0.3
 
 
 def _is_rule_drawing(drawing: dict[str, Any], page_width: float) -> bool:
@@ -572,6 +574,36 @@ def _has_table_border(rect: pymupdf.Rect, segments: list[tuple[float, float, flo
     )
 
 
+def _table_side_lines(
+    segments: list[tuple[float, float, float]], page_width: float,
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Left and right edges for tables ruled only horizontally.
+
+    Many manuals draw tables with horizontal rules and inner column lines but
+    no outer vertical border, which ``find_tables()`` cannot bound. Touching
+    segments on one line are joined into rules; two or more long rules that
+    share both ends get vertical lines at those ends, spanning first to last.
+    """
+    rules: list[list[float]] = []
+    for x0, x1, y in sorted(segments, key=lambda segment: (segment[2], segment[0])):
+        for rule in rules:
+            if abs(rule[2] - y) <= TABLE_BORDER_TOLERANCE and x0 <= rule[1] + 1 and x1 >= rule[0] - 1:
+                rule[0], rule[1] = min(rule[0], x0), max(rule[1], x1)
+                break
+        else:
+            rules.append([x0, x1, y])
+    groups: dict[tuple[int, int], list[float]] = {}
+    for x0, x1, y in rules:
+        if x1 - x0 >= page_width * TABLE_RULE_MIN_WIDTH:
+            groups.setdefault((round(x0), round(x1)), []).append(y)
+    lines = []
+    for (x0, x1), ys in groups.items():
+        if len(ys) >= 2:
+            top, bottom = min(ys), max(ys)
+            lines += [((x0, top), (x0, bottom)), ((x1, top), (x1, bottom))]
+    return lines
+
+
 def _merge_nearby(rects: list[pymupdf.Rect], tolerance: float) -> list[pymupdf.Rect]:
     merged = [pymupdf.Rect(rect) for rect in rects]
     changed = True
@@ -599,8 +631,9 @@ def _figure_candidates(
     drawings = page.get_drawings() if {"table", "drawing"} & set(kinds) else []
     if "table" in kinds:
         segments = _horizontal_segments(drawings)
+        tables = page.find_tables(add_lines=_table_side_lines(segments, page_rect.width) or None)
         found["table"] = [
-            rect for rect in (pymupdf.Rect(table.bbox) for table in page.find_tables().tables)
+            rect for rect in (pymupdf.Rect(table.bbox) for table in tables.tables)
             if _has_table_border(rect, segments)
         ]
     if "image" in kinds:
